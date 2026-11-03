@@ -353,6 +353,8 @@ describe('config schema against config_default.js', () => {
         //
         const DECLARED_IN_DEFAULTS = [
             'archives.archivers',
+            'atProto.enabled',
+            'atProto.oauth.clientMode',
             'chatServers.mrc.multiplexerPort',
             'chatServers.mrc.serverPort',
             'chatServers.mrc.serverSslPort',

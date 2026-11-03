@@ -705,6 +705,22 @@ function initialize(cb) {
             function readyWsTerm(callback) {
                 return require('./web_ws_term.js').startup(callback);
             },
+            function readyAtProto(callback) {
+                //  A failure here leaves AT login unavailable; it never stops
+                //  the rest of the board from starting
+                const AtProtoOAuth = require('./atproto/oauth_client.js');
+                return AtProtoOAuth.startup(err => {
+                    if (err) {
+                        logger.log.error(
+                            { error: err.message },
+                            'AT Protocol support failed to start; AT login is unavailable'
+                        );
+                    } else if (AtProtoOAuth.isReady()) {
+                        logger.log.info('AT Protocol support started');
+                    }
+                    return callback(null);
+                });
+            },
             function readyEventScheduler(callback) {
                 const EventSchedulerModule =
                     require('./event_scheduler.js').EventSchedulerModule;

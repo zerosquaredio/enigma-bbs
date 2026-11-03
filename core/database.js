@@ -32,6 +32,7 @@ exports.initMessageDatabase = initMessageDatabase;
 exports.migrateMessageIdAutoincrement = migrateMessageIdAutoincrement;
 exports.migrateMessageFtsRebuild = migrateMessageFtsRebuild;
 exports.migrateActivityPubActorCachePurge = migrateActivityPubActorCachePurge;
+exports.initAtProtoDatabase = initAtProtoDatabase;
 
 exports.dbs = dbs;
 
@@ -123,7 +124,14 @@ function getISOTimestampString(ts) {
 
 function initializeDatabases(cb) {
     try {
-        for (const dbName of ['system', 'user', 'message', 'file', 'activitypub']) {
+        for (const dbName of [
+            'system',
+            'user',
+            'message',
+            'file',
+            'activitypub',
+            'atproto',
+        ]) {
             dbs[dbName] = openDatabase(getDatabasePath(dbName));
             DB_INIT_TABLE[dbName]();
         }
@@ -1396,7 +1404,41 @@ const DB_INIT_TABLE = {
             }
         }
     },
+
+    atproto: () => initAtProtoDatabase(dbs.atproto),
 };
+
+//
+//  atproto.sqlite3 schema versions, kept in PRAGMA user_version:
+//    1: OAuth state and session stores (see core/atproto/store.js)
+//
+//  Created with the other databases whether or not atProto.enabled is set,
+//  as activitypub.sqlite3 is; it simply stays empty while AT login is off.
+//
+const ATPROTO_DB_VERSION_LATEST = 1;
+
+function initAtProtoDatabase(db) {
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS oauth_state (
+            state_key           VARCHAR PRIMARY KEY NOT NULL,
+            state_json          VARCHAR NOT NULL,
+            created_timestamp   INTEGER NOT NULL    --  Unix seconds
+        );
+
+        CREATE INDEX IF NOT EXISTS oauth_state_by_created_timestamp_index0
+            ON oauth_state (created_timestamp);
+
+        CREATE TABLE IF NOT EXISTS oauth_session (
+            did                 VARCHAR PRIMARY KEY NOT NULL,
+            session_json        VARCHAR NOT NULL,
+            updated_timestamp   INTEGER NOT NULL    --  Unix seconds
+        );
+    `);
+
+    if (db.pragma('user_version', { simple: true }) < ATPROTO_DB_VERSION_LATEST) {
+        db.pragma(`user_version = ${ATPROTO_DB_VERSION_LATEST}`);
+    }
+}
 
 function scheduledEventOptimizeDatabases(args, cb) {
     try {

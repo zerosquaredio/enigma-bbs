@@ -736,6 +736,19 @@ module.exports = {
     'email.inbound.imap.processedFolder': { type: 'string' },
     'email.inbound.imap.failedFolder': { type: 'string' },
 
+    //  ── AT Protocol ──────────────────────────────────────────────────────
+    'atProto.enabled': {
+        type: 'boolean',
+        description:
+            'Load AT Protocol (Bluesky) identity support. Off, the library is never loaded.',
+    },
+    'atProto.oauth.clientMode': {
+        type: 'string',
+        enum: ['loopback'],
+        description:
+            'How the BBS identifies itself to account hosts. loopback is for development and needs no public URL.',
+    },
+
     //  ── Chat servers ─────────────────────────────────────────────────────
     //  Present in the config template but not in the defaults.
     'chatServers.mrc.serverPort': PORT,

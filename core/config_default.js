@@ -625,6 +625,19 @@ module.exports = () => {
             },
         },
 
+        //  AT Protocol (Bluesky and compatible account hosts) identity support.
+        //  See ./core/atproto/. Nothing is loaded unless enabled.
+        atProto: {
+            enabled: false,
+
+            oauth: {
+                //  'loopback': development client that needs no public URL,
+                //  hosted metadata, or keys; redirects to this machine's web
+                //  server on 127.0.0.1
+                clientMode: 'loopback',
+            },
+        },
+
         infoExtractUtils: {
             Exiftool2Desc: {
                 cmd: `${__dirname}/../util/exiftool2desc.js`, //  ensure chmod +x

@@ -1446,6 +1446,37 @@
             },
             "additionalProperties": false
         },
+        "atProto": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Load AT Protocol (Bluesky) identity support. Off, the library is never loaded.",
+                    "type": "boolean",
+                    "default": false
+                },
+                "oauth": {
+                    "type": "object",
+                    "properties": {
+                        "clientMode": {
+                            "description": "How the BBS identifies itself to account hosts. loopback is for development and needs no public URL.",
+                            "type": "string",
+                            "enum": [
+                                "loopback"
+                            ],
+                            "default": "loopback"
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "patternProperties": {
+                "^_": true
+            },
+            "additionalProperties": false
+        },
         "infoExtractUtils": {
             "type": "object",
             "additionalProperties": {

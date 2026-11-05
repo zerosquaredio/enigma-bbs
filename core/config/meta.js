@@ -748,6 +748,20 @@ module.exports = {
         description:
             'How the BBS identifies itself to account hosts. loopback is for development and needs no public URL.',
     },
+    'atProto.login.allowNewUsers': {
+        type: 'boolean',
+        description:
+            'Create a local user the first time an AT identity logs in. Off, only existing users linked to a DID can use AT login.',
+    },
+    'atProto.login.secureConnectionsOnly': {
+        type: 'boolean',
+        description: 'Offer AT login only over SSH, wss://, or TLS; never over telnet.',
+    },
+    'atProto.login.rootDid': {
+        type: 'string',
+        description:
+            'The only DID that may become the first user (root, a sysop) through AT login. Empty: AT login never creates the first user.',
+    },
 
     //  ── Chat servers ─────────────────────────────────────────────────────
     //  Present in the config template but not in the defaults.

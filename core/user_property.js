@@ -95,6 +95,9 @@ module.exports = {
     AuthFactor2OTPSecret: 'auth_factor2_otp_secret', //  Secret used in conjunction with OTP 2FA
     AuthFactor2OTPBackupCodes: 'auth_factor2_otp_backup', //  JSON array of backup codes
 
+    AtProtoDid: 'atproto_did', //  AT Protocol (Bluesky) DID this user logs in with
+    AtProtoHandle: 'atproto_handle', //  Handle at last AT login; display only, never used for lookup
+
     PublicActivityPubSigningKey: 'public_key_activitypub_sign_rsa_pem', // RSA public key for ActivityPub signing
     PrivateActivityPubSigningKey: 'private_key_activitypub_sign_rsa_pem', // RSA private key (corresponding to PublicActivityPubSigningKey)
 

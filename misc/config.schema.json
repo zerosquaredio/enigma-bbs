@@ -1487,6 +1487,30 @@
                         "^_": true
                     },
                     "additionalProperties": false
+                },
+                "login": {
+                    "type": "object",
+                    "properties": {
+                        "allowNewUsers": {
+                            "description": "Create a local user the first time an AT identity logs in. Off, only existing users linked to a DID can use AT login.",
+                            "type": "boolean",
+                            "default": true
+                        },
+                        "secureConnectionsOnly": {
+                            "description": "Offer AT login only over SSH, wss://, or TLS; never over telnet.",
+                            "type": "boolean",
+                            "default": true
+                        },
+                        "rootDid": {
+                            "description": "The only DID that may become the first user (root, a sysop) through AT login. Empty: AT login never creates the first user.",
+                            "type": "string",
+                            "default": ""
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
                 }
             },
             "patternProperties": {

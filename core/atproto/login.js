@@ -60,7 +60,10 @@ function loginWithDid(client, identity, cb) {
 
     if (!AtProtoOAuth.isEnabled()) {
         return cb(
-            Errors.AccessDenied('AT Protocol login is not enabled', ErrorReasons.Disabled)
+            Errors.AccessDenied(
+                'AT Protocol login is not enabled',
+                ErrorReasons.NotEnabled
+            )
         );
     }
     if (!_.isString(did) || !did.startsWith('did:')) {

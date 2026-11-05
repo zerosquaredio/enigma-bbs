@@ -762,6 +762,11 @@ module.exports = {
         description:
             'The only DID that may become the first user (root, a sysop) through AT login. Empty: AT login never creates the first user.',
     },
+    'atProto.login.handoffTimeoutSeconds': {
+        type: 'number',
+        min: 30,
+        description: 'How long the AT login screen waits for the login to be approved in a browser.',
+    },
 
     //  ── Chat servers ─────────────────────────────────────────────────────
     //  Present in the config template but not in the defaults.

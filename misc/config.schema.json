@@ -1120,6 +1120,23 @@
                                         "^_": true
                                     },
                                     "additionalProperties": false
+                                },
+                                "atProtoCallback": {
+                                    "type": "object",
+                                    "properties": {
+                                        "windowMs": {
+                                            "type": "number",
+                                            "default": 600000
+                                        },
+                                        "maxRequests": {
+                                            "type": "number",
+                                            "default": 20
+                                        }
+                                    },
+                                    "patternProperties": {
+                                        "^_": true
+                                    },
+                                    "additionalProperties": false
                                 }
                             },
                             "patternProperties": {
@@ -1505,6 +1522,12 @@
                             "description": "The only DID that may become the first user (root, a sysop) through AT login. Empty: AT login never creates the first user.",
                             "type": "string",
                             "default": ""
+                        },
+                        "handoffTimeoutSeconds": {
+                            "description": "How long the AT login screen waits for the login to be approved in a browser.",
+                            "type": "number",
+                            "minimum": 30,
+                            "default": 300
                         }
                     },
                     "patternProperties": {

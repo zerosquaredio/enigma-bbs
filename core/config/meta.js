@@ -744,9 +744,9 @@ module.exports = {
     },
     'atProto.oauth.clientMode': {
         type: 'string',
-        enum: ['loopback'],
+        enum: ['loopback', 'public'],
         description:
-            'How the BBS identifies itself to account hosts. loopback is for development and needs no public URL.',
+            'How the BBS identifies itself to account hosts. loopback is for development and needs no public URL; public needs the web server at an https:// address.',
     },
     'atProto.login.allowNewUsers': {
         type: 'boolean',

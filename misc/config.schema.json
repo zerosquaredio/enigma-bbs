@@ -1492,10 +1492,11 @@
                     "type": "object",
                     "properties": {
                         "clientMode": {
-                            "description": "How the BBS identifies itself to account hosts. loopback is for development and needs no public URL.",
+                            "description": "How the BBS identifies itself to account hosts. loopback is for development and needs no public URL; public needs the web server at an https:// address.",
                             "type": "string",
                             "enum": [
-                                "loopback"
+                                "loopback",
+                                "public"
                             ],
                             "default": "loopback"
                         }

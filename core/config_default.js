@@ -640,6 +640,10 @@ module.exports = () => {
                 //  'loopback': development client that needs no public URL,
                 //  hosted metadata, or keys; redirects to this machine's web
                 //  server on 127.0.0.1
+                //  'public': for real use. Needs the web server reachable at
+                //  an https:// address (contentServers.web.overrideUrlPrefix
+                //  behind a proxy or the hub); makes a signing key in
+                //  paths.security on first start
                 clientMode: 'loopback',
             },
 

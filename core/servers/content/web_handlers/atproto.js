@@ -5,7 +5,12 @@ const Config = require('../../../config').get;
 const Log = require('../../../logger').log;
 const AtProtoOAuth = require('../../../atproto/oauth_client');
 const BrowserHandoff = require('../../../browser_handoff');
-const { CallbackRoutePath } = require('../../../atproto/const');
+const {
+    CallbackRoutePath,
+    ClientMetadataRoutePath,
+    JwksRoutePath,
+    ClientModes,
+} = require('../../../atproto/const');
 
 // deps
 const _ = require('lodash');
@@ -20,8 +25,10 @@ exports.moduleInfo = {
 //
 //  Routes for AT login: the OAuth callback the member's account host
 //  redirects to after they approve, and (through core/browser_handoff.js)
-//  the short link the terminal shows them. Enabled with
-//  contentServers.web.handlers.atProto.enabled, and needs atProto.enabled.
+//  the short link the terminal shows them. In public client mode, also the
+//  client metadata document and public signing keys that account hosts
+//  fetch. Enabled with contentServers.web.handlers.atProto.enabled, and
+//  needs atProto.enabled.
 //
 const DefaultRateLimit = { windowMs: 10 * 60 * 1000, maxRequests: 20 };
 
@@ -47,7 +54,31 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
             handler: this._callbackHandler.bind(this),
         });
 
+        if (ClientModes.Public === _.get(Config(), 'atProto.oauth.clientMode')) {
+            [
+                [ClientMetadataRoutePath, () => AtProtoOAuth.getClientMetadata()],
+                [JwksRoutePath, () => AtProtoOAuth.getJwks()],
+            ].forEach(([routePath, getDocument]) => {
+                this.webServer.addRoute({
+                    method: 'GET',
+                    path: new RegExp(`^${_.escapeRegExp(routePath)}$`),
+                    handler: (req, resp) => this._jsonHandler(resp, getDocument()),
+                });
+            });
+        }
+
         return BrowserHandoff.registerRoutes(cb);
+    }
+
+    //  |document| is null until AT support has started
+    _jsonHandler(resp, document) {
+        if (!document) {
+            return this.webServer.serviceUnavailable(resp);
+        }
+        return this.webServer.ok(resp, JSON.stringify(document), {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=600',
+        });
     }
 
     _callbackHandler(req, resp) {

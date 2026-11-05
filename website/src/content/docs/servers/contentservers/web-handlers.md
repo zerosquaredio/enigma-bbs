@@ -11,6 +11,7 @@ Web handlers provide a way to easily add additional _routes_ to your [Web Server
 * System General: Serves user avatars.
 * NodeInfo2: Handles [NodeInfo2](https://github.com/jaywink/nodeinfo2) requests (`/.well-known/x-nodeinfo2`), and serves [NodeInfo](https://nodeinfo.diaspora.software/) 2.0 and 2.1 (found through `/.well-known/nodeinfo`). The `activeHalfyear`, `activeMonth` and (NodeInfo2 only) `activeWeek` counts under `usage.users` are the distinct users whose last login was within 180, 30 and 7 days, never more than the total, which is the live number of users (inactive or disabled users count, as they do in the total). Usage counts are cached for 10 minutes.
 * ActivityPub:
+* [AT Protocol](./atproto-handler.md): Lets callers log in with a Bluesky or other AT Protocol account.
 
 ### Building Your Own
 

@@ -435,6 +435,10 @@ module.exports = () => {
                     systemGeneral: {
                         enabled: false,
                     },
+                    //  AT login routes; also needs atProto.enabled
+                    atProto: {
+                        enabled: false,
+                    },
                     nodeInfo2: {
                         enabled: false,
                     },
@@ -524,6 +528,7 @@ module.exports = () => {
                     otpRegGet: { windowMs: 10 * 60 * 1000, maxRequests: 10 },
                     otpRegPost: { windowMs: 10 * 60 * 1000, maxRequests: 5 },
                     handoffGet: { windowMs: 10 * 60 * 1000, maxRequests: 20 },
+                    atProtoCallback: { windowMs: 10 * 60 * 1000, maxRequests: 20 },
                 },
 
                 http: {
@@ -646,6 +651,8 @@ module.exports = () => {
                 //  only this DID may become the first user (root, a sysop)
                 //  through AT login; empty means none can
                 rootDid: '',
+                //  how long the login screen waits for approval in a browser
+                handoffTimeoutSeconds: 5 * 60,
             },
         },
 

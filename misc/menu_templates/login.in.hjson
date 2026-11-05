@@ -92,6 +92,21 @@
                                         data: feedback
                                     }
                                     */
+
+                                    //
+                                    //  Log in with a Bluesky (AT Protocol) account. Needs
+                                    //  atProto.enabled, the web server, and
+                                    //  contentServers.web.handlers.atProto.enabled. Only
+                                    //  offered on secure connections (SSH, wss://).
+                                    //
+                                    //  See docs for more information
+                                    //
+                                    /*
+                                    {
+                                        text: bluesky login
+                                        data: atproto
+                                    }
+                                    */
                                     {
                                         text: log off
                                         data: logoff
@@ -118,12 +133,80 @@
                                     action: @menu:preAuthFeedback
                                 }
                                 {
+                                    value: { navSelect: "atproto" }
+                                    action: @menu:atprotoLogin
+                                }
+                                {
                                     value: { navSelect: "logoff" }
                                     action: @menu:logoff
                                 }
                             ]
                         }
                     }
+                }
+            }
+        }
+
+        //
+        //  Log in with a Bluesky (AT Protocol) account: enter a handle, approve
+        //  in a web browser, and continue as for a password login. To offer it
+        //  to SSH callers who connect as a new user name (e.g. "new"), point
+        //  sshConnectedNewUser's |next| at matrix or here.
+        //
+        atprotoLogin: {
+            desc: Bluesky Login
+            module: atproto_login
+            art: ATPROTOLOGIN
+            next: [
+                {
+                    acs: AR2
+                    next: loginTwoFactorAuthOTPLoop
+                }
+                {
+                    next: fullLoginSequenceLoginArt
+                }
+            ]
+            config: {
+                //  Only core/acs.js hasMenuModuleAccess() gates a menu, and it
+                //  reads config.acs: AT login needs a secure connection
+                acs: SC
+                tooNodeMenu: loginAttemptTooNode
+                inactive: loginAttemptAccountInactive
+                disabled: loginAttemptAccountDisabled
+                locked: loginAttemptAccountLocked
+            }
+            form: {
+                0: {
+                    mci: {
+                        ET1: {
+                            argName: handle
+                            maxLength: 253
+                            width: 40
+                            focus: true
+                            submit: true
+                        }
+                        MT2: {
+                            argName: status
+                            mode: preview
+                            width: 76
+                            height: 8
+                            focus: false
+                        }
+                    }
+                    submit: {
+                        *: [
+                            {
+                                value: { handle: null }
+                                action: @method:startLogin
+                            }
+                        ]
+                    }
+                    actionKeys: [
+                        {
+                            keys: [ "escape" ]
+                            action: @method:cancel
+                        }
+                    ]
                 }
             }
         }

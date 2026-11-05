@@ -355,6 +355,7 @@ describe('config schema against config_default.js', () => {
             'archives.archivers',
             'atProto.enabled',
             'atProto.login.allowNewUsers',
+            'atProto.login.handoffTimeoutSeconds',
             'atProto.login.rootDid',
             'atProto.login.secureConnectionsOnly',
             'atProto.oauth.clientMode',

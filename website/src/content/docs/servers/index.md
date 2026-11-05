@@ -44,7 +44,9 @@ Two further pieces build on the web server rather than standing alone: the
 [REST API](contentservers/rest-api.md), and the
 [web handlers](contentservers/web-handlers.md) that add routes — including
 [WebFinger](contentservers/webfinger-handler.md) and
-[ActivityPub](contentservers/activitypub-handler.md) for Fediverse federation.
+[ActivityPub](contentservers/activitypub-handler.md) for Fediverse federation,
+and [AT Protocol](contentservers/atproto-handler.md) for logging in with a
+Bluesky account.
 
 ## Which Do I Need?
 

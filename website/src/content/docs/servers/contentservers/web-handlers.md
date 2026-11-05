@@ -11,6 +11,7 @@ Web handlers provide a way to easily add additional _routes_ to your [Web Server
 * System General: Serves user avatars.
 * NodeInfo2: Handles [NodeInfo2](https://github.com/jaywink/nodeinfo2) requests.
 * ActivityPub:
+* [AT Protocol](./atproto-handler.md): Lets callers log in with a Bluesky or other AT Protocol account.
 
 ### Building Your Own
 

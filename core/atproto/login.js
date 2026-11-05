@@ -66,6 +66,15 @@ function loginWithDid(client, identity, cb) {
             )
         );
     }
+    //  Checked here as well as at login, so no user is created first
+    if (!User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.AtProto)) {
+        return cb(
+            Errors.AccessDenied(
+                'AT Protocol login is not an allowed login type',
+                ErrorReasons.LoginTypeNotAllowed
+            )
+        );
+    }
     if (!_.isString(did) || !did.startsWith('did:')) {
         return cb(Errors.Invalid('A DID is required'));
     }

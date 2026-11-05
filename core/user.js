@@ -269,8 +269,26 @@ module.exports = class User {
         };
     }
 
+    //  Is |type| (an AuthFactor1Types value) in users.allowedAuthFactor1Types?
+    //  A board that lists only "atproto", say, accepts no password logins.
+    static isAuthFactor1TypeAllowed(type) {
+        const allowed = _.get(Config(), 'users.allowedAuthFactor1Types');
+        return !Array.isArray(allowed) || allowed.includes(type);
+    }
+
     authenticateFactor1(authInfo, cb) {
         const username = authInfo.username;
+        const authType = authInfo.type || User.AuthFactor1Types.Password;
+
+        //  Refused before any lookup, so it never counts as a failed login
+        if (!User.isAuthFactor1TypeAllowed(authType)) {
+            return cb(
+                Errors.AccessDenied(
+                    `Login type "${authType}" is not allowed`,
+                    ErrorReasons.LoginTypeNotAllowed
+                )
+            );
+        }
         const self = this;
         const tempAuthInfo = {};
 

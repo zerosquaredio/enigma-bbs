@@ -100,6 +100,9 @@ exports.ErrorReasons = {
     Inactive: 'INACTIVE',
     Locked: 'LOCKED',
     NotAllowed: 'NOTALLOWED',
+    //  the login type (password, SSH key, ...) is not in
+    //  users.allowedAuthFactor1Types
+    LoginTypeNotAllowed: 'LOGINTYPENOTALLOWED',
     Invalid2FA: 'INVALID2FA',
 
     ValueTooShort: 'VALUE_TOO_SHORT',

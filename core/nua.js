@@ -178,6 +178,19 @@ exports.getModule = class NewUserAppModule extends MenuModule {
         };
     }
 
+    initSequence() {
+        //  New users get a password, so there is no applying on a board that
+        //  does not accept password logins (users.allowedAuthFactor1Types)
+        if (!User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.Password)) {
+            this.client.log.info(
+                'New user application refused: password logins not allowed'
+            );
+            const menu = _.get(this, 'menuConfig.config.loginTypeNotAllowed');
+            return menu ? this.gotoMenu(menu, _.noop) : this.prevMenu(_.noop);
+        }
+        return super.initSequence();
+    }
+
     mciReady(mciData, cb) {
         this.standardMCIReadyHandler(mciData, err => {
             if (err) {

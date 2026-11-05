@@ -236,6 +236,7 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
             [ErrorReasons.Disabled]: 'disabled',
             [ErrorReasons.Inactive]: 'inactive',
             [ErrorReasons.Locked]: 'locked',
+            [ErrorReasons.LoginTypeNotAllowed]: 'loginTypeNotAllowed',
         }[err.reasonCode];
         const menu = menuKey && _.get(this, ['menuConfig', 'config', menuKey]);
         if (menu) {

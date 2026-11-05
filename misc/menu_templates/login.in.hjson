@@ -174,6 +174,7 @@
                 inactive: loginAttemptAccountInactive
                 disabled: loginAttemptAccountDisabled
                 locked: loginAttemptAccountLocked
+                loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
             }
             form: {
                 0: {
@@ -233,6 +234,7 @@
                 inactive: loginAttemptAccountInactive
                 disabled: loginAttemptAccountDisabled
                 locked: loginAttemptAccountLocked
+                loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
             }
             form: {
                 0: {
@@ -280,6 +282,20 @@
                 nextTimeout: 2000
             }
             next: logoff
+        }
+
+        //
+        //  The login type used (e.g. password) is not in
+        //  users.allowedAuthFactor1Types. Back to the matrix to pick another.
+        //
+        loginAttemptLoginTypeNotAllowed: {
+            desc: Login Type Not Allowed
+            art: LOGINTYPE
+            config: {
+                cls: true
+                pause: true
+            }
+            next: matrix
         }
 
         loginAttemptAccountDisabled: {

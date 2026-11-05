@@ -451,6 +451,7 @@ describe('config schema against config_default.js', () => {
             'theme.preLogin',
             'theme.timeWarningText',
             'trustedProxies',
+            'users.allowedAuthFactor1Types',
             'users.badUserNames',
             'users.failedLogin.autoUnlockMinutes',
             'users.failedLogin.disconnect',

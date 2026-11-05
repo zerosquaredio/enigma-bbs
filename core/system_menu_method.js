@@ -38,6 +38,13 @@ const handleAuthFailures = (callingMenu, err, cb) => {
         return callingMenu.gotoMenu(callingMenu.menuConfig.config.tooNodeMenu, cb);
     }
 
+    //  e.g. password login on a board that only allows AT login: explain,
+    //  rather than disconnect, so the caller can pick another way in
+    if (ErrorReasons.LoginTypeNotAllowed === err.reasonCode) {
+        const menu = _.get(callingMenu, 'menuConfig.config.loginTypeNotAllowed');
+        return menu ? callingMenu.gotoMenu(menu, cb) : callingMenu.prevMenu(cb);
+    }
+
     //  banned username results in disconnect
     if (ErrorReasons.NotAllowed === err.reasonCode) {
         return logoff(callingMenu, {}, {}, cb);

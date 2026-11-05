@@ -147,6 +147,12 @@ module.exports = {
         items: { type: 'string' },
         description: 'Names nobody may apply for.',
     },
+    'users.allowedAuthFactor1Types': {
+        type: 'array',
+        items: { type: 'string', enum: ['password', 'sshPubKey', 'tlsClientAuth', 'atproto'] },
+        description:
+            'Login types accepted system wide. Without password, password logins and new user applications are refused.',
+    },
     'users.requireActivation': {
         type: 'boolean',
         description: 'New accounts stay inactive until the sysop activates them.',

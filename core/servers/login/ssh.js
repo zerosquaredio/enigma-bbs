@@ -122,6 +122,13 @@ function SSHClient(clientConn, connInfo) {
             );
         };
 
+        //  users.allowedAuthFactor1Types leaves out "password"
+        const passwordLoginNotAllowed = () => {
+            return promptAndTerm(
+                'Password logins are not available on this system.\n(Press any key to continue)'
+            );
+        };
+
         const isSpecialHandleError = err => {
             return [
                 ErrorReasons.AlreadyLoggedIn,
@@ -200,6 +207,12 @@ function SSHClient(clientConn, connInfo) {
             ctx.prompt(interactivePrompt, function retryPrompt(answers) {
                 userLogin(self, username, answers[0] || '', err => {
                     if (err) {
+                        //  only here: a refused key or "password" method falls
+                        //  through to this prompt, where the caller is told
+                        if (ErrorReasons.LoginTypeNotAllowed === err.reasonCode) {
+                            return passwordLoginNotAllowed();
+                        }
+
                         if (isSpecialHandleError(err)) {
                             return handleSpecialError(err, username);
                         }

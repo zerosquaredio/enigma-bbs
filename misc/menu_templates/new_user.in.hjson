@@ -16,6 +16,11 @@
             desc: Applying
             module: nua
             art: NUA
+            config: {
+                //  shown instead when users.allowedAuthFactor1Types
+                //  leaves out "password"
+                loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
+            }
             next: [
                 {
                     //  Initial SysOp does not send feedback to themselves
@@ -129,6 +134,11 @@
             desc: Applying
             module: nua
             art: NUA
+            config: {
+                //  shown instead when users.allowedAuthFactor1Types
+                //  leaves out "password"
+                loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
+            }
             next: newUserFeedbackToSysOpPreamble
             form: {
                 0: {

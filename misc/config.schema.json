@@ -230,6 +230,25 @@
                         "apply"
                     ]
                 },
+                "allowedAuthFactor1Types": {
+                    "description": "Login types accepted system wide. Without password, password logins and new user applications are refused.",
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "password",
+                            "sshPubKey",
+                            "tlsClientAuth",
+                            "atproto"
+                        ]
+                    },
+                    "default": [
+                        "password",
+                        "sshPubKey",
+                        "tlsClientAuth",
+                        "atproto"
+                    ]
+                },
                 "badUserNames": {
                     "description": "Names nobody may apply for.",
                     "type": "array",

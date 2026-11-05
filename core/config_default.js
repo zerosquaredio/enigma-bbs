@@ -115,6 +115,17 @@ module.exports = () => {
 
             newUserNames: ['new', 'apply'], //  Names reserved for applying
 
+            //  Login types accepted system wide: password, sshPubKey,
+            //  tlsClientAuth, atproto. Without "password", password logins
+            //  and new user applications are refused, e.g. for a board where
+            //  callers log in with AT Protocol (Bluesky) only.
+            allowedAuthFactor1Types: [
+                'password',
+                'sshPubKey',
+                'tlsClientAuth',
+                'atproto',
+            ],
+
             badUserNames: [
                 'sysop',
                 'admin',

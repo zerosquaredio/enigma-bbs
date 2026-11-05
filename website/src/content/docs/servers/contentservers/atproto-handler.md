@@ -103,6 +103,22 @@ SSH callers authenticate before they reach the matrix. To offer AT login to SSH 
 
 The login screen uses the `ATPROTOLOGIN` art with two views: `ET1`, where the caller types their handle, and `MT2`, for instructions, the link to open and progress.
 
+### AT-Only Boards
+`users.allowedAuthFactor1Types` lists the login types the board accepts: `password`, `sshPubKey` (SSH keys), `tlsClientAuth` and `atproto`. All four are accepted by default. To have callers log in with AT login only:
+
+```hjson
+users: {
+    allowedAuthFactor1Types: [ "atproto" ]
+}
+```
+
+* Password and SSH key logins are refused everywhere: the login menu, SSH, NNTP and the REST API. A refused login type is not counted as a failed login, so it never locks an account.
+* The new user application ("apply", or SSH as a new user name) is refused too, since it gives new users a password. Callers who chose either are shown the `loginAttemptLoginTypeNotAllowed` menu (the `LOGINTYPE` art), which points them to AT login and returns to the matrix.
+* Menus are not changed for you: remove the `login` and `apply` options from your login matrix, and point `sshConnectedNewUser` at `matrix` or `atprotoLogin` (see [Offering It to Callers](#offering-it-to-callers)).
+* Users who already have an SSH key or password cannot use it while its type is left out; add the type back to let them.
+
+Leaving `atproto` out turns AT login off the same way, without changing `atProto.enabled`.
+
 ## Routes
 | Route | Purpose |
 |-------|---------|

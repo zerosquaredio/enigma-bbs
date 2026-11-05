@@ -637,6 +637,16 @@ module.exports = () => {
                 //  server on 127.0.0.1
                 clientMode: 'loopback',
             },
+
+            login: {
+                //  create a local user the first time an AT identity logs in
+                allowNewUsers: true,
+                //  offer AT login only over SSH, wss://, or TLS; never telnet
+                secureConnectionsOnly: true,
+                //  only this DID may become the first user (root, a sysop)
+                //  through AT login; empty means none can
+                rootDid: '',
+            },
         },
 
         infoExtractUtils: {

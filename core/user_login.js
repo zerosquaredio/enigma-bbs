@@ -57,6 +57,7 @@ function userLogin(client, username, password, options, cb) {
 
     authInfo.type = options.authType || User.AuthFactor1Types.Password;
     authInfo.pubKey = options.ctx;
+    authInfo.did = options.did; //  AT login only
 
     client.user.authenticateFactor1(authInfo, err => {
         if (err) {

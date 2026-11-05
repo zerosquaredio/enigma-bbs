@@ -74,6 +74,7 @@ module.exports = class User {
                 UserProps.PassPbkdf2Dk,
                 UserProps.SSHPubKey,
                 UserProps.PassHashParams,
+                UserProps.AtProtoDid,
             ],
         };
     }
@@ -262,6 +263,9 @@ module.exports = class User {
             SSHPubKey: 'sshPubKey',
             Password: 'password',
             TLSClient: 'tlsClientAuth',
+            //  AT Protocol (Bluesky) login. The DID is proven by OAuth before
+            //  this point; see core/atproto/login.js
+            AtProto: 'atproto',
         };
     }
 
@@ -400,6 +404,16 @@ module.exports = class User {
             return callback(null);
         };
 
+        //  |authInfo.did| has already been proven by an AT OAuth login; all
+        //  that is left is to check it is the one bound to this user
+        const validateAtProtoDid = (props, callback) => {
+            const storedDid = props[UserProps.AtProtoDid];
+            if (!storedDid || !_.isString(authInfo.did) || storedDid !== authInfo.did) {
+                return callback(Errors.AccessDenied('AT identity does not match'));
+            }
+            return callback(null);
+        };
+
         async.waterfall(
             [
                 function fetchUserId(callback) {
@@ -424,6 +438,9 @@ module.exports = class User {
                 function validatePassOrPubKey(props, callback) {
                     if (User.AuthFactor1Types.SSHPubKey === authInfo.type) {
                         return validatePubKey(props, callback);
+                    }
+                    if (User.AuthFactor1Types.AtProto === authInfo.type) {
+                        return validateAtProtoDid(props, callback);
                     }
                     return validatePassword(props, callback);
                 },

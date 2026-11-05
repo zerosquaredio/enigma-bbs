@@ -523,6 +523,7 @@ module.exports = () => {
                     pwResetPost: { windowMs: 10 * 60 * 1000, maxRequests: 5 },
                     otpRegGet: { windowMs: 10 * 60 * 1000, maxRequests: 10 },
                     otpRegPost: { windowMs: 10 * 60 * 1000, maxRequests: 5 },
+                    handoffGet: { windowMs: 10 * 60 * 1000, maxRequests: 20 },
                 },
 
                 http: {

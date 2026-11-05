@@ -1103,6 +1103,23 @@
                                         "^_": true
                                     },
                                     "additionalProperties": false
+                                },
+                                "handoffGet": {
+                                    "type": "object",
+                                    "properties": {
+                                        "windowMs": {
+                                            "type": "number",
+                                            "default": 600000
+                                        },
+                                        "maxRequests": {
+                                            "type": "number",
+                                            "default": 20
+                                        }
+                                    },
+                                    "patternProperties": {
+                                        "^_": true
+                                    },
+                                    "additionalProperties": false
                                 }
                             },
                             "patternProperties": {

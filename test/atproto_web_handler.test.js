@@ -94,6 +94,8 @@ describe('AT login web handler', () => {
         saved = {
             isReady: AtProtoOAuth.isReady,
             handleCallback: AtProtoOAuth.handleCallback,
+            getClientMetadata: AtProtoOAuth.getClientMetadata,
+            getJwks: AtProtoOAuth.getJwks,
         };
     });
 
@@ -197,5 +199,60 @@ describe('AT login web handler', () => {
         AtProtoOAuth.isReady = () => false;
         const resp = await request(handler, '/_enig/atproto/callback?code=c');
         assert.equal(resp.statusCode, 503);
+    });
+
+    describe('in public client mode', () => {
+        let routeFor;
+
+        beforeEach(async () => {
+            testConfig.atProto.oauth.clientMode = 'public';
+            webServer = makeFakeWebServer();
+            const inst = new Handler.getModule();
+            await call(inst.init.bind(inst), webServer);
+            routeFor = url => webServer.routes.find(r => r.path.test(url));
+        });
+
+        afterEach(() => {
+            testConfig.atProto.oauth.clientMode = 'loopback';
+            AtProtoOAuth.getClientMetadata = saved.getClientMetadata;
+            AtProtoOAuth.getJwks = saved.getJwks;
+        });
+
+        it('serves the client metadata and public keys as JSON', async () => {
+            AtProtoOAuth.getClientMetadata = () => ({ client_id: 'https://x/meta' });
+            AtProtoOAuth.getJwks = () => ({ keys: [{ kid: 'k1' }] });
+
+            const meta = await request(
+                routeFor('/_enig/atproto/client-metadata.json').handler,
+                '/_enig/atproto/client-metadata.json'
+            );
+            assert.equal(meta.statusCode, 200);
+            assert.equal(meta.headers['Content-Type'], 'application/json');
+            assert.deepEqual(JSON.parse(meta.body), { client_id: 'https://x/meta' });
+
+            const jwks = await request(
+                routeFor('/_enig/atproto/jwks.json').handler,
+                '/_enig/atproto/jwks.json'
+            );
+            assert.deepEqual(JSON.parse(jwks.body), { keys: [{ kid: 'k1' }] });
+        });
+
+        it('is unavailable until AT support has started', async () => {
+            AtProtoOAuth.getClientMetadata = () => null;
+            const resp = await request(
+                routeFor('/_enig/atproto/client-metadata.json').handler,
+                '/_enig/atproto/client-metadata.json'
+            );
+            assert.equal(resp.statusCode, 503);
+        });
+    });
+
+    it('serves no metadata or keys in loopback mode', () => {
+        assert.ok(!webServer.routes.some(r => r.path.test('/_enig/atproto/jwks.json')));
+        assert.ok(
+            !webServer.routes.some(r =>
+                r.path.test('/_enig/atproto/client-metadata.json')
+            )
+        );
     });
 });

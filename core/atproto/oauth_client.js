@@ -5,11 +5,23 @@
 const Config = require('../config').get;
 const { Errors } = require('../enig_error');
 const { dbs } = require('../database');
+const { getBaseUrl } = require('../web_util');
 const { createStateStore, createSessionStore } = require('./store');
-const { OAuthScope, ClientModes, CallbackRoutePath, HandleInvalid } = require('./const');
+const {
+    OAuthScope,
+    ClientModes,
+    CallbackRoutePath,
+    ClientMetadataRoutePath,
+    JwksRoutePath,
+    SigningKeyFile,
+    SigningAlg,
+    HandleInvalid,
+} = require('./const');
 
 //  deps
 const _ = require('lodash');
+const fs = require('fs');
+const paths = require('path');
 
 //
 //  Callback-style adapter around @atproto/oauth-client-node.
@@ -29,6 +41,8 @@ exports.startup = startup;
 exports.isEnabled = isEnabled;
 exports.isReady = isReady;
 exports.buildClientMetadata = buildClientMetadata;
+exports.getClientMetadata = getClientMetadata;
+exports.getJwks = getJwks;
 exports.resolveIdentity = resolveIdentity;
 exports.authorize = authorize;
 exports.handleCallback = handleCallback;
@@ -63,26 +77,44 @@ function startup(cb) {
         return cb(err);
     }
 
+    const isPublic = ClientModes.Public === _.get(Config(), 'atProto.oauth.clientMode');
+
     return settle(
         () =>
-            loadLibrary().then(lib => {
-                client = new lib.NodeOAuthClient({
-                    clientMetadata,
-                    stateStore: createStateStore(dbs.atproto),
-                    sessionStore: createSessionStore(dbs.atproto),
-                    //  ENiGMA½ is a single process, so an in-process lock is
-                    //  enough to keep two token refreshes from racing
-                    requestLock: lib.requestLocalLock,
-                });
-            }),
+            loadLibrary().then(lib =>
+                (isPublic ? loadSigningKey(lib) : Promise.resolve(null)).then(key => {
+                    client = new lib.NodeOAuthClient({
+                        clientMetadata,
+                        keyset: key ? [key] : undefined,
+                        stateStore: createStateStore(dbs.atproto),
+                        sessionStore: createSessionStore(dbs.atproto),
+                        //  ENiGMA½ is a single process, so an in-process lock
+                        //  is enough to keep two token refreshes from racing
+                        requestLock: lib.requestLocalLock,
+                    });
+                })
+            ),
         cb
     );
+}
+
+//  The metadata and public keys the web handler serves in public mode, or
+//  null until AT support has started
+function getClientMetadata() {
+    return client ? client.clientMetadata : null;
+}
+
+function getJwks() {
+    return client ? client.jwks : null;
 }
 
 function buildClientMetadata() {
     const config = Config();
     const clientMode = _.get(config, 'atProto.oauth.clientMode');
 
+    if (ClientModes.Public === clientMode) {
+        return buildPublicClientMetadata(config);
+    }
     if (ClientModes.Loopback !== clientMode) {
         throw Errors.Invalid(`Unsupported atProto.oauth.clientMode "${clientMode}"`);
     }
@@ -109,6 +141,66 @@ function buildClientMetadata() {
         application_type: 'native',
         dpop_bound_access_tokens: true,
     };
+}
+
+//
+//  A public client is identified by the URL of its metadata document, served
+//  by the BBS itself. Every URL comes from the web server's base URL (as the
+//  browser handoff links do), which must be https://: behind a proxy or the
+//  hub, set contentServers.web.overrideUrlPrefix to the public address.
+//
+function buildPublicClientMetadata(config) {
+    const base = getBaseUrl(config).replace(/\/+$/, '');
+    if (!base.startsWith('https://')) {
+        throw Errors.Invalid(
+            `Public AT Protocol login needs an https:// address, not "${base}"; set contentServers.web.overrideUrlPrefix`
+        );
+    }
+
+    return {
+        client_id: `${base}${ClientMetadataRoutePath}`,
+        client_name: _.get(config, 'general.boardName'),
+        client_uri: base,
+        redirect_uris: [`${base}${CallbackRoutePath}`],
+        scope: OAuthScope,
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        application_type: 'web',
+        token_endpoint_auth_method: 'private_key_jwt',
+        token_endpoint_auth_signing_alg: SigningAlg,
+        dpop_bound_access_tokens: true,
+        jwks_uri: `${base}${JwksRoutePath}`,
+    };
+}
+
+//
+//  Public mode's signing key: loaded from paths.security, or made and saved
+//  there (readable by the BBS's user only) on first start. Losing it only
+//  means making a new one; members' sessions refresh against the new key.
+//
+function loadSigningKey(lib) {
+    const keyPath = paths.join(_.get(Config(), 'paths.security'), SigningKeyFile);
+
+    return fs.promises.readFile(keyPath, 'utf8').then(
+        text => lib.JoseKey.fromJWK(JSON.parse(text)),
+        err => {
+            if ('ENOENT' !== err.code) {
+                throw err;
+            }
+            return lib.JoseKey.generate([SigningAlg], `enig-${Date.now()}`).then(key =>
+                fs.promises
+                    .mkdir(paths.dirname(keyPath), { recursive: true })
+                    .then(() =>
+                        fs.promises.writeFile(
+                            keyPath,
+                            JSON.stringify(key.privateJwk, null, 4),
+                            { mode: 0o600, flag: 'wx' }
+                        )
+                    )
+                    .then(() => key)
+            );
+        }
+    );
 }
 
 //

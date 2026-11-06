@@ -7,8 +7,6 @@ const { Errors, ErrorReasons } = require('../enig_error');
 const User = require('../user');
 const UserProps = require('../user_property');
 const { validateUserNameAvail } = require('../system_view_validate');
-const { getISOTimestampString } = require('../database');
-const theme = require('../theme');
 const AtProtoOAuth = require('./oauth_client');
 
 //  deps
@@ -18,16 +16,26 @@ const _ = require('lodash');
 
 //
 //  Log a terminal session in as the local user bound to an AT Protocol
-//  identity, creating that user on first login.
+//  identity, and create that user from the new user application.
 //
 //  |identity.did| must already be proven by an AT OAuth login (see
 //  oauth_client.js handleCallback()); nothing here checks it again with the
 //  account host. Users are found by DID only, never by handle: handles can
 //  change hands, DIDs can't.
 //
+//  A first AT login does not create a user by itself: the login screen
+//  checks checkNewUserAllowed(), keeps the proven identity on the session
+//  (setPendingIdentity()), and sends the caller to the new user
+//  application, which calls createUserForDid() on submit.
+//
 
 exports.loginWithDid = loginWithDid;
 exports.findUserIdByDid = findUserIdByDid;
+exports.checkNewUserAllowed = checkNewUserAllowed;
+exports.createUserForDid = createUserForDid;
+exports.setPendingIdentity = setPendingIdentity;
+exports.getPendingIdentity = getPendingIdentity;
+exports.clearPendingIdentity = clearPendingIdentity;
 exports.deriveUsername = deriveUsername;
 exports.usernameCandidates = usernameCandidates;
 
@@ -41,6 +49,9 @@ let userLogin = (...args) => require('../user_login').userLogin(...args);
 //  Numbered alternatives tried when the name from a handle is taken
 const MaxNumberedCandidates = 98;
 
+//  How long an approved identity may wait on the application form
+const PendingIdentityMaxAgeMs = 30 * 60 * 1000;
+
 function loginSettings() {
     return Object.assign(
         { allowNewUsers: true, secureConnectionsOnly: true, rootDid: '' },
@@ -48,43 +59,48 @@ function loginSettings() {
     );
 }
 
+//  Refusals common to logging in and applying
+function checkCanUse(client, did) {
+    if (!AtProtoOAuth.isEnabled()) {
+        return Errors.AccessDenied(
+            'AT Protocol login is not enabled',
+            ErrorReasons.NotEnabled
+        );
+    }
+    if (!User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.AtProto)) {
+        return Errors.AccessDenied(
+            'AT Protocol login is not an allowed login type',
+            ErrorReasons.LoginTypeNotAllowed
+        );
+    }
+    if (!_.isString(did) || !did.startsWith('did:')) {
+        return Errors.Invalid('A DID is required');
+    }
+    if (
+        loginSettings().secureConnectionsOnly &&
+        true !== _.get(client, 'session.isSecure')
+    ) {
+        return Errors.AccessDenied(
+            'AT Protocol login needs a secure connection',
+            ErrorReasons.NotAllowed
+        );
+    }
+    return null;
+}
+
 //
 //  |identity| is { did, handle }; |handle| is the verified handle, or null.
 //  Calls back as userLogin() does: on success |client.user| is logged in
-//  (or awaiting 2FA, if the user has it on).
+//  (or awaiting 2FA, if the user has it on). With no user bound to the DID,
+//  calls back with ErrorReasons.DoesNotExist: the caller may apply.
 //
 function loginWithDid(client, identity, cb) {
     const did = _.get(identity, 'did');
     const handle = _.get(identity, 'handle') || null;
-    const settings = loginSettings();
 
-    if (!AtProtoOAuth.isEnabled()) {
-        return cb(
-            Errors.AccessDenied(
-                'AT Protocol login is not enabled',
-                ErrorReasons.NotEnabled
-            )
-        );
-    }
-    //  Checked here as well as at login, so no user is created first
-    if (!User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.AtProto)) {
-        return cb(
-            Errors.AccessDenied(
-                'AT Protocol login is not an allowed login type',
-                ErrorReasons.LoginTypeNotAllowed
-            )
-        );
-    }
-    if (!_.isString(did) || !did.startsWith('did:')) {
-        return cb(Errors.Invalid('A DID is required'));
-    }
-    if (settings.secureConnectionsOnly && true !== _.get(client, 'session.isSecure')) {
-        return cb(
-            Errors.AccessDenied(
-                'AT Protocol login needs a secure connection',
-                ErrorReasons.NotAllowed
-            )
-        );
+    const refused = checkCanUse(client, did);
+    if (refused) {
+        return cb(refused);
     }
 
     async.waterfall(
@@ -93,10 +109,15 @@ function loginWithDid(client, identity, cb) {
                 return findUserIdByDid(did, callback);
             },
             (userId, callback) => {
-                if (userId) {
-                    return User.getUserName(userId, callback);
+                if (!userId) {
+                    return callback(
+                        Errors.DoesNotExist(
+                            'No user is linked to this AT identity',
+                            ErrorReasons.DoesNotExist
+                        )
+                    );
                 }
-                return createUser(client, { did, handle }, settings, callback);
+                return User.getUserName(userId, callback);
             },
             (username, callback) => {
                 return userLogin(
@@ -143,13 +164,21 @@ function findUserIdByDid(did, cb) {
     });
 }
 
-function createUser(client, { did, handle }, settings, cb) {
-    const config = Config();
+//
+//  May |did| apply for a new user? Checked before the application is shown,
+//  so nobody fills in a form that can't succeed, and again on submit.
+//
+function checkNewUserAllowed(client, did, cb) {
+    const refused = checkCanUse(client, did);
+    if (refused) {
+        return cb(refused);
+    }
 
-    if (!settings.allowNewUsers || true === _.get(config, 'general.closedSystem')) {
+    const settings = loginSettings();
+    if (!settings.allowNewUsers || true === _.get(Config(), 'general.closedSystem')) {
         return cb(
             Errors.AccessDenied(
-                'No user is linked to this AT identity',
+                'This board is not accepting new users',
                 ErrorReasons.NotAllowed
             )
         );
@@ -158,11 +187,22 @@ function createUser(client, { did, handle }, settings, cb) {
     async.waterfall(
         [
             callback => {
+                return findUserIdByDid(did, callback);
+            },
+            (userId, callback) => {
+                if (userId) {
+                    return callback(
+                        Errors.AccessDenied(
+                            'A user is already linked to this AT identity',
+                            ErrorReasons.AlreadyThere
+                        )
+                    );
+                }
                 return User.getUserCount(callback);
             },
             (userCount, callback) => {
                 //  The first user is root and a sysop, so a fresh board must
-                //  not hand that to whoever logs in first
+                //  not hand that to whoever applies first
                 if (0 === userCount && did !== settings.rootDid) {
                     return callback(
                         Errors.AccessDenied(
@@ -171,56 +211,74 @@ function createUser(client, { did, handle }, settings, cb) {
                         )
                     );
                 }
-                return deriveUsername(handle, callback);
-            },
-            (username, callback) => {
-                const newUser = new User();
-                newUser.username = username;
-                newUser.properties = {
-                    [UserProps.AtProtoDid]: did,
-                    [UserProps.AccountCreated]: getISOTimestampString(),
-                    //  as for other new users: no backlog of years of mail
-                    [UserProps.NewScanMinTimestamp]: getISOTimestampString(),
-                    [UserProps.TermHeight]: _.get(client, 'term.termHeight', 25),
-                    [UserProps.TermWidth]: _.get(client, 'term.termWidth', 80),
-                };
-                if (handle) {
-                    newUser.properties[UserProps.AtProtoHandle] = handle;
-                }
-
-                const defaultTheme = _.get(config, 'theme.default');
-                newUser.properties[UserProps.ThemeId] =
-                    '*' === defaultTheme ? theme.getRandomTheme() : defaultTheme;
-
-                //  ENiGMA½ always stores a password. Nobody knows this one, so
-                //  password login stays closed unless the user sets their own.
-                const createUserInfo = {
-                    password: crypto.randomBytes(32).toString('hex'),
-                    sessionId: _.get(client, 'session.uniqueId'),
-                };
-
-                newUser.create(createUserInfo, err => {
-                    if (err) {
-                        return callback(err);
-                    }
-
-                    client.log.info(
-                        { username, userId: newUser.userId, did },
-                        `New user "${username}" created by AT login`
-                    );
-
-                    if (newUser.isSysOp()) {
-                        config.general.sysOp = {
-                            username,
-                            properties: newUser.properties,
-                        };
-                    }
-                    return callback(null, username);
-                });
+                return callback(null);
             },
         ],
-        cb
+        err => cb(err || null)
     );
+}
+
+//
+//  Create |newUser| (a User with its username and application properties
+//  set, not yet saved) bound to |identity|.
+//
+function createUserForDid(client, identity, newUser, cb) {
+    const { did, handle } = identity;
+
+    checkNewUserAllowed(client, did, err => {
+        if (err) {
+            return cb(err);
+        }
+
+        newUser.properties[UserProps.AtProtoDid] = did;
+        if (handle) {
+            newUser.properties[UserProps.AtProtoHandle] = handle;
+        }
+
+        //  ENiGMA½ always stores a password. Nobody knows this one, so
+        //  password login stays closed unless the user sets their own.
+        const createUserInfo = {
+            password: crypto.randomBytes(32).toString('hex'),
+            sessionId: _.get(client, 'session.uniqueId'),
+        };
+
+        newUser.create(createUserInfo, err => {
+            if (err) {
+                return cb(err);
+            }
+
+            client.log.info(
+                { username: newUser.username, userId: newUser.userId, did },
+                `New user "${newUser.username}" created by AT login`
+            );
+            return cb(null);
+        });
+    });
+}
+
+//
+//  The identity the caller just proved, kept on their session (never in
+//  menu arguments, which come from configuration) until they apply.
+//
+function setPendingIdentity(client, identity) {
+    client.atProtoPendingIdentity = {
+        did: identity.did,
+        handle: identity.handle || null,
+        provenAt: Date.now(),
+    };
+}
+
+//  The pending identity, or null if there is none or it is too old
+function getPendingIdentity(client) {
+    const pending = client.atProtoPendingIdentity;
+    if (!pending || Date.now() - pending.provenAt > PendingIdentityMaxAgeMs) {
+        return null;
+    }
+    return { did: pending.did, handle: pending.handle };
+}
+
+function clearPendingIdentity(client) {
+    delete client.atProtoPendingIdentity;
 }
 
 //

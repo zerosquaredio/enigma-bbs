@@ -6,6 +6,7 @@ const Database = require('better-sqlite3');
 const configModule = require('../core/config.js');
 const dbModule = require('../core/database.js');
 const Events = require('../core/events.js');
+const { ErrorReasons } = require('../core/enig_error.js');
 
 let testConfig;
 const baseConfig = () => ({
@@ -141,10 +142,26 @@ describe('AT login', () => {
         return call(AtProtoLogin.loginWithDid, client, identity).then(() => client);
     };
 
+    //
+    //  What the new user application does for an AT applicant: create the
+    //  user (|username|, or one suggested from the handle) bound to the DID,
+    //  then log in
+    //
+    const applyAndLogin = async (identity, { username, clientOptions } = {}) => {
+        const client = makeClient(clientOptions);
+        const newUser = new User();
+        newUser.username =
+            username || (await call(AtProtoLogin.deriveUsername, identity.handle));
+        newUser.properties = { [UserProps.RealName]: 'Applicant' };
+        await call(AtProtoLogin.createUserForDid, client, identity, newUser);
+        await call(AtProtoLogin.loginWithDid, client, identity);
+        return client;
+    };
+
     //  The board's first user is root, and only rootDid may claim it
     const withRootUser = async () => {
         testConfig.atProto.login.rootDid = RootDid;
-        return login({ did: RootDid, handle: 'sysop.example.com' });
+        return applyAndLogin({ did: RootDid, handle: 'sysop.example.com' });
     };
 
     const groupsOf = userId =>
@@ -154,6 +171,8 @@ describe('AT login', () => {
             )
             .all(userId)
             .map(r => r.group_name);
+
+    const userCount = () => db.prepare('SELECT COUNT(*) AS n FROM user').get().n;
 
     describe('refusals', () => {
         it('refuses when AT Protocol support is off', async () => {
@@ -176,9 +195,9 @@ describe('AT login', () => {
         it('allows an insecure connection when the sysop turns the check off', async () => {
             await withRootUser();
             testConfig.atProto.login.secureConnectionsOnly = false;
-            const client = await login(
+            const client = await applyAndLogin(
                 { did: 'did:plc:alice', handle: 'alice.test' },
-                { isSecure: false }
+                { clientOptions: { isSecure: false } }
             );
             assert.equal(client.user.username, 'alice');
         });
@@ -188,21 +207,53 @@ describe('AT login', () => {
         });
     });
 
+    describe('an account with no user', () => {
+        beforeEach(withRootUser);
+
+        it('is reported as having no user, and nothing is created', async () => {
+            await assert.rejects(login({ did: 'did:plc:alice', handle: 'alice.test' }), {
+                reasonCode: ErrorReasons.DoesNotExist,
+            });
+            assert.equal(userCount(), 1);
+        });
+
+        it('may apply when the board takes new users', async () => {
+            await call(AtProtoLogin.checkNewUserAllowed, makeClient(), 'did:plc:alice');
+        });
+
+        it('may not apply when the sysop turns off new users', async () => {
+            testConfig.atProto.login.allowNewUsers = false;
+            await assert.rejects(
+                call(AtProtoLogin.checkNewUserAllowed, makeClient(), 'did:plc:alice'),
+                { message: /not accepting new users/ }
+            );
+        });
+
+        it('may not apply on a closed system', async () => {
+            testConfig.general.closedSystem = true;
+            await assert.rejects(
+                call(AtProtoLogin.checkNewUserAllowed, makeClient(), 'did:plc:alice'),
+                { message: /not accepting new users/ }
+            );
+        });
+    });
+
     describe('the first user', () => {
         it('cannot be created by AT login when rootDid is empty', async () => {
-            await assert.rejects(login({ did: RootDid, handle: 'sysop.example.com' }), {
-                message: /rootDid/,
-            });
-            assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user').get().n, 0);
+            await assert.rejects(
+                applyAndLogin({ did: RootDid, handle: 'sysop.example.com' }),
+                {
+                    message: /rootDid/,
+                }
+            );
+            assert.equal(userCount(), 0);
         });
 
         it('cannot be claimed by any DID other than rootDid', async () => {
             testConfig.atProto.login.rootDid = RootDid;
             await assert.rejects(
-                login({ did: 'did:plc:mallory', handle: 'mallory.test' }),
-                {
-                    message: /rootDid/,
-                }
+                applyAndLogin({ did: 'did:plc:mallory', handle: 'mallory.test' }),
+                { message: /rootDid/ }
             );
         });
 
@@ -214,48 +265,38 @@ describe('AT login', () => {
         });
     });
 
-    describe('new users', () => {
+    describe('applicants', () => {
         beforeEach(withRootUser);
 
-        it('are created on first login, named after the handle and bound to the DID', async () => {
-            const client = await login({
-                did: 'did:plc:alice',
-                handle: 'alice.bsky.social',
-            });
-            assert.equal(client.user.username, 'alice');
+        it('are created with the username they chose, bound to the DID', async () => {
+            const client = await applyAndLogin(
+                { did: 'did:plc:alice', handle: 'alice.bsky.social' },
+                { username: 'AliceInChains' }
+            );
+            assert.equal(client.user.username, 'AliceInChains');
             assert.equal(client.user.isAuthenticated(), true);
             assert.equal(client.user.getProperty(UserProps.AtProtoDid), 'did:plc:alice');
             assert.equal(
                 client.user.getProperty(UserProps.AtProtoHandle),
                 'alice.bsky.social'
             );
+            assert.equal(client.user.getProperty(UserProps.RealName), 'Applicant');
             assert.deepEqual(groupsOf(client.user.userId), ['users']);
         });
 
         it('log in through the atproto login type with their DID', async () => {
-            await login({ did: 'did:plc:alice', handle: 'alice.bsky.social' });
+            await applyAndLogin({ did: 'did:plc:alice', handle: 'alice.bsky.social' });
             assert.deepEqual(logins.pop(), {
                 username: 'alice',
                 options: { authType: 'atproto', did: 'did:plc:alice' },
             });
         });
 
-        it('get a numbered name when the handle name is taken', async () => {
-            await login({ did: 'did:plc:alice1', handle: 'alice.bsky.social' });
-            const client = await login({
-                did: 'did:plc:alice2',
-                handle: 'alice.example.com',
-            });
-            assert.equal(client.user.username, 'alice2');
-        });
-
-        it('get a generated name when the handle is not known', async () => {
-            const client = await login({ did: 'did:plc:anon', handle: null });
-            assert.match(client.user.username, /^atuser\d{5}$/);
-        });
-
         it('cannot log in with the password they never chose', async () => {
-            const client = await login({ did: 'did:plc:alice', handle: 'alice.test' });
+            const client = await applyAndLogin({
+                did: 'did:plc:alice',
+                handle: 'alice.test',
+            });
             const other = new User();
             await assert.rejects(
                 call(other.authenticateFactor1.bind(other), {
@@ -266,18 +307,26 @@ describe('AT login', () => {
             );
         });
 
-        it('are refused when the sysop turns off new users', async () => {
-            testConfig.atProto.login.allowNewUsers = false;
-            await assert.rejects(login({ did: 'did:plc:alice', handle: 'alice.test' }), {
-                message: /No user is linked/,
-            });
+        it('cannot apply twice for one DID', async () => {
+            await applyAndLogin({ did: 'did:plc:alice', handle: 'alice.test' });
+            await assert.rejects(
+                applyAndLogin(
+                    { did: 'did:plc:alice', handle: 'alice.test' },
+                    { username: 'alice-again' }
+                ),
+                { message: /already linked/ }
+            );
         });
 
-        it('are refused on a closed system', async () => {
-            testConfig.general.closedSystem = true;
-            await assert.rejects(login({ did: 'did:plc:alice', handle: 'alice.test' }), {
-                message: /No user is linked/,
-            });
+        it('are refused at submit if new users were turned off meanwhile', async () => {
+            testConfig.atProto.login.allowNewUsers = false;
+            await assert.rejects(
+                applyAndLogin({ did: 'did:plc:alice', handle: 'alice.test' }),
+                {
+                    message: /not accepting new users/,
+                }
+            );
+            assert.equal(userCount(), 1);
         });
     });
 
@@ -285,7 +334,7 @@ describe('AT login', () => {
         beforeEach(withRootUser);
 
         it('are found by DID, keeping their username after a handle change', async () => {
-            const first = await login({
+            const first = await applyAndLogin({
                 did: 'did:plc:alice',
                 handle: 'alice.bsky.social',
             });
@@ -306,21 +355,25 @@ describe('AT login', () => {
         });
 
         it('can still log in when new users are turned off', async () => {
-            await login({ did: 'did:plc:alice', handle: 'alice.test' });
+            await applyAndLogin({ did: 'did:plc:alice', handle: 'alice.test' });
             testConfig.atProto.login.allowNewUsers = false;
             const client = await login({ did: 'did:plc:alice', handle: 'alice.test' });
             assert.equal(client.user.username, 'alice');
         });
 
-        it('are not found by handle: a new DID with an old handle is a new user', async () => {
-            const first = await login({ did: 'did:plc:alice', handle: 'alice.test' });
-            const other = await login({ did: 'did:plc:newowner', handle: 'alice.test' });
-            assert.notEqual(other.user.userId, first.user.userId);
+        it('are not found by handle: a new DID with an old handle has no user', async () => {
+            await applyAndLogin({ did: 'did:plc:alice', handle: 'alice.test' });
+            await assert.rejects(
+                login({ did: 'did:plc:newowner', handle: 'alice.test' }),
+                {
+                    reasonCode: ErrorReasons.DoesNotExist,
+                }
+            );
         });
 
         it('are refused if two users are somehow bound to one DID', async () => {
-            const first = await login({ did: 'did:plc:alice', handle: 'alice.test' });
-            await login({ did: 'did:plc:bob', handle: 'bob.test' });
+            await applyAndLogin({ did: 'did:plc:alice', handle: 'alice.test' });
+            await applyAndLogin({ did: 'did:plc:bob', handle: 'bob.test' });
             db.prepare(
                 'UPDATE user_property SET prop_value = ? WHERE prop_name = ? AND prop_value = ?'
             ).run('did:plc:alice', UserProps.AtProtoDid, 'did:plc:bob');
@@ -328,7 +381,6 @@ describe('AT login', () => {
             await assert.rejects(login({ did: 'did:plc:alice', handle: 'alice.test' }), {
                 message: /More than one user/,
             });
-            assert.ok(first.user.userId);
         });
     });
 
@@ -336,7 +388,10 @@ describe('AT login', () => {
         beforeEach(withRootUser);
 
         it('refuses a DID that is not the one bound to the user', async () => {
-            const alice = await login({ did: 'did:plc:alice', handle: 'alice.test' });
+            const alice = await applyAndLogin({
+                did: 'did:plc:alice',
+                handle: 'alice.test',
+            });
             const other = new User();
             await assert.rejects(
                 call(other.authenticateFactor1.bind(other), {
@@ -362,7 +417,30 @@ describe('AT login', () => {
         });
     });
 
-    describe('username candidates', () => {
+    describe('the pending identity', () => {
+        it('is kept on the session until cleared', () => {
+            const client = makeClient();
+            AtProtoLogin.setPendingIdentity(client, {
+                did: 'did:plc:alice',
+                handle: 'a.test',
+            });
+            assert.deepEqual(AtProtoLogin.getPendingIdentity(client), {
+                did: 'did:plc:alice',
+                handle: 'a.test',
+            });
+            AtProtoLogin.clearPendingIdentity(client);
+            assert.equal(AtProtoLogin.getPendingIdentity(client), null);
+        });
+
+        it('expires after half an hour', () => {
+            const client = makeClient();
+            AtProtoLogin.setPendingIdentity(client, { did: 'did:plc:alice' });
+            client.atProtoPendingIdentity.provenAt -= 31 * 60 * 1000;
+            assert.equal(AtProtoLogin.getPendingIdentity(client), null);
+        });
+    });
+
+    describe('username suggestions', () => {
         it('start with the handle name, then number it', () => {
             const names = AtProtoLogin.usernameCandidates('alice.bsky.social');
             assert.deepEqual(names.slice(0, 3), ['alice', 'alice2', 'alice3']);
@@ -383,13 +461,17 @@ describe('AT login', () => {
             assert.ok(names.every(n => /^atuser\d{5}$/.test(n)));
         });
 
-        it('skip reserved names', async () => {
+        it('skip reserved and taken names', async () => {
             await withRootUser();
-            const client = await login({
-                did: 'did:plc:admin',
-                handle: 'admin.example.com',
-            });
-            assert.equal(client.user.username, 'admin2');
+            assert.equal(
+                await call(AtProtoLogin.deriveUsername, 'admin.example.com'),
+                'admin2'
+            );
+            await applyAndLogin({ did: 'did:plc:alice', handle: 'alice.test' });
+            assert.equal(
+                await call(AtProtoLogin.deriveUsername, 'alice.other'),
+                'alice2'
+            );
         });
     });
 });

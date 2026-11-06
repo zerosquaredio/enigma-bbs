@@ -2,6 +2,9 @@
 
 const { strict: assert } = require('assert');
 const Database = require('better-sqlite3');
+const fs = require('fs');
+const os = require('os');
+const paths = require('path');
 
 const configModule = require('../core/config.js');
 const dbModule = require('../core/database.js');
@@ -267,5 +270,58 @@ describe('allowed login types (users.allowedAuthFactor1Types)', () => {
             const nav = await loginFrom({ config: {} });
             assert.deepEqual(nav, [['prev']]);
         });
+    });
+});
+
+describe('users.allowedAuthFactor1Types in config.hjson', function () {
+    let savedGet;
+    let savedReload;
+    let tempDir;
+
+    before(() => {
+        savedGet = configModule.get;
+        savedReload = configModule.reload;
+        tempDir = fs.mkdtempSync(paths.join(os.tmpdir(), 'enig-login-types-'));
+    });
+
+    after(() => {
+        //  Config.create() rebinds these module-level exports
+        configModule.get = savedGet;
+        configModule.reload = savedReload;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    function load(hjsonText, cb) {
+        const path = paths.join(tempDir, `config-${Date.now()}-${Math.random()}.hjson`);
+        fs.writeFileSync(path, hjsonText);
+        configModule.Config.create(
+            path,
+            { hotReload: false, reportValidation: false },
+            err => cb(err, configModule.get())
+        );
+    }
+
+    it('keeps every login type when unset', done => {
+        load('{\n}\n', (err, config) => {
+            assert.ifError(err);
+            assert.deepEqual(config.users.allowedAuthFactor1Types, [
+                'password',
+                'sshPubKey',
+                'tlsClientAuth',
+                'atproto',
+            ]);
+            return done();
+        });
+    });
+
+    it('replaces the default list rather than adding to it', done => {
+        load(
+            '{\n    users: {\n        allowedAuthFactor1Types: [ "atproto" ]\n    }\n}\n',
+            (err, config) => {
+                assert.ifError(err);
+                assert.deepEqual(config.users.allowedAuthFactor1Types, ['atproto']);
+                return done();
+            }
+        );
     });
 });

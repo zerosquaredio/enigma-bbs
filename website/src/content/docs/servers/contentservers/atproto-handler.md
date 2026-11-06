@@ -12,11 +12,11 @@ The pieces are [core/atproto/](https://github.com/NuSkooler/enigma-bbs/blob/mast
 
 ## How It Works
 * **Users are tied to the account's DID, not its handle.** Every AT account has a permanent identifier, its DID (such as `did:plc:xyjderwsx2kwmpuxgij6eyln`). The BBS stores it as the user's `atproto_did` property and finds the user by it, so a caller who changes their handle keeps their BBS account, and someone who takes over an old handle does not get the previous owner's account.
-* **First login creates the user.** The username comes from the handle's first part (`alice` for `alice.bsky.social`), with a number added if that name is taken (`alice2`) and reserved names (`users.badUserNames`, `users.newUserNames`) skipped. It never changes after that. The handle is kept for display as `atproto_handle` and refreshed at each login.
-* **No password.** Users created by AT login get a random password nobody knows, so password login is closed to them unless they set a password of their own.
+* **New callers apply after logging in.** An AT account with no user yet goes on to the new user application, with its handle shown and the account already proven, so the board knows the account is real before anyone fills in a form. The username field starts with the handle's first part (`alice` for `alice.bsky.social`), with a number added if that name is taken (`alice2`) and reserved names (`users.badUserNames`, `users.newUserNames`) skipped; the caller may change it. The handle is kept for display as `atproto_handle` and refreshed at each login.
+* **No password.** The application asks for none. Users created this way get a random password nobody knows, so password login is closed to them unless they set a password of their own.
 * **Everything else is a normal login.** Account status (inactive, disabled, locked), `users.requireActivation`, groups, 2FA and "already logged in" all apply as for password logins.
 * **The login is checked against the handle the caller typed.** Whoever opens the link chooses which account approves it, so the BBS accepts the approval only if it comes from the account the caller named in the terminal.
-* **Secure connections only.** AT login is offered over SSH, `wss://` and TLS, never telnet.
+* **Secure connections only.** AT login works over SSH, `wss://` and TLS. Telnet callers who choose it are told to connect with SSH instead (`atProto.login.secureConnectionsOnly`).
 
 ## Requirements
 * The [Web Server](./web-server.md) enabled. Callers' browsers must be able to reach it: the link the terminal shows, and the redirect back from their account host, both go to it.
@@ -61,7 +61,7 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 |-----|-------------|---------|
 | `atProto.enabled` | Boolean. Load AT Protocol support. | `false` |
 | `atProto.oauth.clientMode` | `loopback` or `public`; see [Client Modes](#client-modes). | `loopback` |
-| `atProto.login.allowNewUsers` | Boolean. Create a user the first time an AT account logs in. When `false`, only users already tied to a DID can use AT login. `general.closedSystem` also stops new users. | `true` |
+| `atProto.login.allowNewUsers` | Boolean. Let an AT account with no user yet apply for one after logging in. When `false`, only users already tied to a DID can use AT login. `general.closedSystem` also stops new users. | `true` |
 | `atProto.login.secureConnectionsOnly` | Boolean. Refuse AT login on insecure connections such as telnet. | `true` |
 | `atProto.login.rootDid` | String. The only DID that may become the first user (root, a sysop) through AT login; see [The First User](#the-first-user). | `""` |
 | `atProto.login.handoffTimeoutSeconds` | Number. How long the login screen waits for approval in the browser. | `300` |
@@ -83,9 +83,9 @@ Keep `atproto_oauth_key.json` and the `atproto` database private and backed up, 
 :::
 
 ### The First User
-User #1 is root and a member of `sysops`. On a new board, the first person to log in would otherwise get that, so AT login never creates the first user unless their DID is `atProto.login.rootDid`. With `rootDid` empty, create the sysop account the usual way (`apply`) and use AT login for everyone else.
+User #1 is root and a member of `sysops`. On a new board, the first person to apply would otherwise get that, so AT login never lets anyone apply as the first user unless their DID is `atProto.login.rootDid`. With `rootDid` empty, create the sysop account the usual way (`apply`) and use AT login for everyone else.
 
-To become the sysop through AT login, look up your DID (open `https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=<your handle>` in a browser), set it as `rootDid`, and log in with AT login.
+To become the sysop through AT login, look up your DID (open `https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=<your handle>` in a browser), set it as `rootDid`, log in with AT login, and fill in the application.
 
 ### Offering It to Callers
 The login menu template includes an `atprotoLogin` menu and a commented out "bluesky login" option on the login matrix. Uncomment the option in your login menu file:
@@ -97,11 +97,13 @@ The login menu template includes an `atprotoLogin` menu and a commented out "blu
 }
 ```
 
-The menu itself is limited to secure connections (`acs: SC`).
+The menu is not limited with `acs: SC`, which would refuse it without a word: the screen itself tells callers on insecure connections to use SSH, following `atProto.login.secureConnectionsOnly`.
 
 SSH callers authenticate before they reach the matrix. To offer AT login to SSH callers who connect as a new user name (such as `new`), point `sshConnectedNewUser`'s `next` at `matrix`, or straight at `atprotoLogin`.
 
 The login screen uses the `ATPROTOLOGIN` art with two views: `ET1`, where the caller types their handle, and `MT2`, for instructions, the link to open and progress.
+
+An account with no user yet is sent to the menu named by the `atprotoLogin` menu's `config.newUserApplication`: in the template, `atprotoApplication` in the new user menu file. It is the `nua` module with `config.atProto` set, and works as `newUserApplication` but has no password fields. It uses the `ATNUA` art, which adds `TL13` to show the caller's handle. It can only be reached from AT login; opened any other way, it returns to the previous menu. The proven account is kept for 30 minutes while the caller fills it in.
 
 ### AT-Only Boards
 `users.allowedAuthFactor1Types` lists the login types the board accepts: `password`, `sshPubKey` (SSH keys), `tlsClientAuth` and `atproto`. All four are accepted by default. To have callers log in with AT login only:
@@ -113,11 +115,13 @@ users: {
 ```
 
 * Password and SSH key logins are refused everywhere: the login menu, SSH, NNTP and the REST API. A refused login type is not counted as a failed login, so it never locks an account.
-* The new user application ("apply", or SSH as a new user name) is refused too, since it gives new users a password. Callers who chose either are shown the `loginAttemptLoginTypeNotAllowed` menu (the `LOGINTYPE` art), which points them to AT login and returns to the matrix.
-* Menus are not changed for you: remove the `login` and `apply` options from your login matrix, and point `sshConnectedNewUser` at `matrix` or `atprotoLogin` (see [Offering It to Callers](#offering-it-to-callers)).
+* The password application ("apply", or SSH as a new user name) sends callers to AT login instead, through the application menu's `config.atProtoLogin`, so they prove their account and then apply with no password. Without `atProtoLogin`, or with `atproto` left out too, they are shown the `loginAttemptLoginTypeNotAllowed` menu (the `LOGINTYPE` art), as are callers who choose "login".
+* Menus are not changed for you: you may want to remove the `login` option from your login matrix.
 * Users who already have an SSH key or password cannot use it while its type is left out; add the type back to let them.
 
 Leaving `atproto` out turns AT login off the same way, without changing `atProto.enabled`.
+
+As with other lists in `config.hjson`, `allowedAuthFactor1Types` replaces the default list rather than adding to it.
 
 ## Routes
 | Route | Purpose |

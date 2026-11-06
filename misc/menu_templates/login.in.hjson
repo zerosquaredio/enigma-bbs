@@ -59,6 +59,21 @@
                                         text: login
                                         data: login
                                     }
+                                    //
+                                    //  Log in with a Bluesky (AT Protocol) account. Needs
+                                    //  atProto.enabled, the web server, and
+                                    //  contentServers.web.handlers.atProto.enabled. Only
+                                    //  offered on secure connections (SSH, wss://). New
+                                    //  Bluesky users apply after logging in.
+                                    //
+                                    //  See docs for more information
+                                    //
+                                    /*
+                                    {
+                                        text: bluesky login
+                                        data: atproto
+                                    }
+                                    */
                                     {
                                         text: apply
                                         data: apply
@@ -93,20 +108,6 @@
                                     }
                                     */
 
-                                    //
-                                    //  Log in with a Bluesky (AT Protocol) account. Needs
-                                    //  atProto.enabled, the web server, and
-                                    //  contentServers.web.handlers.atProto.enabled. Only
-                                    //  offered on secure connections (SSH, wss://).
-                                    //
-                                    //  See docs for more information
-                                    //
-                                    /*
-                                    {
-                                        text: bluesky login
-                                        data: atproto
-                                    }
-                                    */
                                     {
                                         text: log off
                                         data: logoff
@@ -167,9 +168,11 @@
                 }
             ]
             config: {
-                //  Only core/acs.js hasMenuModuleAccess() gates a menu, and it
-                //  reads config.acs: AT login needs a secure connection
-                acs: SC
+                //  Not gated with "acs: SC", which refuses silently: the module
+                //  itself tells insecure callers (telnet) to use SSH, following
+                //  atProto.login.secureConnectionsOnly
+                //  where a Bluesky account with no user yet applies
+                newUserApplication: atprotoApplication
                 tooNodeMenu: loginAttemptTooNode
                 inactive: loginAttemptAccountInactive
                 disabled: loginAttemptAccountDisabled

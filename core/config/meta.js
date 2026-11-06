@@ -757,7 +757,7 @@ module.exports = {
     'atProto.login.allowNewUsers': {
         type: 'boolean',
         description:
-            'Create a local user the first time an AT identity logs in. Off, only existing users linked to a DID can use AT login.',
+            'Let an AT identity with no local user yet apply for one after logging in. Off, only existing users linked to a DID can use AT login.',
     },
     'atProto.login.secureConnectionsOnly': {
         type: 'boolean',

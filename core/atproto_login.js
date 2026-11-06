@@ -25,7 +25,8 @@ exports.moduleInfo = {
 //
 //  The menu's |next| works as for the password login menu (e.g. on to 2FA),
 //  and config.tooNodeMenu / inactive / disabled / locked name the menus for
-//  those account states.
+//  those account states. An account with no user yet goes on to
+//  config.newUserApplication to apply.
 //
 
 const FormIds = {
@@ -42,6 +43,9 @@ const DefaultHandoffTimeoutSeconds = 5 * 60;
 const Messages = {
     instructions: 'Enter your handle, e.g. alice.bsky.social, then press ENTER.',
     notAvailable: 'AT Protocol login is not available right now.',
+    insecure:
+        'Bluesky login needs a secure connection. Connect with SSH instead.\r\n\r\n' +
+        'Press ESC to go back.',
     resolving: 'Looking up {handle}...',
     notFound: 'Could not find that handle. Check it and try again.',
     openLink:
@@ -53,6 +57,7 @@ const Messages = {
     cancelled: 'Cancelled.',
     notApproved: 'The login was not approved. Try again, or press ESC to go back.',
     refused: 'This board does not allow that AT login. ({reason})',
+    noAccount: 'There is no account on this board for that handle.',
     failed: 'The login could not be completed. Try again, or press ESC to go back.',
 };
 
@@ -88,15 +93,30 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
                         }
 
                         this.showStatus(
-                            AtProtoOAuth.isReady()
-                                ? Messages.instructions
-                                : Messages.notAvailable
+                            this.unavailableMessage() || Messages.instructions
                         );
                         return cb(null);
                     }
                 );
             });
         });
+    }
+
+    //
+    //  Why AT login can't be used from here, or null if it can. The menu is
+    //  not gated by ACS, which would refuse it silently: an insecure
+    //  connection (telnet) gets told to use SSH instead.
+    //
+    unavailableMessage() {
+        if (!AtProtoOAuth.isReady()) {
+            return Messages.notAvailable;
+        }
+        const secureOnly =
+            false !== _.get(Config(), 'atProto.login.secureConnectionsOnly');
+        if (secureOnly && true !== _.get(this.client, 'session.isSecure')) {
+            return Messages.insecure;
+        }
+        return null;
     }
 
     leave() {
@@ -111,6 +131,8 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
             view.setText(
                 message.replace(/\{(\w+)\}/g, (m, key) => _.get(values, key, m))
             );
+            //  ...and put the cursor back in the handle field
+            this.repositionCursorToFocusedView('menu');
         }
     }
 
@@ -125,8 +147,9 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
         if (this.handoff) {
             return cb(null); //  already waiting on one
         }
-        if (!AtProtoOAuth.isReady()) {
-            this.showStatus(Messages.notAvailable);
+        const unavailable = this.unavailableMessage();
+        if (unavailable) {
+            this.showStatus(unavailable);
             return cb(null);
         }
 
@@ -210,23 +233,48 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
             return this.showStatus(Messages.wrongAccount);
         }
 
-        AtProtoLogin.loginWithDid(
-            this.client,
-            { did: identity.did, handle: identity.handle },
-            err => {
-                if (err) {
-                    return this.loginFailed(err);
+        const proven = { did: identity.did, handle: identity.handle };
+        AtProtoLogin.loginWithDid(this.client, proven, err => {
+            if (err) {
+                if (ErrorReasons.DoesNotExist === err.reasonCode) {
+                    return this.startApplication(proven);
                 }
-                return require('./system_menu_method.js').enterOrKick(this, err => {
-                    if (err) {
-                        this.client.log.warn(
-                            { error: err.message },
-                            'AT login: could not continue after login'
-                        );
-                    }
-                });
+                return this.loginFailed(err);
             }
-        );
+            return require('./system_menu_method.js').enterOrKick(this, err => {
+                if (err) {
+                    this.client.log.warn(
+                        { error: err.message },
+                        'AT login: could not continue after login'
+                    );
+                }
+            });
+        });
+    }
+
+    //
+    //  No user is bound to this account yet: if the board takes new users,
+    //  on to the new user application, with the proven identity kept on the
+    //  session for it (config.newUserApplication names the menu)
+    //
+    startApplication(identity) {
+        AtProtoLogin.checkNewUserAllowed(this.client, identity.did, err => {
+            if (err) {
+                return this.loginFailed(err);
+            }
+
+            const menu = _.get(this, 'menuConfig.config.newUserApplication');
+            if (!menu) {
+                this.client.log.warn(
+                    'AT login: no newUserApplication menu configured for new users'
+                );
+                return this.showStatus(Messages.noAccount);
+            }
+
+            this.client.log.info({ did: identity.did }, 'AT login: new user applying');
+            AtProtoLogin.setPendingIdentity(this.client, identity);
+            return this.gotoMenu(menu, _.noop);
+        });
     }
 
     loginFailed(err) {

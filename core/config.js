@@ -77,6 +77,8 @@ exports.Config = class Config extends ConfigLoader {
             'loginServers.ssh.algorithms.compress',
             //  a merge could never narrow the default trusted ranges
             'trustedProxies',
+            //  nor take a login type away
+            'users.allowedAuthFactor1Types',
         ];
 
         const replaceKeys = ['args', 'sendArgs', 'recvArgs', 'recvArgsNonBatch'];

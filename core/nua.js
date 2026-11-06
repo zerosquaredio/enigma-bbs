@@ -5,7 +5,7 @@
 const MenuModule = require('./menu_module.js').MenuModule;
 const User = require('./user.js');
 const theme = require('./theme.js');
-const login = require('./system_menu_method.js').login;
+const { login, enterOrKick } = require('./system_menu_method.js');
 const Config = require('./config.js').get;
 const messageArea = require('./message_area.js');
 const { getISOTimestampString } = require('./database.js');
@@ -25,7 +25,11 @@ const MciViewIds = {
     password: 9,
     confirm: 10,
     errMsg: 11,
+    atProtoIdentity: 13, //  AT application only: whose account this is
 };
+
+//  Loaded when needed, so password-only boards never touch it
+const AtProtoLogin = () => require('./atproto/login.js');
 
 exports.getModule = class NewUserAppModule extends MenuModule {
     constructor(options) {
@@ -128,12 +132,27 @@ exports.getModule = class NewUserAppModule extends MenuModule {
                     newUser.properties[UserProps.ThemeId] = defaultTheme;
                 }
 
-                //  :TODO: User.create() should validate email uniqueness!
-                const createUserInfo = {
-                    password: formData.value.password,
-                    sessionId: self.client.session.uniqueId, //  used for events/etc.
+                //  An applicant who proved an AT identity gets no password of
+                //  their own; the user is bound to the DID instead
+                const createUser = cb => {
+                    if (self.atProtoIdentity) {
+                        return AtProtoLogin().createUserForDid(
+                            self.client,
+                            self.atProtoIdentity,
+                            newUser,
+                            cb
+                        );
+                    }
+
+                    //  :TODO: User.create() should validate email uniqueness!
+                    const createUserInfo = {
+                        password: formData.value.password,
+                        sessionId: self.client.session.uniqueId, //  used for events/etc.
+                    };
+                    return newUser.create(createUserInfo, cb);
                 };
-                newUser.create(createUserInfo, err => {
+
+                createUser(err => {
                     if (err) {
                         self.client.log.warn(
                             { error: err, username: formData.value.username },
@@ -161,6 +180,10 @@ exports.getModule = class NewUserAppModule extends MenuModule {
                             };
                         }
 
+                        if (self.atProtoIdentity) {
+                            return self.loginAtProtoApplicant(newUser, extraArgs, cb);
+                        }
+
                         if (
                             User.AccountStatus.inactive ===
                             self.client.user.properties[UserProps.AccountStatus]
@@ -179,13 +202,31 @@ exports.getModule = class NewUserAppModule extends MenuModule {
     }
 
     initSequence() {
-        //  New users get a password, so there is no applying on a board that
-        //  does not accept password logins (users.allowedAuthFactor1Types)
+        const config = _.get(this, 'menuConfig.config', {});
+
+        //  Applying after an AT (Bluesky) login: no password, bound to the
+        //  DID the caller just proved (see core/atproto_login.js)
+        if (config.atProto) {
+            this.atProtoIdentity = AtProtoLogin().getPendingIdentity(this.client);
+            if (!this.atProtoIdentity) {
+                this.client.log.warn('AT application without a proven AT identity');
+                return this.prevMenu(_.noop);
+            }
+            return super.initSequence();
+        }
+
+        //  Otherwise new users get a password, so there is no applying this
+        //  way on a board that does not accept password logins
+        //  (users.allowedAuthFactor1Types). Send them to AT login, if the
+        //  board takes it, to prove their account before applying.
         if (!User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.Password)) {
             this.client.log.info(
-                'New user application refused: password logins not allowed'
+                'Password application refused: password logins not allowed'
             );
-            const menu = _.get(this, 'menuConfig.config.loginTypeNotAllowed');
+            const menu =
+                (User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.AtProto) &&
+                    config.atProtoLogin) ||
+                config.loginTypeNotAllowed;
             return menu ? this.gotoMenu(menu, _.noop) : this.prevMenu(_.noop);
         }
         return super.initSequence();
@@ -196,6 +237,20 @@ exports.getModule = class NewUserAppModule extends MenuModule {
             if (err) {
                 return cb(err);
             }
+
+            if (this.atProtoIdentity) {
+                return this.validateMCIByViewIds(
+                    'menu',
+                    [MciViewIds.userName, MciViewIds.errMsg],
+                    err => {
+                        if (err) {
+                            return cb(err);
+                        }
+                        return this.prefillAtProtoApplication(cb);
+                    }
+                );
+            }
+
             return this.validateMCIByViewIds(
                 'menu',
                 [
@@ -206,6 +261,52 @@ exports.getModule = class NewUserAppModule extends MenuModule {
                 ],
                 cb
             );
+        });
+    }
+
+    //  Show whose account this is, and suggest a username from the handle
+    prefillAtProtoApplication(cb) {
+        const { did, handle } = this.atProtoIdentity;
+        const identityView = this.viewControllers.menu.getView(
+            MciViewIds.atProtoIdentity
+        );
+        if (identityView) {
+            identityView.setText(handle ? `@${handle}` : did);
+        }
+
+        AtProtoLogin().deriveUsername(handle, (err, username) => {
+            if (!err) {
+                const view = this.viewControllers.menu.getView(MciViewIds.userName);
+                if (view) {
+                    view.setText(username);
+                }
+            }
+            //  Drawing leaves the terminal cursor at the end of the last
+            //  field drawn; put it back after the username
+            this.repositionCursorToFocusedView('menu');
+            return cb(null);
+        });
+    }
+
+    loginAtProtoApplicant(newUser, extraArgs, cb) {
+        const identity = this.atProtoIdentity;
+        AtProtoLogin().clearPendingIdentity(this.client);
+
+        if (User.AccountStatus.inactive === newUser.properties[UserProps.AccountStatus]) {
+            return this.gotoMenu(extraArgs.inactive, cb);
+        }
+
+        AtProtoLogin().loginWithDid(this.client, identity, err => {
+            if (err) {
+                this.client.log.warn(
+                    { error: err.message },
+                    'Login after AT application failed'
+                );
+                return this.gotoMenu(extraArgs.error, err => {
+                    return err ? this.prevMenu(cb) : cb(null);
+                });
+            }
+            return enterOrKick(this, cb);
         });
     }
 };

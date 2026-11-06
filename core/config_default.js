@@ -659,9 +659,9 @@ module.exports = () => {
             },
 
             login: {
-                //  create a local user the first time an AT identity logs in
+                //  let an AT identity with no user yet apply after logging in
                 allowNewUsers: true,
-                //  offer AT login only over SSH, wss://, or TLS; never telnet
+                //  allow AT login only over SSH, wss://, or TLS; never telnet
                 secureConnectionsOnly: true,
                 //  only this DID may become the first user (root, a sysop)
                 //  through AT login; empty means none can

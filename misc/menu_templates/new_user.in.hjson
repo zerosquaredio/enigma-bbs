@@ -20,6 +20,9 @@
                 //  shown instead when users.allowedAuthFactor1Types
                 //  leaves out "password"
                 loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
+                //  ...or, if the board takes AT login, to it, so the
+                //  caller proves their account before applying
+                atProtoLogin: atprotoLogin
             }
             next: [
                 {
@@ -117,6 +120,121 @@
         }
 
         //  A quick preamble - defaults to warning about broken terminals (SSH version)
+        //
+        //  The application for a caller who has just logged in with a Bluesky
+        //  (AT Protocol) account that has no user yet: as newUserApplication,
+        //  but with no password, and bound to that account. Reached only from
+        //  atprotoLogin, which proves the account first.
+        //
+        atprotoApplication: {
+            desc: Applying
+            module: nua
+            art: ATNUA
+            config: {
+                atProto: true
+            }
+            next: [
+                {
+                    //  Initial SysOp does not send feedback to themselves
+                    acs: ID1
+                    next: fullLoginSequenceLoginArt
+                }
+                {
+                    //  ...everyone else does
+                    next: newUserFeedbackToSysOpPreamble
+                }
+            ]
+            form: {
+                0: {
+                    mci: {
+                        ET1: {
+                            focus: true
+                            argName: username
+                            maxLength: @config:users.usernameMax
+                            width: 20
+                            validate: @systemMethod:validateUserNameAvail
+                        }
+                        ET2: {
+                            argName: realName
+                            maxLength: @config:users.realNameMax
+                            width: 30
+                            validate: @systemMethod:validateNonEmpty
+                        }
+                        ME3: {
+                            argName: birthdate
+                            maskPattern: "####/##/##"
+                            validate: @systemMethod:validateBirthdate
+                        }
+                        ME4: {
+                            argName: sex
+                            maskPattern: A
+                            textStyle: upper
+                            validate: @systemMethod:validateNonEmpty
+                        }
+                        ET5: {
+                            argName: location
+                            maxLength: @config:users.locationMax
+                            width: 30
+                            validate: @systemMethod:validateNonEmpty
+                        }
+                        ET6: {
+                            argName: affils
+                            maxLength: @config:users.affilsMax
+                            width: 30
+                        }
+                        ET7: {
+                            argName: email
+                            maxLength: @config:users.emailMax
+                            width: 30
+                            validate: @systemMethod:validateEmailAvail
+                        }
+                        ET8: {
+                            argName: web
+                            maxLength: @config:users.webMax
+                            width: 30
+                        }
+                        TL11: {
+                            width: 60
+                        }
+                        TM12: {
+                            argName: submission
+                            items: [ "apply", "cancel" ]
+                            submit: true
+                            //  The plain-text art has no colors, so set
+                            //  them here. A toggle always shows its chosen
+                            //  item in styleSGR2; focusTextStyle shows
+                            //  when the row itself has focus.
+                            styleSGR1: "|00|08"
+                            styleSGR2: "|00|15"
+                            focusTextStyle: upper
+                        }
+                        TL13: {
+                            width: 60
+                        }
+                    }
+
+                    submit: {
+                        *: [
+                            {
+                                value: { "submission" : 0 }
+                                action: @method:submitApplication
+                                extraArgs: {
+                                    inactive: userNeedsActivated
+                                    error: newUserCreateError
+                                }
+                            }
+                            {
+                                value: { "submission" : 1 }
+                                action: @systemMethod:prevMenu
+                            }
+                        ]
+                    }
+
+                    actionKeys: @reference:common.escToPrev
+                }
+            }
+        }
+
         newUserApplicationPreSsh: {
             desc: Applying
             art: NEWUSER1
@@ -138,6 +256,9 @@
                 //  shown instead when users.allowedAuthFactor1Types
                 //  leaves out "password"
                 loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
+                //  ...or, if the board takes AT login, to it, so the
+                //  caller proves their account before applying
+                atProtoLogin: atprotoLogin
             }
             next: newUserFeedbackToSysOpPreamble
             form: {

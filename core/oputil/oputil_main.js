@@ -17,6 +17,7 @@ const handleFatCommand = require('./oputil_fat.js').handleFatCommand;
 const handleV86Command = require('./oputil_v86.js').handleV86Command;
 const handleAmigaDoorCommand = require('./oputil_amiga_door.js').handleAmigaDoorCommand;
 const handleRestCommand = require('./oputil_rest.js').handleRestCommand;
+const handleAtProtoCommand = require('./oputil_atproto.js').handleAtProtoCommand;
 const getHelpFor = require('./oputil_help.js').getHelpFor;
 
 module.exports = function () {
@@ -53,6 +54,8 @@ module.exports = function () {
             return handleAmigaDoorCommand();
         case 'rest':
             return handleRestCommand();
+        case 'atproto':
+            return handleAtProtoCommand();
         default:
             return printUsageAndSetExitCode(getHelpFor('General'), ExitCodes.BAD_COMMAND);
     }

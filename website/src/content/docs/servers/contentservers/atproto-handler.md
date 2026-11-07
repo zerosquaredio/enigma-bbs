@@ -61,7 +61,9 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 |-----|-------------|---------|
 | `atProto.enabled` | Boolean. Load AT Protocol support. | `false` |
 | `atProto.oauth.clientMode` | `loopback` or `public`; see [Client Modes](#client-modes). | `loopback` |
-| `atProto.login.allowNewUsers` | Boolean. Let an AT account with no user yet apply for one after logging in. When `false`, only users already tied to a DID can use AT login. `general.closedSystem` also stops new users. | `true` |
+| `atProto.login.allowNewUsers` | Boolean. Let an AT account with no user yet apply for one after logging in. When `false` (or with `general.closedSystem`), the board is invitation only: only [invites and invite codes](#admission) admit new users. | `true` |
+| `atProto.admission.policy` | Array. How new AT users are admitted; see [Admission](#admission). | `["open"]` |
+| `atProto.admission.provisionalGroup` | String. Group for applicants the policy doesn't admit, instead of refusing them. | `""` |
 | `atProto.login.secureConnectionsOnly` | Boolean. Refuse AT login on insecure connections such as telnet. | `true` |
 | `atProto.login.rootDid` | String. The only DID that may become the first user (root, a sysop) through AT login; see [The First User](#the-first-user). | `""` |
 | `atProto.login.handoffTimeoutSeconds` | Number. How long the login screen waits for approval in the browser. | `300` |
@@ -129,6 +131,51 @@ users: {
 Leaving `atproto` out turns AT login off the same way, without changing `atProto.enabled`.
 
 As with other lists in `config.hjson`, `allowedAuthFactor1Types` replaces the default list rather than adding to it.
+
+### Admission
+`atProto.admission.policy` decides who may join when someone logs in with a Bluesky account that has no user here yet. It lists **verifiers** in order; the first that admits the applicant decides their groups and account status. Users who already exist are never checked again, so tightening the policy leaves them as they are.
+
+| Verifier | Admits | Account | Groups |
+|----------|--------|---------|--------|
+| `open` | Anyone | as `users.requireActivation` says | `users.defaultGroups` |
+| `invite` | An account the sysop invited | active | the invite's |
+| `invite-code` | Anyone who enters a valid invite code | active | the code's |
+| `sysop-approval` | Anyone | inactive, until the sysop activates it | `users.defaultGroups` |
+
+An admitted user also joins `verified-<verifier>` (for example `verified-invite`), so access rules can tell how they got in, such as `GM[verified-invite]`.
+
+```hjson
+atProto: {
+    admission: {
+        //  invited people first, then anyone with a code, then the rest wait for approval
+        policy: [ "invite", "invite-code", "sysop-approval" ]
+    }
+}
+```
+
+Put `invite` and `invite-code` before `open` or `sysop-approval`, or they never get the chance to apply their groups. The policy is read for each application, so changes take effect without a restart. As with other lists in `config.hjson`, it replaces the default rather than adding to it.
+
+**Invitation only.** With `atProto.login.allowNewUsers: false` (or `general.closedSystem`), only `invite` and `invite-code` admit; callers without one are told the board is invitation only. `atProto.login.rootDid` still becomes the first user whatever the policy.
+
+**Invites** are made for one Bluesky account, so there is nothing secret to pass on: only that account can use it, once. The board does not send them: tell the person yourself, and they log in with Bluesky and apply.
+
+```shell
+./oputil.js atproto invite add alice.bsky.social --groups users,friends --days 14
+./oputil.js atproto invite list
+./oputil.js atproto invite revoke 3
+```
+
+**Invite codes** can be handed to anyone. Each has a number of uses (one by default), an optional expiry and its own groups. `oputil` shows a new code once: only a hash of it is kept, so it can't be shown again; `list` shows each by its last four characters.
+
+```shell
+./oputil.js atproto invite-code add --uses 10 --days 30
+./oputil.js atproto invite-code list
+./oputil.js atproto invite-code revoke 2
+```
+
+When the policy includes `invite-code`, the AT application form (`atprotoApplication`, `ATNUA` art) shows an "Invite code" field, `ET9` with its label `TL10`; otherwise the label is blank and the field is skipped. A code is checked when the applicant leaves the field, and used up only once their user is created; two applicants can't both have the last use of a code. Set the label's text with the menu's `config.inviteCodeLabel`.
+
+**Provisional access.** With `atProto.admission.provisionalGroup` set, say to `provisional`, applicants no verifier admits are not refused: they become active users in that group only, without `users.defaultGroups`. Areas in the default configuration need `GM[users]`, so they see only what you open to them, for example a welcome board with `GM[users,provisional]`. Menus have no access check by default, so add one (`acs: GM[users]`) to menus provisional users should not reach, such as doors or the user list. Promote them with `./oputil.js user group USERNAME +users`, or let ACS do it, for example `GM[users] | (GM[provisional] & AA7 & NP5)`: provisional for a week with five posts. A board closed to new users admits nobody provisionally.
 
 ### Linking Existing Accounts
 Users who had an account before AT login can link their Bluesky account to it, so either login works and they keep their messages, files and settings. A DID is linked to one user at most. There are three ways:

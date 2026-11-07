@@ -1412,11 +1412,12 @@ const DB_INIT_TABLE = {
 //  atproto.sqlite3 schema versions, kept in PRAGMA user_version:
 //    1: OAuth state and session stores (see core/atproto/store.js)
 //    2: web sign-in sessions (see core/atproto/web_sign_in.js)
+//    3: invites and invite codes (see core/atproto/admission/store.js)
 //
 //  Created with the other databases whether or not atProto.enabled is set,
 //  as activitypub.sqlite3 is; it simply stays empty while AT login is off.
 //
-const ATPROTO_DB_VERSION_LATEST = 2;
+const ATPROTO_DB_VERSION_LATEST = 3;
 
 function initAtProtoDatabase(db) {
     db.exec(`
@@ -1450,6 +1451,35 @@ function initAtProtoDatabase(db) {
 
         CREATE INDEX IF NOT EXISTS web_session_by_expires_timestamp_index0
             ON web_session (expires_timestamp);
+
+        --  Invites made for one AT identity, used when its user is created
+        CREATE TABLE IF NOT EXISTS invite (
+            id                  INTEGER PRIMARY KEY,
+            did                 VARCHAR NOT NULL,
+            handle              VARCHAR,
+            groups_json         VARCHAR NOT NULL,   --  JSON array of group names
+            created_timestamp   INTEGER NOT NULL,   --  Unix seconds
+            expires_timestamp   INTEGER,            --  Unix seconds; NULL: never
+            revoked_timestamp   INTEGER,
+            used_timestamp      INTEGER,
+            used_by_user_id     INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS invite_by_did_index0
+            ON invite (did);
+
+        --  Codes anyone may enter when applying; only a hash of each is kept
+        CREATE TABLE IF NOT EXISTS invite_code (
+            id                  INTEGER PRIMARY KEY,
+            code_hash           VARCHAR NOT NULL UNIQUE,
+            hint                VARCHAR NOT NULL,   --  the code's last characters
+            groups_json         VARCHAR NOT NULL,
+            max_uses            INTEGER NOT NULL,
+            uses_left           INTEGER NOT NULL,
+            created_timestamp   INTEGER NOT NULL,
+            expires_timestamp   INTEGER,
+            revoked_timestamp   INTEGER
+        );
     `);
 
     if (db.pragma('user_version', { simple: true }) < ATPROTO_DB_VERSION_LATEST) {

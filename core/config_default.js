@@ -662,7 +662,8 @@ module.exports = () => {
             },
 
             login: {
-                //  let an AT identity with no user yet apply after logging in
+                //  let an AT identity with no user yet apply after logging in;
+                //  false makes the board invitation only (see admission)
                 allowNewUsers: true,
                 //  allow AT login only over SSH, wss://, or TLS; never telnet
                 secureConnectionsOnly: true,
@@ -671,6 +672,20 @@ module.exports = () => {
                 rootDid: '',
                 //  how long the login screen waits for approval in a browser
                 handoffTimeoutSeconds: 5 * 60,
+            },
+
+            //  Who may join through AT login, when an AT identity with no
+            //  user yet applies (existing users are never re-checked)
+            admission: {
+                //  verifiers, in order; the first that admits the applicant
+                //  decides: "open" (anyone), "invite" (invited by the sysop),
+                //  "invite-code" (entered a code), "sysop-approval" (anyone,
+                //  inactive until the sysop activates them). With
+                //  login.allowNewUsers false, only invites and codes admit.
+                policy: ['open'],
+                //  if set, applicants no verifier admits join this group
+                //  only, instead of being refused (e.g. "provisional")
+                provisionalGroup: '',
             },
 
             //  "Sign in with Bluesky" on the web server's /_enig/signin page,

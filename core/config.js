@@ -79,6 +79,8 @@ exports.Config = class Config extends ConfigLoader {
             'trustedProxies',
             //  nor take a login type away
             'users.allowedAuthFactor1Types',
+            //  nor take "open" out of the admission policy
+            'atProto.admission.policy',
         ];
 
         const replaceKeys = ['args', 'sendArgs', 'recvArgs', 'recvArgsNonBatch'];

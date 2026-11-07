@@ -1534,7 +1534,7 @@
                     "type": "object",
                     "properties": {
                         "allowNewUsers": {
-                            "description": "Let an AT identity with no local user yet apply for one after logging in. Off, only existing users linked to a DID can use AT login.",
+                            "description": "Let an AT identity with no local user yet apply for one after logging in. Off, the board is invitation only: only atProto.admission's invite and invite-code verifiers admit new users.",
                             "type": "boolean",
                             "default": true
                         },
@@ -1553,6 +1553,36 @@
                             "type": "number",
                             "minimum": 30,
                             "default": 300
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
+                },
+                "admission": {
+                    "type": "object",
+                    "properties": {
+                        "policy": {
+                            "description": "Verifiers that admit a new AT applicant, in order; the first that admits them decides. With atProto.login.allowNewUsers false, only invite and invite-code admit.",
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "open",
+                                    "invite",
+                                    "invite-code",
+                                    "sysop-approval"
+                                ]
+                            },
+                            "default": [
+                                "open"
+                            ]
+                        },
+                        "provisionalGroup": {
+                            "description": "Group for applicants no verifier admits, instead of refusing them; they get no other group. Empty: refuse them.",
+                            "type": "string",
+                            "default": ""
                         }
                     },
                     "patternProperties": {

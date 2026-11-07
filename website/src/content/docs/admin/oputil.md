@@ -38,6 +38,7 @@ Commands break up operations by groups:
 | `fat`     | FAT disk image inspection and modification |
 | `v86`     | Boot disk images in the v86 x86 emulator |
 | `amiga-door` | Build and inspect Amiga door images (FFS) |
+| `atproto` | AT Protocol (Bluesky) invites and invite codes |
 
 Global arguments apply to most commands and actions:
 * `--config`: Specify configuration directory if it is not the default of `./config/`. Relative paths in that `config.hjson` resolve as they do for `main.js`; see [Relative Paths](../configuration/config-hjson.md#relative-paths).
@@ -651,6 +652,38 @@ console arguments:
 ```
 
 See [Amiga Doors](../doors/amiga.md#building-a-door-image) for what goes on an image.
+
+## AT Protocol Invites
+The `atproto` command manages invites and invite codes, which admit new users who log in with Bluesky when `atProto.admission.policy` includes `invite` or `invite-code`. See [Admission](../servers/contentservers/atproto-handler.md#admission).
+
+```
+usage: oputil.js atproto <invite|invite-code> <action> [<arguments>]
+
+Actions:
+  invite add HANDLE|DID        Invite one Bluesky account, used once when it
+                               applies. A handle needs atProto.enabled.
+  invite list                  List invites
+  invite revoke ID             Withdraw an invite that is not used yet
+
+  invite-code add              Make a code anyone may enter when applying.
+                               It is shown once: only a hash is kept.
+  invite-code list             List codes (by their last characters)
+  invite-code revoke ID        Withdraw a code
+
+Arguments:
+  --groups G1,G2               Groups the new user gets, instead of
+                               users.defaultGroups
+  --days N                     Expire after N days (default: never)
+  --uses N                     invite-code add: how many may use it (default: 1)
+```
+
+#### Examples
+
+```bash
+./oputil.js atproto invite add alice.bsky.social --days 14
+./oputil.js atproto invite-code add --uses 10 --groups users,newbies
+./oputil.js atproto invite-code list
+```
 
 ## See Also
 

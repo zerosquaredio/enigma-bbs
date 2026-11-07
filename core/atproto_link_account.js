@@ -185,9 +185,12 @@ exports.getModule = class AtProtoLinkAccountModule extends MenuModule {
         AtProtoLogin.checkNewUserAllowed(this.client, this.identity.did, err => {
             if (err) {
                 this.client.log.info({ error: err.message }, 'AT application refused');
+                //  e.g. "This board is invitation only"
                 this.showStatus(
                     ErrorReasons.NotAllowed === err.reasonCode
-                        ? Messages.noNewUsers
+                        ? err.reason
+                            ? `${err.reason}.`
+                            : Messages.noNewUsers
                         : Messages.failed
                 );
                 return cb(null);

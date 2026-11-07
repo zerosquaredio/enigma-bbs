@@ -10,6 +10,7 @@ const Config = require('./config.js').get;
 const messageArea = require('./message_area.js');
 const { getISOTimestampString } = require('./database.js');
 const UserProps = require('./user_property.js');
+const { Errors, ErrorReasons } = require('./enig_error.js');
 
 //  deps
 const _ = require('lodash');
@@ -26,10 +27,23 @@ const MciViewIds = {
     confirm: 10,
     errMsg: 11,
     atProtoIdentity: 13, //  AT application only: whose account this is
+    //  AT application only, which has no password fields: so the invite
+    //  code comes after the other fields in focus order (ids order it)
+    inviteCode: 9,
+    inviteCodeLabel: 10,
 };
 
 //  Loaded when needed, so password-only boards never touch it
 const AtProtoLogin = () => require('./atproto/login.js');
+const Admission = () => require('./atproto/admission');
+
+const InviteCodeMessages = {
+    needed: 'An invite code is needed to join',
+    unknown: 'That is not an invite code here',
+    used: 'That invite code has been used up',
+    expired: 'That invite code has expired',
+    revoked: 'That invite code was withdrawn',
+};
 
 exports.getModule = class NewUserAppModule extends MenuModule {
     constructor(options) {
@@ -50,6 +64,41 @@ exports.getModule = class NewUserAppModule extends MenuModule {
                         ? null
                         : new Error('Passwords do not match')
                 );
+            },
+
+            //
+            //  AT application: an invite code, if the admission policy takes
+            //  them. Empty is fine if the applicant is admitted without one.
+            //  The code is used up only when the user is created.
+            //
+            validateInviteCode: function (data, cb) {
+                if (!self.atProtoIdentity || !Admission().takesInviteCodes()) {
+                    return cb(null);
+                }
+                const failed = key =>
+                    cb(
+                        Errors.ValidationFailed(
+                            InviteCodeMessages[key],
+                            ErrorReasons.ValueInvalid
+                        )
+                    );
+
+                if (!_.trim(data)) {
+                    const { did, handle } = self.atProtoIdentity;
+                    return Admission().admit({ did, handle }, (err, decision) => {
+                        if (err) {
+                            return cb(err);
+                        }
+                        return decision ? cb(null) : failed('needed');
+                    });
+                }
+
+                Admission().checkInviteCode(data, (err, reason) => {
+                    if (err) {
+                        return cb(err);
+                    }
+                    return reason ? failed(reason) : cb(null);
+                });
             },
 
             viewValidationListener: function (err, cb) {
@@ -140,6 +189,7 @@ exports.getModule = class NewUserAppModule extends MenuModule {
                             self.client,
                             self.atProtoIdentity,
                             newUser,
+                            { inviteCode: formData.value.inviteCode },
                             cb
                         );
                     }
@@ -274,6 +324,8 @@ exports.getModule = class NewUserAppModule extends MenuModule {
             identityView.setText(handle ? `@${handle}` : did);
         }
 
+        this.setUpInviteCode();
+
         AtProtoLogin().deriveUsername(handle, (err, username) => {
             if (!err) {
                 const view = this.viewControllers.menu.getView(MciViewIds.userName);
@@ -286,6 +338,28 @@ exports.getModule = class NewUserAppModule extends MenuModule {
             this.repositionCursorToFocusedView('menu');
             return cb(null);
         });
+    }
+
+    //
+    //  The invite code field shows only when the admission policy takes
+    //  codes: otherwise its label is left blank and focus passes it by
+    //  (config.inviteCodeLabel sets the label's text)
+    //
+    setUpInviteCode() {
+        const codeView = this.viewControllers.menu.getView(MciViewIds.inviteCode);
+        const labelView = this.viewControllers.menu.getView(MciViewIds.inviteCodeLabel);
+        const takesCodes = Admission().takesInviteCodes();
+
+        if (labelView) {
+            labelView.setText(
+                takesCodes
+                    ? _.get(this, 'menuConfig.config.inviteCodeLabel', 'Invite code:')
+                    : ''
+            );
+        }
+        if (codeView && !takesCodes) {
+            codeView.acceptsFocus = false;
+        }
     }
 
     loginAtProtoApplicant(newUser, extraArgs, cb) {

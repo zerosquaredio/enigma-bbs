@@ -762,7 +762,7 @@ module.exports = {
     'atProto.login.allowNewUsers': {
         type: 'boolean',
         description:
-            'Let an AT identity with no local user yet apply for one after logging in. Off, only existing users linked to a DID can use AT login.',
+            'Let an AT identity with no local user yet apply for one after logging in. Off, the board is invitation only: only atProto.admission\'s invite and invite-code verifiers admit new users.',
     },
     'atProto.login.secureConnectionsOnly': {
         type: 'boolean',
@@ -777,6 +777,20 @@ module.exports = {
         type: 'number',
         min: 30,
         description: 'How long the AT login screen waits for the login to be approved in a browser.',
+    },
+    'atProto.admission.policy': {
+        type: 'array',
+        items: {
+            type: 'string',
+            enum: ['open', 'invite', 'invite-code', 'sysop-approval'],
+        },
+        description:
+            'Verifiers that admit a new AT applicant, in order; the first that admits them decides. With atProto.login.allowNewUsers false, only invite and invite-code admit.',
+    },
+    'atProto.admission.provisionalGroup': {
+        type: 'string',
+        description:
+            'Group for applicants no verifier admits, instead of refusing them; they get no other group. Empty: refuse them.',
     },
     'atProto.webSignIn.enabled': {
         type: 'boolean',

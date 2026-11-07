@@ -154,3 +154,9 @@ Users can now authenticate with SSH public keys in addition to passwords. Each a
 3. Optional: use **remove key** to clear the stored key and fall back to password logins.
 
 Once saved, ENiGMA½ will require clients connecting with the `publickey` SSH method to prove possession of the corresponding private key. The upload menu is blocked on insecure transports to prevent man-in-the-middle attacks that could replace a user's public key.
+
+### Offering the Key a Caller Connected With
+
+A caller who connects as a new user name (such as `new`) and then logs in another way, for example with [Bluesky login](../contentservers/atproto-handler.md), has often already proven an SSH key: most SSH clients try the user's keys first. After the welcome screen, such callers are asked whether to save that key, with the user name to connect as next time. Saying yes replaces any key already saved. Only a key whose signature checked out is offered, and only once per connection.
+
+The offer is the `fullLoginSequenceSshKeyOffer` menu (the `ssh_key_offer` module, `SSHKEYOFR` art) in the login menu template, after `fullLoginSequenceLoginArt`. It goes straight on when there is nothing to offer: no key was proven, the key is already saved, or `sshPubKey` is left out of `users.allowedAuthFactor1Types`. Existing boards get it by adding the menu to their login menu file.

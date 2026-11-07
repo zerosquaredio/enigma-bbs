@@ -347,7 +347,59 @@
             desc: Logging In
             art: WELCOME
             config: { pause: true }
+            next: fullLoginSequenceSshKeyOffer
+        }
+
+        //
+        //  A caller who connected over SSH as a new user name (e.g. "new")
+        //  and logged in another way, such as with Bluesky, is offered the
+        //  SSH key they connected with, to log in with it next time. Goes
+        //  straight on to |next| when there is nothing to offer.
+        //
+        fullLoginSequenceSshKeyOffer: {
+            desc: Logging In
+            module: ssh_key_offer
+            art: SSHKEYOFR
             next: fullLoginSequenceLastCallers
+            form: {
+                0: {
+                    mci: {
+                        TL1: {
+                            width: 70
+                        }
+                        TL2: {
+                            width: 40
+                        }
+                        TM3: {
+                            argName: answer
+                            items: [ "yes", "no" ]
+                            focus: true
+                            hotKeys: { Y: 0, N: 1 }
+                            hotKeySubmit: true
+                            submit: true
+                            //  The plain-text art has no colors
+                            styleSGR1: "|00|08"
+                            styleSGR2: "|00|15"
+                            focusTextStyle: upper
+                        }
+                        TL4: {
+                            width: 70
+                        }
+                    }
+                    submit: {
+                        *: [
+                            {
+                                value: { answer: 0 }
+                                action: @method:saveKey
+                            }
+                            {
+                                value: { answer: 1 }
+                                action: @method:skip
+                            }
+                        ]
+                    }
+                }
+            }
         }
 
         fullLoginSequenceLastCallers: {

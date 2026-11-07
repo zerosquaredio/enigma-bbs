@@ -42,6 +42,38 @@
             config: { nextTimeout: 1500 }
         }
 
+        //
+        //  Browser terminal (enig-term) callers who signed in with Bluesky on
+        //  the board's web page (atProto.webSignIn) start here instead of at
+        //  telnetConnected (loginServers.webSocket.firstMenuSignedIn), and are
+        //  logged in without a prompt, continuing as from atprotoLogin. If
+        //  that can't be done, on to |fallback| to log in as usual.
+        //
+        webSignInConnected: {
+            desc: Web Sign-In
+            module: atproto_web_sign_in
+            art: CONNECT
+            next: [
+                {
+                    acs: AR2
+                    next: loginTwoFactorAuthOTPLoop
+                }
+                {
+                    next: fullLoginSequenceLoginArt
+                }
+            ]
+            config: {
+                fallback: matrix
+                linkAccount: atprotoLinkAccount
+                newUserApplication: atprotoApplication
+                tooNodeMenu: loginAttemptTooNode
+                inactive: loginAttemptAccountInactive
+                disabled: loginAttemptAccountDisabled
+                locked: loginAttemptAccountLocked
+                loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
+            }
+        }
+
 		//  Ye ol' standard matrix
         matrix: {
             desc: Login Matrix
@@ -171,6 +203,7 @@
                 //  Not gated with "acs: SC", which refuses silently: the module
                 //  itself tells insecure callers (telnet) to use SSH, following
                 //  atProto.login.secureConnectionsOnly
+
                 //  where a Bluesky account with no user yet links a user the
                 //  caller already has here, or applies. Without it, such
                 //  accounts go straight to newUserApplication.

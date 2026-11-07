@@ -8,6 +8,7 @@ const Log = require('../../logger.js').log;
 const LoginServerModule = require('../../login_server_module.js');
 const { Errors } = require('../../enig_error.js');
 const { listenServer } = require('../../server_listen.js');
+const WebSignIn = require('../../atproto/web_sign_in.js');
 const {
     getClientAddress,
     hasForwardedHeaders,
@@ -174,6 +175,23 @@ class WebSocketClient extends TelnetClient {
         this.serverType = serverType;
 
         //
+        //  A browser signed in on the board's web sign-in page carries its
+        //  cookie here. Look it up while the terminal negotiates; the first
+        //  menu is chosen once both are done (see _clientReady()).
+        //
+        this.webSignInPending = WebSignIn.isEnabled();
+        if (this.webSignInPending) {
+            WebSignIn.identityForConnection(req.headers, (err, identity) => {
+                this.webSignInPending = false;
+                this.webSignInIdentity = identity || null;
+                if (this.webSignInReadyWaiting) {
+                    this.webSignInReadyWaiting = false;
+                    this._clientReady();
+                }
+            });
+        }
+
+        //
         //  Monitor connection status with ping/pong
         //
         ws.on('pong', () => {
@@ -188,7 +206,33 @@ class WebSocketClient extends TelnetClient {
     get isSecure() {
         return 'secure' === this.serverType || true === this.forwardedSecure;
     }
+
+    _clientReady() {
+        if (this.clientReadyHandled) {
+            return;
+        }
+        if (this.webSignInPending) {
+            this.webSignInReadyWaiting = true; //  identityForConnection() calls back
+            return;
+        }
+
+        if (!this.webSignInIdentity) {
+            return super._clientReady();
+        }
+
+        //  Signed in on the web: skip the login matrix
+        this.clientReadyHandled = true;
+        this.emit('ready', {
+            firstMenu: _.get(
+                Config(),
+                'loginServers.webSocket.firstMenuSignedIn',
+                'webSignInConnected'
+            ),
+        });
+    }
 }
+
+exports.WebSocketClient = WebSocketClient; //  for tests
 
 const WSS_SERVER_TYPES = ['insecure', 'secure'];
 

@@ -161,6 +161,12 @@ contentServers: {
 
 ---
 
+## Signing in with Bluesky
+
+With [web sign-in](../contentservers/atproto-handler.md#web-sign-in), callers sign in with Bluesky once at `/_enig/signin`, and enig-term then logs them in without a prompt each time they connect. It needs enig-term and the web server under the same host name.
+
+---
+
 ## What ENiGMA½ does for enig-term
 
 enig-term identifies itself when ENiGMA½ asks for Device Attributes, and the debug log records it as `termClient: "enig_term"` with its version. ENiGMA½ then treats it as it treats SyncTERM: rather than going by the name, it asks what the terminal can do, and goes by the answers. In one round trip during connect, it sends:

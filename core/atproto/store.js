@@ -6,6 +6,7 @@ const { StateMaxAgeSeconds } = require('./const');
 
 exports.createStateStore = createStateStore;
 exports.createSessionStore = createSessionStore;
+exports.createWebSessionStore = createWebSessionStore;
 
 //
 //  State and session stores for @atproto/oauth-client-node, kept in
@@ -86,6 +87,57 @@ function createSessionStore(db, { now = nowSeconds } = {}) {
         },
         del: did => {
             deleteStmt.run(did);
+        },
+    };
+}
+
+//
+//  Web sign-in sessions (core/atproto/web_sign_in.js): one per signed-in
+//  browser, keyed by a hash of the token in its cookie, so the database
+//  never holds a usable cookie. A DID can have several.
+//
+function createWebSessionStore(db, { now = nowSeconds } = {}) {
+    const insertStmt = db.prepare(
+        `INSERT INTO web_session
+            (token_hash, did, handle, created_timestamp, expires_timestamp, used_timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    const selectStmt = db.prepare(
+        `SELECT did, handle, expires_timestamp FROM web_session
+        WHERE token_hash = ? AND expires_timestamp > ?`
+    );
+    const touchStmt = db.prepare(
+        'UPDATE web_session SET used_timestamp = ?, handle = ? WHERE token_hash = ?'
+    );
+    const deleteStmt = db.prepare('DELETE FROM web_session WHERE token_hash = ?');
+    const deleteDidStmt = db.prepare('DELETE FROM web_session WHERE did = ?');
+    const pruneStmt = db.prepare('DELETE FROM web_session WHERE expires_timestamp <= ?');
+
+    return {
+        add: (tokenHash, { did, handle, lifetimeSeconds }) => {
+            const ts = now();
+            pruneStmt.run(ts);
+            insertStmt.run(tokenHash, did, handle || null, ts, ts + lifetimeSeconds, ts);
+        },
+        //  { did, handle, expiresAt } while unexpired, else undefined
+        get: tokenHash => {
+            const row = selectStmt.get(tokenHash, now());
+            return row
+                ? {
+                      did: row.did,
+                      handle: row.handle || undefined,
+                      expiresAt: row.expires_timestamp,
+                  }
+                : undefined;
+        },
+        touch: (tokenHash, handle) => {
+            touchStmt.run(now(), handle || null, tokenHash);
+        },
+        del: tokenHash => {
+            deleteStmt.run(tokenHash);
+        },
+        delAllForDid: did => {
+            deleteDidStmt.run(did);
         },
     };
 }

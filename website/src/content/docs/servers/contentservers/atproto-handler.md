@@ -83,7 +83,7 @@ Keep `atproto_oauth_key.json` and the `atproto` database private and backed up, 
 :::
 
 ### The First User
-User #1 is root and a member of `sysops`. On a new board, the first person to apply would otherwise get that, so AT login never lets anyone apply as the first user unless their DID is `atProto.login.rootDid`. With `rootDid` empty, create the sysop account the usual way (`apply`) and use AT login for everyone else.
+User #1 is root and a member of `sysops`. On a new board, the first person to apply would otherwise get that, so AT login never lets anyone apply as the first user unless their DID is `atProto.login.rootDid`. With `rootDid` empty, create the sysop account the usual way (`apply`) and use AT login for everyone else; you can link your own Bluesky account to it later (see [Linking Existing Accounts](#linking-existing-accounts)).
 
 To become the sysop through AT login, look up your DID (open `https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=<your handle>` in a browser), set it as `rootDid`, log in with AT login, and fill in the application.
 
@@ -105,7 +105,7 @@ AT login over SSH takes a browser each time. After it, callers are offered the S
 
 The login screen uses the `ATPROTOLOGIN` art with two views: `ET1`, where the caller types their handle, and `MT2`, for instructions, the link to open and progress.
 
-An account with no user yet is sent to the menu named by the `atprotoLogin` menu's `config.newUserApplication`: in the template, `atprotoApplication` in the new user menu file. It is the `nua` module with `config.atProto` set, and works as `newUserApplication` but has no password fields. It uses the `ATNUA` art, which adds `TL13` to show the caller's handle. It can only be reached from AT login; opened any other way, it returns to the previous menu. The proven account is kept for 30 minutes while the caller fills it in.
+An account with no user yet is sent to the menu named by the `atprotoLogin` menu's `config.linkAccount`, if set (see [Linking Existing Accounts](#linking-existing-accounts)), and from there, or straight away without it, to the one named by `config.newUserApplication`: in the template, `atprotoApplication` in the new user menu file. It is the `nua` module with `config.atProto` set, and works as `newUserApplication` but has no password fields. It uses the `ATNUA` art, which adds `TL13` to show the caller's handle. It can only be reached from AT login; opened any other way, it returns to the previous menu. The proven account is kept for 30 minutes while the caller fills it in.
 
 ### AT-Only Boards
 `users.allowedAuthFactor1Types` lists the login types the board accepts: `password`, `sshPubKey` (SSH keys), `tlsClientAuth` and `atproto`. All four are accepted by default. To have callers log in with AT login only:
@@ -124,6 +124,15 @@ users: {
 Leaving `atproto` out turns AT login off the same way, without changing `atProto.enabled`.
 
 As with other lists in `config.hjson`, `allowedAuthFactor1Types` replaces the default list rather than adding to it.
+
+### Linking Existing Accounts
+Users who had an account before AT login can link their Bluesky account to it, so either login works and they keep their messages, files and settings. A DID is linked to one user at most. There are three ways:
+
+* **At login.** In the login menu template, an AT login with no user linked yet goes to `atprotoLinkAccount` (the `atproto_link_account` module, `ATLINK` art), named by the `atprotoLogin` menu's `config.linkAccount`. The caller chooses to apply as a new user, or to link an account they have here, with its user name and password, once. A wrong password counts as a failed login, as at the password login, and too many end the call. Linking replaces any Bluesky account the user had linked before. It works on [AT-only boards](#at-only-boards) too: the caller ends up logged in through AT login, not a password login. Users with 2FA are told to log in with their password and link from their settings instead, since a password alone can't prove them. Remove `config.linkAccount` to send callers straight to the application, as before.
+* **From user settings.** The `userAtProtoConfig` menu (the `atproto_account_config` module, `ATCFG` art) in the main menu template, reached with the `AT` command once you uncomment it, links the logged-in user's Bluesky account, approved in a browser as for AT login, or unlinks it. Unlinking needs the user's password, unless they have a saved SSH key, so they keep a way to log in. Users created by AT login have a password nobody knows: they set one, or an SSH key, before unlinking. Its views are `ET1` (handle), `MT2` (status), `ET3` (password, for unlinking) and `TM4` (`link`, `unlink`, `cancel`).
+* **By the sysop**, with `./oputil.js user atproto USERNAME DID` (or `clear` to unlink); see [oputil](../../admin/oputil.md). Nothing proves the DID belongs to the user, so look it up yourself. `./oputil.js user info USERNAME` shows a user's linked DID and handle.
+
+The `atprotoLinkAccount` menu's views are `TL1` (the caller's handle), `TM2` (`apply as a new user`, `link an account I have here`, `cancel`), `ET3` and `ET4` (user name and password) and `TL5` (status). Its `config` names the same account state menus as `atprotoLogin`, plus `newUserApplication`.
 
 ## Routes
 | Route | Purpose |

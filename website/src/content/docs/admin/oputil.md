@@ -90,6 +90,11 @@ Actions:
                                unlimited; "clear" removes the override so the
                                bands apply again.
 
+  atproto USERNAME DID         Link a user to an AT Protocol (Bluesky) identity,
+  atproto USERNAME clear       so they can log in with it, or unlink them. Look
+                               up a DID with https://bsky.social/xrpc/
+                               com.atproto.identity.resolveHandle?handle=HANDLE
+
   list [FILTER]                List users with optional FILTER.
 
   Valid filters:
@@ -127,6 +132,7 @@ info arguments:
 | `lock` | Locks the user account (prevents logins) | `./oputil.js user lock joeuser` | N/A |
 | `group`   | Modifies users group membership   | Add to group: `./oputil.js user group joeuser +derp`<br/>Remove from group: `./oputil.js user group joeuser ~derp`   | N/A    |
 | `time`   | Sets a user's daily time allowance, overriding any [`users.timeLimits`](../configuration/time-limits.md) band. `0` means unlimited; `clear` removes the override so the bands apply again.   | `./oputil.js user time joeuser 120`<br/>`./oputil.js user time joeuser clear`   | N/A    |
+| `atproto`   | Links a user to an AT Protocol (Bluesky) identity by its DID, so they can use [AT login](../servers/contentservers/atproto-handler.md), or unlinks them with `clear`. Nothing checks that the DID is the user's, so look it up yourself. A DID linked to another user is refused.   | `./oputil.js user atproto joeuser did:plc:xyjderwsx2kwmpuxgij6eyln`<br/>`./oputil.js user atproto joeuser clear`   | N/A    |
 
 #### Manage 2FA/OTP
 While `oputil.js` can be used to manage a user's 2FA/OTP, it is highly recommended to require users to opt-in themselves. See [Security](../configuration/security.md) for details.

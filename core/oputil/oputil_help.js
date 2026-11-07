@@ -74,6 +74,11 @@ Actions:
 
   remove-ssh-key USERNAME      Remove a user's SSH public key
 
+  atproto USERNAME DID         Link a user to an AT Protocol (Bluesky) identity,
+  atproto USERNAME clear       so they can log in with it, or unlink them. Look
+                               up a DID with https://bsky.social/xrpc/
+                               com.atproto.identity.resolveHandle?handle=HANDLE
+
   fix-achievement-stats        Recalculate every user's achievement totals from
                                the achievements they actually earned. Totals
                                awarded before the duplicate-award fix can sit

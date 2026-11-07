@@ -58,6 +58,8 @@ function userLogin(client, username, password, options, cb) {
     authInfo.type = options.authType || User.AuthFactor1Types.Password;
     authInfo.pubKey = options.ctx;
     authInfo.did = options.did; //  AT login only
+    //  AT login only: link |did| to this user, proven by |password|
+    authInfo.linkWithPassword = true === options.linkWithPassword;
 
     client.user.authenticateFactor1(authInfo, err => {
         if (err) {

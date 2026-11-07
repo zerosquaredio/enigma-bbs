@@ -101,6 +101,8 @@ The menu is not limited with `acs: SC`, which would refuse it without a word: th
 
 SSH callers authenticate before they reach the matrix. To offer AT login to SSH callers who connect as a new user name (such as `new`), point `sshConnectedNewUser`'s `next` at `matrix`, or straight at `atprotoLogin`.
 
+AT login over SSH takes a browser each time. After it, callers are offered the SSH key their client connected with, so next time they can connect as their user name with that key and skip the browser (see [Offering the Key a Caller Connected With](../loginservers/ssh.md#offering-the-key-a-caller-connected-with)). They can also add a key later with the `SSH` command from the main menu.
+
 The login screen uses the `ATPROTOLOGIN` art with two views: `ET1`, where the caller types their handle, and `MT2`, for instructions, the link to open and progress.
 
 An account with no user yet is sent to the menu named by the `atprotoLogin` menu's `config.newUserApplication`: in the template, `atprotoApplication` in the new user menu file. It is the `nua` module with `config.atProto` set, and works as `newUserApplication` but has no password fields. It uses the `ATNUA` art, which adds `TL13` to show the caller's handle. It can only be reached from AT login; opened any other way, it returns to the previous menu. The proven account is kept for 30 minutes while the caller fills it in.
@@ -117,7 +119,7 @@ users: {
 * Password and SSH key logins are refused everywhere: the login menu, SSH, NNTP and the REST API. A refused login type is not counted as a failed login, so it never locks an account.
 * The password application ("apply", or SSH as a new user name) sends callers to AT login instead, through the application menu's `config.atProtoLogin`, so they prove their account and then apply with no password. Without `atProtoLogin`, or with `atproto` left out too, they are shown the `loginAttemptLoginTypeNotAllowed` menu (the `LOGINTYPE` art), as are callers who choose "login".
 * Menus are not changed for you: you may want to remove the `login` option from your login matrix.
-* Users who already have an SSH key or password cannot use it while its type is left out; add the type back to let them.
+* Users who already have an SSH key or password cannot use it while its type is left out; add the type back to let them. To let AT users log in over SSH with a key, list `sshPubKey` too: `[ "atproto", "sshPubKey" ]`.
 
 Leaving `atproto` out turns AT login off the same way, without changing `atProto.enabled`.
 

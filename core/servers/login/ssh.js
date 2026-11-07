@@ -49,6 +49,29 @@ function isUntrustedTermSizeClient(clientIdent) {
 
 exports.isUntrustedTermSizeClient = isUntrustedTermSizeClient;
 
+//
+//  The public key a caller has proven they hold, in OpenSSH form
+//  ("<type> <base64>"), from a "publickey" authentication attempt; null if
+//  the attempt carries no signature or it doesn't verify. ssh2 leaves
+//  checking the signature to us.
+//
+function provenPublicKey(ctx) {
+    if ('publickey' !== ctx.method || !ctx.signature || !ctx.key) {
+        return null;
+    }
+
+    const openSshKey = `${ctx.key.algo} ${ctx.key.data.toString('base64')}`;
+    const parsed = ssh2.utils.parseKey(openSshKey);
+    const key = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!key || key instanceof Error || !_.isFunction(key.verify)) {
+        return null;
+    }
+
+    return true === key.verify(ctx.blob, ctx.signature, ctx.hashAlgo) ? openSshKey : null;
+}
+
+exports.provenPublicKey = provenPublicKey;
+
 function SSHClient(clientConn, connInfo) {
     baseClient.Client.apply(this, arguments);
 
@@ -258,6 +281,18 @@ function SSHClient(clientConn, connInfo) {
         //  sequence is hijacked in order to start the application process.
         //
         if (false === config.general.closedSystem && self.isNewUser) {
+            //  Keep a key the caller proved, to offer it to them once they
+            //  have logged in (core/ssh_key_offer.js). Clients start with
+            //  the "none" method; refusing it lets them try their keys
+            //  first. A client without one goes on to keyboard-interactive
+            //  or password, which are accepted as before.
+            if (
+                'none' === ctx.method &&
+                User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.SSHPubKey)
+            ) {
+                return safeContextReject(SSHClient.ValidAuthMethods);
+            }
+            self.provenPublicKey = provenPublicKey(ctx) || self.provenPublicKey;
             return ctx.accept();
         }
 

@@ -1,5 +1,10 @@
 # ENiGMA½ BBS Software
 
+> **This is a fork,** part of the [Cyberspace Framework](https://github.com/zerosquaredio/cyberspace-framework).
+> The `atproto-login` branch adds AT Protocol (Bluesky) login and related features,
+> developed to be offered to [upstream ENiGMA½](https://github.com/NuSkooler/enigma-bbs);
+> `master` mirrors upstream. See the framework repo for how the projects fit together.
+
 ![ENiGMA½ BBS](website/src/content/docs/assets/images/enigma-bbs.png "ENiGMA½ BBS")
 
 ENiGMA½ is a modern BBS software with a nostalgic flair!

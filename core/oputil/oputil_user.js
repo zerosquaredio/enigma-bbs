@@ -438,6 +438,63 @@ function formatSSHKeyInfo(user) {
         : `${algo} (${fingerprint})`;
 }
 
+function formatAtProtoInfo(user) {
+    const did = user.getProperty(UserProps.AtProtoDid);
+    if (!did) {
+        return 'none';
+    }
+    const handle = user.getProperty(UserProps.AtProtoHandle);
+    return handle ? `${did} (@${handle})` : did;
+}
+
+//
+//  user atproto USERNAME DID|clear: link a user to an AT identity (so they
+//  can use AT login), or unlink them. Nothing proves the DID here, so take
+//  it from a trusted source: e.g. resolve the handle with
+//  https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=...
+//
+function setAtProtoIdentity(user) {
+    const AtProtoLogin = require('../atproto/login.js');
+    const value = argv._[argv._.length - 1].toString();
+
+    const done = (err, message) => {
+        if (err) {
+            process.exitCode = ExitCodes.ERROR;
+            return console.error(err.message);
+        }
+        return console.info(message);
+    };
+
+    if ('clear' === value.toLowerCase()) {
+        return user.removeProperties(
+            [UserProps.AtProtoDid, UserProps.AtProtoHandle],
+            err => done(err, `AT identity cleared for "${user.username}"`)
+        );
+    }
+
+    //  did:<method>:<method-specific id>
+    if (!/^did:[a-z]+:[A-Za-z0-9._:%-]+$/.test(value)) {
+        process.exitCode = ExitCodes.BAD_ARGS;
+        return console.error('Expected a DID (e.g. did:plc:...) or "clear"');
+    }
+
+    AtProtoLogin.findUserIdByDid(value, (err, userId) => {
+        if (err) {
+            return done(err);
+        }
+        if (userId && userId !== user.userId) {
+            return done(new Error(`${value} is already linked to user ID ${userId}`));
+        }
+        return AtProtoLogin.setDidForUser(user, { did: value }, err =>
+            done(
+                err,
+                `"${user.username}" linked to ${value}; the handle is filled in ` +
+                    'at their next AT login'
+            )
+        );
+    });
+}
+
 function showUserInfo(user) {
     const User = require('../user');
     const ActivityPubSettings = require('../activitypub/settings');
@@ -525,6 +582,7 @@ ActivityPub  : ${apSettings.enabled ? 'enabled' : 'disabled'}`;
     infoDump += `\nTime today   : ${timeUsedTodayDesc()}`;
     infoDump += `\n2FA OTP      : ${oppDesc}`;
     infoDump += `\nSSH key      : ${formatSSHKeyInfo(user)}`;
+    infoDump += `\nAT identity  : ${formatAtProtoInfo(user)}`;
 
     if (argv.security && otp) {
         const backupCodesOrNa = () => {
@@ -1207,6 +1265,7 @@ function handleUserCommand() {
         'otp',
         'import-ssh-key',
         'time',
+        'atproto',
     ].includes(action);
 
     let userName;
@@ -1260,6 +1319,8 @@ function handleUserCommand() {
 
                 'import-ssh-key': importSSHKey,
                 'remove-ssh-key': removeSSHKey,
+
+                atproto: setAtProtoIdentity,
 
                 'fix-achievement-stats': fixAchievementStats,
                 'backfill-post-areas': backfillPostAreas,

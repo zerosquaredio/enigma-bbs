@@ -213,6 +213,14 @@
                         }
                     ]
                 }
+                /*
+                {
+                    //  Link or unlink a Bluesky (AT Protocol) account, so
+                    //  either login works. Needs AT login set up; see docs.
+                    value: { command: "AT" }
+                    action: @menu:userAtProtoConfig
+                }
+                */
                 {
                     value: { command: "T" }
                     action: @menu:userStatusConfig
@@ -927,6 +935,76 @@
             config: {
                 cls: true
                 pause: true
+            }
+        }
+
+        //
+        //  Link a Bluesky (AT Protocol) account to the user, approved in a web
+        //  browser as for Bluesky login, or unlink it (with the user's
+        //  password, or a saved SSH key, so they keep a way in). Not gated
+        //  with "acs: SC": the module tells insecure callers to use SSH.
+        //
+        userAtProtoConfig: {
+            desc: Bluesky Account
+            module: atproto_account_config
+            art: ATCFG
+            form: {
+                0: {
+                    mci: {
+                        ET1: {
+                            argName: handle
+                            maxLength: 253
+                            width: 40
+                            focus: true
+                            submit: true
+                        }
+                        MT2: {
+                            argName: status
+                            mode: preview
+                            width: 76
+                            height: 6
+                            focus: false
+                            acceptsFocus: false
+                        }
+                        ET3: {
+                            argName: password
+                            password: true
+                            maxLength: @config:users.passwordMax
+                            width: 20
+                        }
+                        HM4: {
+                            argName: submission
+                            items: [ "link", "unlink", "cancel" ]
+                            submit: true
+                            //  The plain-text art has no colors
+                            styleSGR1: "|00|08"
+                            styleSGR2: "|00|15"
+                            focusTextStyle: upper
+                        }
+                    }
+                    submit: {
+                        *: [
+                            {
+                                value: { submission: 0 }
+                                action: @method:startLogin
+                            }
+                            {
+                                value: { submission: 1 }
+                                action: @method:unlink
+                            }
+                            {
+                                value: { submission: 2 }
+                                action: @systemMethod:prevMenu
+                            }
+                        ]
+                    }
+                    actionKeys: [
+                        {
+                            keys: [ "escape" ]
+                            action: @method:cancel
+                        }
+                    ]
+                }
             }
         }
 

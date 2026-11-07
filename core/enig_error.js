@@ -104,6 +104,9 @@ exports.ErrorReasons = {
     //  users.allowedAuthFactor1Types
     LoginTypeNotAllowed: 'LOGINTYPENOTALLOWED',
     Invalid2FA: 'INVALID2FA',
+    //  the account has 2FA on, which the attempted operation can't check
+    //  (e.g. linking an AT identity with only a password)
+    TwoFactorEnabled: 'TWOFACTORENABLED',
 
     ValueTooShort: 'VALUE_TOO_SHORT',
     ValueTooLong: 'VALUE_TOO_LONG',

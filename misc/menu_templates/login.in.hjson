@@ -171,6 +171,10 @@
                 //  Not gated with "acs: SC", which refuses silently: the module
                 //  itself tells insecure callers (telnet) to use SSH, following
                 //  atProto.login.secureConnectionsOnly
+                //  where a Bluesky account with no user yet links a user the
+                //  caller already has here, or applies. Without it, such
+                //  accounts go straight to newUserApplication.
+                linkAccount: atprotoLinkAccount
                 //  where a Bluesky account with no user yet applies
                 newUserApplication: atprotoApplication
                 tooNodeMenu: loginAttemptTooNode
@@ -195,6 +199,7 @@
                             width: 76
                             height: 8
                             focus: false
+                            acceptsFocus: false
                         }
                     }
                     submit: {
@@ -202,6 +207,98 @@
                             {
                                 value: { handle: null }
                                 action: @method:startLogin
+                            }
+                        ]
+                    }
+                    actionKeys: [
+                        {
+                            keys: [ "escape" ]
+                            action: @method:cancel
+                        }
+                    ]
+                }
+            }
+        }
+
+        //
+        //  A Bluesky account that no user here is linked to yet, right after
+        //  logging in with it: apply as a new user, or link it to a user the
+        //  caller already has, with that user's password (once). Users with
+        //  2FA are told to link from their settings instead (userAtProtoConfig
+        //  in the main menu file).
+        //
+        atprotoLinkAccount: {
+            desc: Bluesky Login
+            module: atproto_link_account
+            art: ATLINK
+            next: [
+                {
+                    acs: AR2
+                    next: loginTwoFactorAuthOTPLoop
+                }
+                {
+                    next: fullLoginSequenceLoginArt
+                }
+            ]
+            config: {
+                newUserApplication: atprotoApplication
+                tooNodeMenu: loginAttemptTooNode
+                inactive: loginAttemptAccountInactive
+                disabled: loginAttemptAccountDisabled
+                locked: loginAttemptAccountLocked
+                loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
+            }
+            form: {
+                0: {
+                    mci: {
+                        TL1: {
+                            width: 60
+                        }
+                        TM2: {
+                            argName: choice
+                            items: [ "yes", "no" ]
+                            focus: true
+                            hotKeys: { Y: 0, N: 1 }
+                            hotKeySubmit: true
+                            submit: true
+                            //  The plain-text art has no colors
+                            styleSGR1: "|00|08"
+                            styleSGR2: "|00|15"
+                            focusTextStyle: upper
+                        }
+                        ET3: {
+                            argName: username
+                            maxLength: @config:users.usernameMax
+                            width: 20
+                        }
+                        ET4: {
+                            argName: password
+                            password: true
+                            maxLength: @config:users.passwordMax
+                            width: 20
+                            submit: true
+                        }
+                        TL5: {
+                            width: 76
+                        }
+                    }
+                    submit: {
+                        //  "Already have an account here?"
+                        2: [
+                            {
+                                value: { choice: 0 }
+                                action: @method:startLink
+                            }
+                            {
+                                value: { choice: 1 }
+                                action: @method:apply
+                            }
+                        ]
+                        //  the password
+                        4: [
+                            {
+                                value: { password: null }
+                                action: @method:link
                             }
                         ]
                     }

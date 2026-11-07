@@ -303,15 +303,7 @@ module.exports = class User {
                         return callback(err);
                     }
 
-                    const passDkBuf = Buffer.from(dk, 'hex');
-                    const propsDkBuf = Buffer.from(props[UserProps.PassPbkdf2Dk], 'hex');
-
-                    //  timingSafeEqual requires equal-length buffers; length mismatch
-                    //  means stored params don't match what we derived — treat as failure.
-                    if (
-                        passDkBuf.length !== propsDkBuf.length ||
-                        !crypto.timingSafeEqual(passDkBuf, propsDkBuf)
-                    ) {
+                    if (!User.derivedKeyMatches(dk, props)) {
                         return callback(Errors.AccessDenied('Invalid password'));
                     }
 
@@ -425,12 +417,38 @@ module.exports = class User {
         //  |authInfo.did| has already been proven by an AT OAuth login; all
         //  that is left is to check it is the one bound to this user
         const validateAtProtoDid = (props, callback) => {
+            if (authInfo.linkWithPassword) {
+                return validateAtProtoLink(props, callback);
+            }
             const storedDid = props[UserProps.AtProtoDid];
             if (!storedDid || !_.isString(authInfo.did) || storedDid !== authInfo.did) {
                 return callback(Errors.AccessDenied('AT identity does not match'));
             }
             return callback(null);
         };
+
+        //
+        //  Linking |authInfo.did| (already proven) to this existing user,
+        //  proven by their password: the caller logs in as them, through
+        //  the atproto login type, and the DID is then saved by
+        //  core/atproto/login.js, replacing any the user had (as the user
+        //  could from their settings after a password login). A wrong
+        //  password counts as a failed login.
+        //
+        const validateAtProtoLink = (props, callback) => {
+            if (!_.isString(authInfo.did) || !authInfo.did.startsWith('did:')) {
+                return callback(Errors.AccessDenied('A DID is required'));
+            }
+            return validatePassword(props, callback);
+        };
+
+        //  Reasons that are not failed logins: the password was right, or
+        //  was never checked
+        const NotFailedLoginReasons = [
+            ErrorReasons.Disabled,
+            ErrorReasons.Inactive,
+            ErrorReasons.TwoFactorEnabled,
+        ];
 
         async.waterfall(
             [
@@ -522,6 +540,24 @@ module.exports = class User {
 
                     return callback(null);
                 },
+                function checkLinkWithout2FA(callback) {
+                    //  A password alone must not link an account that also
+                    //  needs a second factor: the link would be saved before
+                    //  that factor is checked. Such users link from their
+                    //  settings once logged in.
+                    if (
+                        authInfo.linkWithPassword &&
+                        tempAuthInfo.properties[UserProps.AuthFactor2OTP]
+                    ) {
+                        return callback(
+                            Errors.AccessDenied(
+                                'Account has 2FA enabled',
+                                ErrorReasons.TwoFactorEnabled
+                            )
+                        );
+                    }
+                    return callback(null);
+                },
                 function initGroups(callback) {
                     userGroup.getGroupsForUser(tempAuthInfo.userId, (err, groups) => {
                         if (!err) {
@@ -541,9 +577,7 @@ module.exports = class User {
                     //  If locked already, update the lock timestamp -- ie, extend the lockout period.
                     //
                     if (
-                        ![ErrorReasons.Disabled, ErrorReasons.Inactive].includes(
-                            err.reasonCode
-                        ) &&
+                        !NotFailedLoginReasons.includes(err.reasonCode) &&
                         tempAuthInfo.userId
                     ) {
                         self.processFailedLogin(tempAuthInfo.userId, persistErr => {
@@ -1242,6 +1276,51 @@ module.exports = class User {
             }
         }
         return User.LegacyPBKDF2;
+    }
+
+    //
+    //  Calls back with whether |password| is the one stored in |props|
+    //  (at least the auth property group). Counts nothing as a failed login.
+    //
+    static passwordMatchesProperties(password, props, cb) {
+        if (!_.isString(password) || !props[UserProps.PassPbkdf2Dk]) {
+            return cb(null, false);
+        }
+        User.generatePasswordDerivedKey(
+            password,
+            props[UserProps.PassPbkdf2Salt],
+            User.getHashParams(props),
+            (err, dk) => {
+                return err ? cb(err) : cb(null, User.derivedKeyMatches(dk, props));
+            }
+        );
+    }
+
+    //  Is |dk| (hex) the password derived key stored in |props|?
+    static derivedKeyMatches(dk, props) {
+        const passDkBuf = Buffer.from(dk, 'hex');
+        const propsDkBuf = Buffer.from(props[UserProps.PassPbkdf2Dk] || '', 'hex');
+
+        //  timingSafeEqual requires equal-length buffers; length mismatch
+        //  means stored params don't match what we derived — treat as failure.
+        return (
+            passDkBuf.length === propsDkBuf.length &&
+            crypto.timingSafeEqual(passDkBuf, propsDkBuf)
+        );
+    }
+
+    //  As passwordMatchesProperties(), for the user with |userId|
+    static passwordMatches(userId, password, cb) {
+        User.loadProperties(
+            userId,
+            { names: User.StandardPropertyGroups.auth },
+            (err, props) => {
+                if (err) {
+                    return cb(err);
+                }
+                return User.passwordMatchesProperties(password, props, cb);
+            }
+        );
     }
 
     //  Returns true when the stored hash was produced with parameters that differ from the current target.

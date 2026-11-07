@@ -28,11 +28,20 @@ const _ = require('lodash');
 //  (setPendingIdentity()), and sends the caller to the new user
 //  application, which calls createUserForDid() on submit.
 //
+//  An existing user can be linked to an AT identity instead: right after an
+//  AT login finds no user, by logging in with their password once
+//  (loginLinkingExistingUser()), or from their settings when logged in
+//  (linkDidToUser()). One DID is linked to one user at most.
+//
 
 exports.loginWithDid = loginWithDid;
 exports.findUserIdByDid = findUserIdByDid;
 exports.checkNewUserAllowed = checkNewUserAllowed;
 exports.createUserForDid = createUserForDid;
+exports.loginLinkingExistingUser = loginLinkingExistingUser;
+exports.linkDidToUser = linkDidToUser;
+exports.unlinkDidFromUser = unlinkDidFromUser;
+exports.setDidForUser = setDidForUser;
 exports.setPendingIdentity = setPendingIdentity;
 exports.getPendingIdentity = getPendingIdentity;
 exports.clearPendingIdentity = clearPendingIdentity;
@@ -253,6 +262,190 @@ function createUserForDid(client, identity, newUser, cb) {
             );
             return cb(null);
         });
+    });
+}
+
+//
+//  Log in as the existing user |username|, proven by |password|, and link
+//  |identity| (just proven, with no user yet) to them. For callers who have
+//  an account here from before AT login. Counts a wrong password as a failed
+//  login. A DID the user had before is replaced. Calls back as loginWithDid()
+//  does, or with:
+//  * ErrorReasons.AlreadyThere: another user is already linked to this DID
+//  * ErrorReasons.TwoFactorEnabled: the user has 2FA; they must link from
+//    their settings after logging in (a password alone can't link them)
+//
+function loginLinkingExistingUser(client, identity, username, password, cb) {
+    const did = _.get(identity, 'did');
+    const handle = _.get(identity, 'handle') || null;
+
+    const refused = checkCanUse(client, did);
+    if (refused) {
+        return cb(refused);
+    }
+
+    async.series(
+        [
+            callback => checkDidUnlinked(did, null, callback),
+            callback => {
+                return userLogin(
+                    client,
+                    username,
+                    password,
+                    {
+                        authType: User.AuthFactor1Types.AtProto,
+                        did,
+                        linkWithPassword: true,
+                    },
+                    callback
+                );
+            },
+            //  Again, in case another session linked it meanwhile
+            callback => checkDidUnlinked(did, client.user.userId, callback),
+            callback => setDidForUser(client.user, { did, handle }, callback),
+        ],
+        err => {
+            if (err) {
+                return cb(err);
+            }
+            client.log.info(
+                { userId: client.user.userId, did },
+                'AT identity linked to existing user at login'
+            );
+            return cb(null);
+        }
+    );
+}
+
+//
+//  Link |identity| (just proven) to the logged in user, replacing any DID
+//  they had. Refused with ErrorReasons.AlreadyThere if another user has it.
+//
+function linkDidToUser(client, identity, cb) {
+    const did = _.get(identity, 'did');
+    const refused = checkCanUse(client, did);
+    if (refused) {
+        return cb(refused);
+    }
+    if (!client.user.isAuthenticated()) {
+        return cb(Errors.AccessDenied('Not logged in'));
+    }
+
+    checkDidUnlinked(did, client.user.userId, err => {
+        if (err) {
+            return cb(err);
+        }
+        setDidForUser(client.user, identity, err => {
+            if (err) {
+                return cb(err);
+            }
+            client.log.info({ did }, 'User linked their AT identity');
+            return cb(null);
+        });
+    });
+}
+
+//
+//  Unlink the logged in user's AT identity, but only if they keep a way to
+//  log in: their password (|password| must be right, and password logins
+//  allowed) or a saved SSH key (with SSH key logins allowed). Users created
+//  by AT login have a password nobody knows, so they set one, or an SSH
+//  key, first. Refused with ErrorReasons.NotAllowed if no way would be left,
+//  or ErrorReasons.ValueInvalid if |password| is given and wrong.
+//
+function unlinkDidFromUser(client, password, cb) {
+    const user = client.user;
+    if (!user.isAuthenticated()) {
+        return cb(Errors.AccessDenied('Not logged in'));
+    }
+    if (!user.getProperty(UserProps.AtProtoDid)) {
+        return cb(
+            Errors.DoesNotExist('No AT identity is linked', ErrorReasons.DoesNotExist)
+        );
+    }
+
+    const keepsSshKey =
+        User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.SSHPubKey) &&
+        !!user.getProperty(UserProps.SSHPubKey);
+
+    const checkPassword = callback => {
+        if (!password) {
+            return callback(null, false);
+        }
+        User.passwordMatches(user.userId, password, (err, matches) => {
+            if (err) {
+                return callback(err);
+            }
+            if (!matches) {
+                return callback(
+                    Errors.BadLogin('Invalid password', ErrorReasons.ValueInvalid)
+                );
+            }
+            return callback(
+                null,
+                User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.Password)
+            );
+        });
+    };
+
+    checkPassword((err, keepsPassword) => {
+        if (err) {
+            return cb(err);
+        }
+        if (!keepsPassword && !keepsSshKey) {
+            return cb(
+                Errors.AccessDenied(
+                    'Unlinking would leave no way to log in',
+                    ErrorReasons.NotAllowed
+                )
+            );
+        }
+
+        const did = user.getProperty(UserProps.AtProtoDid);
+        user.removeProperties([UserProps.AtProtoDid, UserProps.AtProtoHandle], err => {
+            if (err) {
+                return cb(err);
+            }
+            client.log.info({ did }, 'User unlinked their AT identity');
+            return cb(null);
+        });
+    });
+}
+
+//
+//  Save |identity| ({ did, handle }) as |user|'s AT identity, as is: the
+//  caller checks it may be linked. Also used by oputil, which can't prove it.
+//
+function setDidForUser(user, identity, cb) {
+    const properties = { [UserProps.AtProtoDid]: identity.did };
+    if (identity.handle) {
+        properties[UserProps.AtProtoHandle] = identity.handle;
+    }
+    user.persistProperties(properties, err => {
+        if (err || identity.handle) {
+            return cb(err || null);
+        }
+        //  An old handle would belong to the previous DID
+        return user.removeProperty(UserProps.AtProtoHandle, cb);
+    });
+}
+
+//  Calls back with ErrorReasons.AlreadyThere if a user other than
+//  |exceptUserId| is linked to |did|
+function checkDidUnlinked(did, exceptUserId, cb) {
+    findUserIdByDid(did, (err, userId) => {
+        if (err) {
+            return cb(err);
+        }
+        if (userId && userId !== exceptUserId) {
+            return cb(
+                Errors.AccessDenied(
+                    'A user is already linked to this AT identity',
+                    ErrorReasons.AlreadyThere
+                )
+            );
+        }
+        return cb(null);
     });
 }
 

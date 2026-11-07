@@ -26,7 +26,12 @@ exports.moduleInfo = {
 //  The menu's |next| works as for the password login menu (e.g. on to 2FA),
 //  and config.tooNodeMenu / inactive / disabled / locked name the menus for
 //  those account states. An account with no user yet goes on to
+//  config.linkAccount, where the caller may link it to a user they already
+//  have (core/atproto_link_account.js) or apply; without linkAccount, on to
 //  config.newUserApplication to apply.
+//
+//  Other modules extend this one to prove an identity for something else
+//  (core/atproto_account_config.js): they override identityProven().
 //
 
 const FormIds = {
@@ -61,6 +66,29 @@ const Messages = {
     failed: 'The login could not be completed. Try again, or press ESC to go back.',
 };
 
+//
+//  For a failed login that has a menu of its own (account states, as for
+//  password login), go to it and return true
+//
+function gotoAccountStateMenu(menu, err) {
+    const menuKey = {
+        [ErrorReasons.AlreadyLoggedIn]: 'tooNodeMenu',
+        [ErrorReasons.Disabled]: 'disabled',
+        [ErrorReasons.Inactive]: 'inactive',
+        [ErrorReasons.Locked]: 'locked',
+        [ErrorReasons.TooMany]: 'toomany',
+        [ErrorReasons.LoginTypeNotAllowed]: 'loginTypeNotAllowed',
+    }[err.reasonCode];
+    const target = menuKey && _.get(menu, ['menuConfig', 'config', menuKey]);
+    if (!target) {
+        return false;
+    }
+    menu.gotoMenu(target, _.noop);
+    return true;
+}
+
+exports.gotoAccountStateMenu = gotoAccountStateMenu;
+
 exports.getModule = class AtProtoLoginModule extends MenuModule {
     constructor(options) {
         super(options);
@@ -92,14 +120,16 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
                             return cb(err);
                         }
 
-                        this.showStatus(
-                            this.unavailableMessage() || Messages.instructions
-                        );
+                        this.showInitialStatus();
                         return cb(null);
                     }
                 );
             });
         });
+    }
+
+    showInitialStatus() {
+        this.showStatus(this.unavailableMessage() || Messages.instructions);
     }
 
     //
@@ -233,11 +263,15 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
             return this.showStatus(Messages.wrongAccount);
         }
 
-        const proven = { did: identity.did, handle: identity.handle };
-        AtProtoLogin.loginWithDid(this.client, proven, err => {
+        return this.identityProven({ did: identity.did, handle: identity.handle });
+    }
+
+    //  The caller has proven they hold |identity|: log in as its user
+    identityProven(identity) {
+        AtProtoLogin.loginWithDid(this.client, identity, err => {
             if (err) {
                 if (ErrorReasons.DoesNotExist === err.reasonCode) {
-                    return this.startApplication(proven);
+                    return this.noUserForIdentity(identity);
                 }
                 return this.loginFailed(err);
             }
@@ -250,6 +284,21 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
                 }
             });
         });
+    }
+
+    //
+    //  No user is linked to this account yet: on to config.linkAccount, to
+    //  link a user the caller already has or apply, if configured; else
+    //  straight to applying
+    //
+    noUserForIdentity(identity) {
+        const menu = _.get(this, 'menuConfig.config.linkAccount');
+        if (!menu) {
+            return this.startApplication(identity);
+        }
+        this.client.log.info({ did: identity.did }, 'AT login: no user linked yet');
+        AtProtoLogin.setPendingIdentity(this.client, identity);
+        return this.gotoMenu(menu, _.noop);
     }
 
     //
@@ -278,17 +327,8 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
     }
 
     loginFailed(err) {
-        //  Account states that have their own menus, as for password login
-        const menuKey = {
-            [ErrorReasons.AlreadyLoggedIn]: 'tooNodeMenu',
-            [ErrorReasons.Disabled]: 'disabled',
-            [ErrorReasons.Inactive]: 'inactive',
-            [ErrorReasons.Locked]: 'locked',
-            [ErrorReasons.LoginTypeNotAllowed]: 'loginTypeNotAllowed',
-        }[err.reasonCode];
-        const menu = menuKey && _.get(this, ['menuConfig', 'config', menuKey]);
-        if (menu) {
-            return this.gotoMenu(menu, () => {});
+        if (gotoAccountStateMenu(this, err)) {
+            return;
         }
 
         this.client.log.info({ error: err.message }, 'AT login refused');

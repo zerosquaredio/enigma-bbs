@@ -176,6 +176,10 @@ function findUserIdByDid(did, cb) {
 //
 //  May |did| apply for a new user? Checked before the application is shown,
 //  so nobody fills in a form that can't succeed, and again on submit.
+//  Whether they are admitted, and how, is up to atProto.admission
+//  (core/atproto/admission/). Calls back with (err, info):
+//  * info.firstUser: they would be the first user (root), as rootDid
+//  * info.takesInviteCodes: the application should ask for an invite code
 //
 function checkNewUserAllowed(client, did, cb) {
     const refused = checkCanUse(client, did);
@@ -184,14 +188,6 @@ function checkNewUserAllowed(client, did, cb) {
     }
 
     const settings = loginSettings();
-    if (!settings.allowNewUsers || true === _.get(Config(), 'general.closedSystem')) {
-        return cb(
-            Errors.AccessDenied(
-                'This board is not accepting new users',
-                ErrorReasons.NotAllowed
-            )
-        );
-    }
 
     async.waterfall(
         [
@@ -211,58 +207,148 @@ function checkNewUserAllowed(client, did, cb) {
             },
             (userCount, callback) => {
                 //  The first user is root and a sysop, so a fresh board must
-                //  not hand that to whoever applies first
-                if (0 === userCount && did !== settings.rootDid) {
-                    return callback(
-                        Errors.AccessDenied(
-                            'Only atProto.login.rootDid may become the first user',
-                            ErrorReasons.NotAllowed
-                        )
-                    );
+                //  not hand that to whoever applies first. rootDid is let in
+                //  whatever the admission policy says.
+                if (0 === userCount) {
+                    if (did !== settings.rootDid) {
+                        return callback(
+                            Errors.AccessDenied(
+                                'Only atProto.login.rootDid may become the first user',
+                                ErrorReasons.NotAllowed
+                            )
+                        );
+                    }
+                    return callback(null, { firstUser: true, takesInviteCodes: false });
                 }
-                return callback(null);
+
+                Admission().canApply({ did }, (err, result) => {
+                    if (err) {
+                        return callback(err);
+                    }
+                    if (!result.canApply) {
+                        return callback(notAdmittedError());
+                    }
+                    return callback(null, {
+                        firstUser: false,
+                        takesInviteCodes: result.takesInviteCodes,
+                    });
+                });
             },
         ],
-        err => cb(err || null)
+        (err, info) => cb(err || null, info)
+    );
+}
+
+//  Loaded when needed, so boards without AT login never touch it
+const Admission = () => require('./admission');
+
+function notAdmittedError() {
+    const inviteOnly = Admission()
+        .policy()
+        .some(id => true === Admission().getVerifier(id).invitationOnly);
+    return Errors.AccessDenied(
+        inviteOnly
+            ? 'This board is invitation only'
+            : 'This board is not accepting new users',
+        ErrorReasons.NotAllowed
     );
 }
 
 //
 //  Create |newUser| (a User with its username and application properties
-//  set, not yet saved) bound to |identity|.
+//  set, not yet saved) bound to |identity|, if admitted: with the groups
+//  and account status the admission policy decides. |options.inviteCode| is
+//  a code the applicant entered, if any. A code that is no use is refused
+//  with ErrorReasons.ValueInvalid.
 //
-function createUserForDid(client, identity, newUser, cb) {
+function createUserForDid(client, identity, newUser, options, cb) {
+    if (!cb && _.isFunction(options)) {
+        cb = options;
+        options = {};
+    }
     const { did, handle } = identity;
+    const inviteCode = _.trim(_.get(options, 'inviteCode', '')) || undefined;
 
-    checkNewUserAllowed(client, did, err => {
-        if (err) {
-            return cb(err);
-        }
+    async.waterfall(
+        [
+            callback => checkNewUserAllowed(client, did, callback),
+            (info, callback) => {
+                if (info.firstUser) {
+                    //  root: User.create() makes them active and a sysop
+                    return callback(null, { verifier: 'root', use: () => true });
+                }
+                Admission().admit({ did, handle, inviteCode }, (err, decision) => {
+                    if (err) {
+                        return callback(err);
+                    }
+                    if (!decision) {
+                        return callback(
+                            inviteCode && info.takesInviteCodes
+                                ? Errors.AccessDenied(
+                                      'That invite code cannot be used',
+                                      ErrorReasons.ValueInvalid
+                                  )
+                                : notAdmittedError()
+                        );
+                    }
+                    return callback(null, decision);
+                });
+            },
+            (decision, callback) => {
+                //  Take the invite (or a use of the code) before creating the
+                //  user, so two applicants can't both have the last one
+                let taken;
+                try {
+                    taken = decision.use();
+                } catch (err) {
+                    return callback(err);
+                }
+                if (!taken) {
+                    return callback(
+                        Errors.AccessDenied(
+                            'That invite was used up a moment ago',
+                            ErrorReasons.ValueInvalid
+                        )
+                    );
+                }
 
-        newUser.properties[UserProps.AtProtoDid] = did;
-        if (handle) {
-            newUser.properties[UserProps.AtProtoHandle] = handle;
-        }
+                newUser.properties[UserProps.AtProtoDid] = did;
+                if (handle) {
+                    newUser.properties[UserProps.AtProtoHandle] = handle;
+                }
 
-        //  ENiGMA½ always stores a password. Nobody knows this one, so
-        //  password login stays closed unless the user sets their own.
-        const createUserInfo = {
-            password: crypto.randomBytes(32).toString('hex'),
-            sessionId: _.get(client, 'session.uniqueId'),
-        };
+                //  ENiGMA½ always stores a password. Nobody knows this one, so
+                //  password login stays closed unless the user sets their own.
+                const createUserInfo = {
+                    password: crypto.randomBytes(32).toString('hex'),
+                    sessionId: _.get(client, 'session.uniqueId'),
+                    groups: decision.groups,
+                    accountStatus: decision.accountStatus,
+                };
 
-        newUser.create(createUserInfo, err => {
-            if (err) {
-                return cb(err);
-            }
+                newUser.create(createUserInfo, err => {
+                    if (err) {
+                        (decision.undo || _.noop)();
+                        return callback(err);
+                    }
+                    (decision.used || _.noop)(newUser.userId);
 
-            client.log.info(
-                { username: newUser.username, userId: newUser.userId, did },
-                `New user "${newUser.username}" created by AT login`
-            );
-            return cb(null);
-        });
-    });
+                    client.log.info(
+                        {
+                            username: newUser.username,
+                            userId: newUser.userId,
+                            did,
+                            admittedBy: decision.verifier,
+                            ref: decision.ref,
+                        },
+                        `New user "${newUser.username}" created by AT login`
+                    );
+                    return callback(null);
+                });
+            },
+        ],
+        err => cb(err || null)
+    );
 }
 
 //

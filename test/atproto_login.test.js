@@ -7,6 +7,10 @@ const configModule = require('../core/config.js');
 const dbModule = require('../core/database.js');
 const Events = require('../core/events.js');
 const { ErrorReasons } = require('../core/enig_error.js');
+const {
+    createInviteStore,
+    createInviteCodeStore,
+} = require('../core/atproto/admission/store.js');
 
 let testConfig;
 const baseConfig = () => ({
@@ -281,7 +285,8 @@ describe('AT login', () => {
                 'alice.bsky.social'
             );
             assert.equal(client.user.getProperty(UserProps.RealName), 'Applicant');
-            assert.deepEqual(groupsOf(client.user.userId), ['users']);
+            //  admitted by the default policy, ["open"]
+            assert.deepEqual(groupsOf(client.user.userId), ['users', 'verified-open']);
         });
 
         it('log in through the atproto login type with their DID', async () => {
@@ -472,6 +477,277 @@ describe('AT login', () => {
                 await call(AtProtoLogin.deriveUsername, 'alice.other'),
                 'alice2'
             );
+        });
+    });
+
+    describe('admission', () => {
+        let atDb;
+        let Admission;
+        let invites;
+        let codes;
+
+        before(() => {
+            delete require.cache[require.resolve('../core/atproto/admission/index.js')];
+            Admission = require('../core/atproto/admission/index.js');
+        });
+
+        beforeEach(() => {
+            atDb = new Database(':memory:');
+            dbModule.initAtProtoDatabase(atDb);
+            invites = createInviteStore(atDb);
+            codes = createInviteCodeStore(atDb);
+            Admission._setStores(invites, codes);
+        });
+
+        afterEach(() => {
+            Admission._setStores(null);
+            atDb.close();
+        });
+
+        const Alice = { did: 'did:plc:alice', handle: 'alice.test' };
+        const Bob = { did: 'did:plc:bob', handle: 'bob.test' };
+
+        //  As applyAndLogin(), with an invite code entered on the form
+        const apply = async (identity, inviteCode) => {
+            const client = makeClient();
+            const newUser = new User();
+            newUser.username = await call(AtProtoLogin.deriveUsername, identity.handle);
+            newUser.properties = { [UserProps.RealName]: 'Applicant' };
+            await call(AtProtoLogin.createUserForDid, client, identity, newUser, {
+                inviteCode,
+            });
+            return newUser;
+        };
+
+        const statusOf = user => parseInt(user.getProperty(UserProps.AccountStatus), 10);
+
+        const setPolicy = (policy, extra = {}) => {
+            testConfig.atProto.admission = Object.assign({ policy }, extra);
+        };
+
+        it('admits an invited account, with the invite groups, active', async () => {
+            await withRootUser();
+            setPolicy(['invite']);
+            testConfig.users.requireActivation = true;
+            const id = invites.add({ did: Alice.did, groups: ['users', 'friends'] });
+
+            const user = await apply(Alice);
+            assert.deepEqual(groupsOf(user.userId), [
+                'friends',
+                'users',
+                'verified-invite',
+            ]);
+            assert.equal(statusOf(user), User.AccountStatus.active);
+            const invite = invites.get(id);
+            assert.ok(invite.usedAt);
+            assert.equal(invite.usedByUserId, user.userId);
+        });
+
+        it('refuses anyone not invited, saying the board is invitation only', async () => {
+            await withRootUser();
+            setPolicy(['invite']);
+            invites.add({ did: Alice.did });
+            await assert.rejects(
+                call(AtProtoLogin.checkNewUserAllowed, makeClient(), Bob.did),
+                {
+                    reason: 'This board is invitation only',
+                }
+            );
+            await assert.rejects(apply(Bob), { reason: 'This board is invitation only' });
+        });
+
+        it('uses an invite once', async () => {
+            await withRootUser();
+            setPolicy(['invite']);
+            invites.add({ did: Alice.did });
+            const user = await apply(Alice);
+            await assert.rejects(
+                call(AtProtoLogin.checkNewUserAllowed, makeClient(), Alice.did),
+                {
+                    reasonCode: ErrorReasons.AlreadyThere,
+                }
+            );
+            assert.equal(invites.usableFor(Alice.did), undefined);
+            assert.ok(user.userId);
+        });
+
+        it('does not use a revoked or expired invite', async () => {
+            await withRootUser();
+            setPolicy(['invite']);
+            const id = invites.add({ did: Alice.did });
+            assert.equal(invites.revoke(id), true);
+            await assert.rejects(apply(Alice), { reasonCode: ErrorReasons.NotAllowed });
+
+            invites.add({ did: Bob.did, lifetimeSeconds: -1 });
+            await assert.rejects(apply(Bob), { reasonCode: ErrorReasons.NotAllowed });
+        });
+
+        it('lets invites in on a board closed to new users, and nobody else', async () => {
+            await withRootUser();
+            setPolicy(['invite', 'open']);
+            testConfig.atProto.login.allowNewUsers = false;
+            invites.add({ did: Alice.did });
+
+            await apply(Alice);
+            await assert.rejects(apply(Bob), { reason: 'This board is invitation only' });
+        });
+
+        it('admits with an invite code, using it up', async () => {
+            await withRootUser();
+            setPolicy(['invite-code']);
+            const { id, code } = codes.add({
+                groups: ['users', 'codeholders'],
+                maxUses: 1,
+            });
+
+            const info = await call(
+                AtProtoLogin.checkNewUserAllowed,
+                makeClient(),
+                Alice.did
+            );
+            assert.equal(info.takesInviteCodes, true);
+
+            //  typed as a person might: lower case, no dashes
+            const user = await apply(Alice, code.replace(/-/g, '').toLowerCase());
+            assert.deepEqual(groupsOf(user.userId), [
+                'codeholders',
+                'users',
+                'verified-invite-code',
+            ]);
+            assert.equal(codes.list().find(c => c.id === id).usesLeft, 0);
+
+            //  With no code left that could admit anyone, the board takes
+            //  no applications at all
+            await assert.rejects(apply(Bob, code), {
+                reasonCode: ErrorReasons.NotAllowed,
+            });
+        });
+
+        it('refuses a used-up code while other codes are open', async () => {
+            await withRootUser();
+            setPolicy(['invite-code']);
+            const { code } = codes.add({ maxUses: 1 });
+            codes.add({ maxUses: 1 });
+            await apply(Alice, code);
+            await assert.rejects(apply(Bob, code), {
+                reasonCode: ErrorReasons.ValueInvalid,
+            });
+        });
+
+        it('lets only one of two applicants have the last use of a code', async () => {
+            await withRootUser();
+            setPolicy(['invite-code']);
+            const { id, code } = codes.add({ maxUses: 1 });
+            //  Someone else takes it between the check and the use
+            const realUse = codes.use;
+            codes.use = codeId => realUse(codeId) && realUse(codeId);
+            await assert.rejects(apply(Alice, code), {
+                reason: 'That invite was used up a moment ago',
+            });
+            codes.use = realUse;
+            assert.equal(codes.list().find(c => c.id === id).usesLeft, 0);
+        });
+
+        it('refuses an unknown code, or none, when a code is needed', async () => {
+            await withRootUser();
+            setPolicy(['invite-code']);
+            codes.add({ maxUses: 5 });
+            await assert.rejects(apply(Alice, 'AAAA-BBBB-CCCC'), {
+                reasonCode: ErrorReasons.ValueInvalid,
+            });
+            await assert.rejects(apply(Alice), {
+                reason: 'This board is invitation only',
+            });
+        });
+
+        it('does not take applications for codes when no code can be used', async () => {
+            await withRootUser();
+            setPolicy(['invite-code']);
+            await assert.rejects(
+                call(AtProtoLogin.checkNewUserAllowed, makeClient(), Alice.did),
+                {
+                    reasonCode: ErrorReasons.NotAllowed,
+                }
+            );
+        });
+
+        it('gives a code back when the user could not be created', async () => {
+            await withRootUser();
+            setPolicy(['invite-code']);
+            const { id, code } = codes.add({ maxUses: 1 });
+            await apply(Alice, codes.add({ maxUses: 1 }).code);
+
+            //  Bob applies with Alice's username: the code must not be lost
+            const client = makeClient();
+            const newUser = new User();
+            newUser.username = 'alice';
+            newUser.properties = {};
+            await assert.rejects(
+                call(AtProtoLogin.createUserForDid, client, Bob, newUser, {
+                    inviteCode: code,
+                })
+            );
+            assert.equal(codes.list().find(c => c.id === id).usesLeft, 1);
+        });
+
+        it('starts sysop-approval applicants inactive', async () => {
+            await withRootUser();
+            setPolicy(['sysop-approval']);
+            const user = await apply(Alice);
+            assert.equal(statusOf(user), User.AccountStatus.inactive);
+            assert.deepEqual(groupsOf(user.userId), ['users', 'verified-sysop-approval']);
+        });
+
+        it('takes the first verifier in the policy that admits', async () => {
+            await withRootUser();
+            setPolicy(['invite', 'sysop-approval']);
+            invites.add({ did: Alice.did });
+            assert.equal(statusOf(await apply(Alice)), User.AccountStatus.active);
+            assert.equal(statusOf(await apply(Bob)), User.AccountStatus.inactive);
+        });
+
+        it('admits the rest provisionally when a provisional group is set', async () => {
+            await withRootUser();
+            setPolicy(['invite'], { provisionalGroup: 'provisional' });
+            const user = await apply(Alice);
+            assert.deepEqual(groupsOf(user.userId), ['provisional']);
+            assert.equal(statusOf(user), User.AccountStatus.active);
+        });
+
+        it('admits nobody provisionally on a board closed to new users', async () => {
+            await withRootUser();
+            setPolicy(['invite'], { provisionalGroup: 'provisional' });
+            testConfig.atProto.login.allowNewUsers = false;
+            await assert.rejects(apply(Alice), { reasonCode: ErrorReasons.NotAllowed });
+        });
+
+        it('lets rootDid become the first user whatever the policy', async () => {
+            setPolicy(['invite']);
+            testConfig.atProto.login.allowNewUsers = false;
+            const client = await withRootUser();
+            assert.ok(groupsOf(client.user.userId).includes('sysops'));
+        });
+
+        it('ignores verifiers it does not know', async () => {
+            await withRootUser();
+            setPolicy(['no-such-verifier', 'open']);
+            await apply(Alice);
+        });
+
+        it('says why a code typed on the form cannot be used', async () => {
+            const used = codes.add({ maxUses: 1 });
+            assert.equal(codes.use(used.id), true);
+            const revoked = codes.add({ maxUses: 1 });
+            codes.revoke(revoked.id);
+            const expired = codes.add({ maxUses: 1, lifetimeSeconds: -1 });
+            const good = codes.add({ maxUses: 1 });
+
+            const reason = typed => call(Admission.checkInviteCode, typed);
+            assert.equal(await reason(good.code), null);
+            assert.equal(await reason('nonsense'), 'unknown');
+            assert.equal(await reason(used.code), 'used');
+            assert.equal(await reason(revoked.code), 'revoked');
+            assert.equal(await reason(expired.code), 'expired');
         });
     });
 });

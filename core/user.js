@@ -641,9 +641,15 @@ module.exports = class User {
         const self = this;
 
         //  :TODO: set various defaults, e.g. default activation status, etc.
-        self.properties[UserProps.AccountStatus] = config.users.requireActivation
-            ? User.AccountStatus.inactive
-            : User.AccountStatus.active;
+        //  createUserInfo.accountStatus and .groups, when given, replace the
+        //  defaults (AT admission decides them: core/atproto/admission/)
+        self.properties[UserProps.AccountStatus] = _.isNumber(
+            createUserInfo.accountStatus
+        )
+            ? createUserInfo.accountStatus
+            : config.users.requireActivation
+              ? User.AccountStatus.inactive
+              : User.AccountStatus.active;
 
         async.waterfall(
             [
@@ -681,7 +687,9 @@ module.exports = class User {
                             }
 
                             //  Assign initial groups. Clone to avoid #235 (all users becoming sysops).
-                            self.groups = [...config.users.defaultGroups];
+                            self.groups = Array.isArray(createUserInfo.groups)
+                                ? [...createUserInfo.groups]
+                                : [...config.users.defaultGroups];
                             if (User.RootUserID === self.userId) {
                                 self.groups.push('sysops');
                             }

@@ -193,6 +193,19 @@
                             maxLength: @config:users.webMax
                             width: 30
                         }
+                        //  An invite code, shown only when
+                        //  atProto.admission.policy takes them; TL10 is
+                        //  its label (blank otherwise)
+                        ET9: {
+                            argName: inviteCode
+                            maxLength: 20
+                            width: 16
+                            textStyle: upper
+                            validate: @method:validateInviteCode
+                        }
+                        TL10: {
+                            width: 17
+                        }
                         TL11: {
                             width: 60
                         }

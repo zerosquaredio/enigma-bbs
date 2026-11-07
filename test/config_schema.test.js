@@ -353,6 +353,8 @@ describe('config schema against config_default.js', () => {
         //
         const DECLARED_IN_DEFAULTS = [
             'archives.archivers',
+            'atProto.admission.policy',
+            'atProto.admission.provisionalGroup',
             'atProto.enabled',
             'atProto.login.allowNewUsers',
             'atProto.login.handoffTimeoutSeconds',

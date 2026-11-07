@@ -17,19 +17,25 @@ function rowCount(db, table) {
 }
 
 describe('atproto database', () => {
-    it('creates the OAuth state, OAuth session and web session tables', () => {
+    it('creates its tables', () => {
         const db = freshDb();
         const tables = db
             .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
             .all()
             .map(r => r.name);
-        assert.deepEqual(tables, ['oauth_session', 'oauth_state', 'web_session']);
+        assert.deepEqual(tables, [
+            'invite',
+            'invite_code',
+            'oauth_session',
+            'oauth_state',
+            'web_session',
+        ]);
         db.close();
     });
 
-    it('records schema version 2', () => {
+    it('records schema version 3', () => {
         const db = freshDb();
-        assert.equal(db.pragma('user_version', { simple: true }), 2);
+        assert.equal(db.pragma('user_version', { simple: true }), 3);
         db.close();
     });
 
@@ -38,7 +44,7 @@ describe('atproto database', () => {
         createSessionStore(db).set('did:plc:abc', { tokenSet: { sub: 'did:plc:abc' } });
         initAtProtoDatabase(db);
         assert.equal(rowCount(db, 'oauth_session'), 1);
-        assert.equal(db.pragma('user_version', { simple: true }), 2);
+        assert.equal(db.pragma('user_version', { simple: true }), 3);
         db.close();
     });
 });

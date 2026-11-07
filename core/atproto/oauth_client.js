@@ -262,10 +262,20 @@ function handleCallback(params, cb) {
 //  Calls back with { did, issuer, scope, expiresAt }; |issuer| is the member's
 //  authorization server.
 //
-function restore(did, cb) {
+//  With |options.refresh|, the tokens are refreshed now whatever their age,
+//  which asks the account host whether the member's grant still stands: it
+//  fails once they have revoked access (and the session is then forgotten).
+//
+function restore(did, options, cb) {
+    if (!cb && _.isFunction(options)) {
+        cb = options;
+        options = {};
+    }
+    const refresh = true === _.get(options, 'refresh') ? true : 'auto';
+
     return withClient(
         () =>
-            client.restore(did).then(session =>
+            client.restore(did, refresh).then(session =>
                 session.getTokenInfo().then(info => ({
                     did: session.did,
                     issuer: info.iss,

@@ -68,6 +68,11 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `contentServers.web.handlers.atProto.enabled` | Boolean. Serve the AT login routes. Needs `atProto.enabled`. | `false` |
 | `contentServers.web.rateLimits.handoffGet` | Requests per address to the login links. | 20 per 10 minutes |
 | `contentServers.web.rateLimits.atProtoCallback` | Requests per address to the OAuth callback. | 20 per 10 minutes |
+| `atProto.webSignIn.enabled` | Boolean. Offer [web sign-in](#web-sign-in) at `/_enig/signin`. | `false` |
+| `atProto.webSignIn.sessionDays` | Number. How long a browser stays signed in. | `30` |
+| `atProto.webSignIn.allowedOrigins` | Array. Web origins, such as `"https://bbs.example.com"`, whose pages may use web sign-in besides the board's own web address. | `[]` |
+| `loginServers.webSocket.firstMenuSignedIn` | String. The first menu for callers signed in on the web. | `webSignInConnected` |
+| `contentServers.web.rateLimits.atProtoSignIn` | Requests per address to the web sign-in pages. | 60 per 10 minutes |
 
 ### Client Modes
 Account hosts need to know which application is asking for a login. ENiGMA½ can identify itself two ways:
@@ -128,11 +133,42 @@ As with other lists in `config.hjson`, `allowedAuthFactor1Types` replaces the de
 ### Linking Existing Accounts
 Users who had an account before AT login can link their Bluesky account to it, so either login works and they keep their messages, files and settings. A DID is linked to one user at most. There are three ways:
 
-* **At login.** In the login menu template, an AT login with no user linked yet goes to `atprotoLinkAccount` (the `atproto_link_account` module, `ATLINK` art), named by the `atprotoLogin` menu's `config.linkAccount`. The caller chooses to apply as a new user, or to link an account they have here, with its user name and password, once. A wrong password counts as a failed login, as at the password login, and too many end the call. Linking replaces any Bluesky account the user had linked before. It works on [AT-only boards](#at-only-boards) too: the caller ends up logged in through AT login, not a password login. Users with 2FA are told to log in with their password and link from their settings instead, since a password alone can't prove them. Remove `config.linkAccount` to send callers straight to the application, as before.
-* **From user settings.** The `userAtProtoConfig` menu (the `atproto_account_config` module, `ATCFG` art) in the main menu template, reached with the `AT` command once you uncomment it, links the logged-in user's Bluesky account, approved in a browser as for AT login, or unlinks it. Unlinking needs the user's password, unless they have a saved SSH key, so they keep a way to log in. Users created by AT login have a password nobody knows: they set one, or an SSH key, before unlinking. Its views are `ET1` (handle), `MT2` (status), `ET3` (password, for unlinking) and `TM4` (`link`, `unlink`, `cancel`).
+* **At login.** In the login menu template, an AT login with no user linked yet goes to `atprotoLinkAccount` (the `atproto_link_account` module, `ATLINK` art), named by the `atprotoLogin` menu's `config.linkAccount`. The caller is asked whether they already have an account here: yes takes its user name and password, once, and links it; no goes on to apply as a new user. A wrong password counts as a failed login, as at the password login, and too many end the call. Linking replaces any Bluesky account the user had linked before. It works on [AT-only boards](#at-only-boards) too: the caller ends up logged in through AT login, not a password login. Users with 2FA are told to log in with their password and link from their settings instead, since a password alone can't prove them. Remove `config.linkAccount` to send callers straight to the application, as before.
+* **From user settings.** The `userAtProtoConfig` menu (the `atproto_account_config` module, `ATCFG` art) in the main menu template, reached with the `AT` command once you uncomment it, links the logged-in user's Bluesky account, approved in a browser as for AT login, or unlinks it. Unlinking needs the user's password, unless they have a saved SSH key, so they keep a way to log in. Users created by AT login have a password nobody knows: they set one, or an SSH key, before unlinking. Its views are `ET1` (handle), `MT2` (status), `ET3` (password, for unlinking) and `HM4` (`link`, `unlink`, `cancel`).
 * **By the sysop**, with `./oputil.js user atproto USERNAME DID` (or `clear` to unlink); see [oputil](../../admin/oputil.md). Nothing proves the DID belongs to the user, so look it up yourself. `./oputil.js user info USERNAME` shows a user's linked DID and handle.
 
-The `atprotoLinkAccount` menu's views are `TL1` (the caller's handle), `TM2` (`apply as a new user`, `link an account I have here`, `cancel`), `ET3` and `ET4` (user name and password) and `TL5` (status). Its `config` names the same account state menus as `atprotoLogin`, plus `newUserApplication`.
+The `atprotoLinkAccount` menu's views are `TL1` (the caller's handle), `TM2` (`yes` / `no`, also answered with `Y` and `N`), `ET3` and `ET4` (user name and password) and `TL5` (status). ESC goes back. Its `config` names the same account state menus as `atprotoLogin`, plus `newUserApplication`.
+
+### Web Sign-In
+With [enig-term](../loginservers/enig-term.md), callers can sign in with Bluesky once on a page of your web server, and from then on reach the board from their browser without a login prompt.
+
+* `/_enig/signin` has a "Sign in with Bluesky" form. The caller approves in the same tab, and is sent on to enig-term at `/_enig/ws-term/?connect=1`, which connects and logs them in.
+* Later visits to enig-term log in at once. The start page then offers "Continue to the board" and "Sign out". Logging off the board does not sign the browser out.
+* The browser keeps a cookie for `atProto.webSignIn.sessionDays`. The board stores only a hash of it, in the `atproto` database, so sessions survive restarts.
+* Each time enig-term connects with the cookie, the board refreshes the caller's AT session with their account host. If they have revoked the board's access there (for Bluesky, in their account's settings), that fails and the browser is signed out.
+* The login itself is AT login's: a user linked to the account is logged in, an account with no user yet goes on to link or apply, and account states, 2FA, `allowedAuthFactor1Types` and `atProto.login.secureConnectionsOnly` all apply. If the login can't be done, the caller gets the usual login screen.
+
+To turn it on:
+
+```hjson
+atProto: {
+    webSignIn: {
+        enabled: true
+    }
+}
+```
+
+**Requirements**
+
+* AT login, with the `atProto` web handler.
+* enig-term [installed](../loginservers/enig-term.md#installing) and served from the **same host name** as the start page, so the browser sends the cookie on its WebSocket connection; ports may differ. Behind a proxy or tunnel, put the web server and the WebSocket endpoint under one host name (for example `bbs.example.com` and `wss://bbs.example.com/wss`).
+* `https://` for the web server (browsers keep the cookie only from secure pages), apart from development on `127.0.0.1`.
+
+**Security.** Browsers send cookies along with WebSocket connections that other sites' pages open, so the cookie only counts when the connection comes from one of the board's own pages: its `Origin` must be the web server's address, loopback mode's `http://127.0.0.1:<port>`, or one of `atProto.webSignIn.allowedOrigins`. Connections from anywhere else are accepted as before, but must log in as usual, so other web terminals keep working. The same check applies to the sign-in and sign-out forms. The cookie is `HttpOnly`, `Secure` and `SameSite=Lax`.
+
+**The menu.** Signed-in callers start at the menu named by `loginServers.webSocket.firstMenuSignedIn`, `webSignInConnected` in the login menu template, instead of `telnetConnected`. It is the `atproto_web_sign_in` module, with the same `config` and `next` as `atprotoLogin`, plus `fallback`: the menu to go to when the login can't be done, `matrix` in the template. It has no views; its art (`CONNECT` in the template) is optional.
+
+**Development.** In loopback mode the start page and enig-term must be opened on `http://127.0.0.1`. With the board on another machine, tunnel both ports, for example `ssh -L 8080:127.0.0.1:8080 -L 8810:127.0.0.1:8810 bbs-host`, enable the plain `ws` listener, and set `contentServers.web.wsTerm.endpoint` to `ws://127.0.0.1:8810` (enig-term allows `ws://` for loopback addresses). Over plain `ws://` the connection is not secure, so `atProto.login.secureConnectionsOnly` must be `false` for the sign-in to log callers in.
 
 ## Routes
 | Route | Purpose |
@@ -141,5 +177,7 @@ The `atprotoLinkAccount` menu's views are `TL1` (the caller's handle), `TM2` (`a
 | `/_enig/atproto/callback` | Where the account host sends the browser after the caller approves or denies. |
 | `/_enig/atproto/client-metadata.json` | Public mode only: identifies the BBS to account hosts. |
 | `/_enig/atproto/jwks.json` | Public mode only: the public half of the signing key. |
+| `/_enig/signin` | [Web sign-in](#web-sign-in) only: the start page (`GET`) and its form (`POST`). |
+| `/_enig/signout` | Web sign-in only: signs the browser out (`POST`). |
 
-Behind a reverse proxy, forward `/_enig/handoff/` and `/_enig/atproto/`.
+Behind a reverse proxy, forward `/_enig/handoff/` and `/_enig/atproto/`, and for web sign-in `/_enig/signin` and `/_enig/signout`.

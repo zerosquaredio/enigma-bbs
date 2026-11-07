@@ -4,6 +4,7 @@ const EngiAssert = require('../../../enigma_assert');
 const Config = require('../../../config').get;
 const Log = require('../../../logger').log;
 const AtProtoOAuth = require('../../../atproto/oauth_client');
+const WebSignIn = require('../../../atproto/web_sign_in');
 const BrowserHandoff = require('../../../browser_handoff');
 const {
     CallbackRoutePath,
@@ -27,10 +28,13 @@ exports.moduleInfo = {
 //  redirects to after they approve, and (through core/browser_handoff.js)
 //  the short link the terminal shows them. In public client mode, also the
 //  client metadata document and public signing keys that account hosts
-//  fetch. Enabled with contentServers.web.handlers.atProto.enabled, and
+//  fetch. With atProto.webSignIn.enabled, also the web sign-in start page
+//  and sign-out (core/atproto/web_sign_in.js), whose OAuth callbacks come
+//  here too. Enabled with contentServers.web.handlers.atProto.enabled, and
 //  needs atProto.enabled.
 //
 const DefaultRateLimit = { windowMs: 10 * 60 * 1000, maxRequests: 20 };
+const DefaultSignInRateLimit = { windowMs: 10 * 60 * 1000, maxRequests: 60 };
 
 exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
     constructor() {
@@ -67,7 +71,32 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
             });
         }
 
+        if (WebSignIn.isEnabled()) {
+            const route = (method, routePath, fn) =>
+                this.webServer.addRoute({
+                    method,
+                    path: new RegExp(`^${_.escapeRegExp(routePath)}(\\?.*)?$`),
+                    handler: (req, resp) => {
+                        if (this._checkSignInRateLimit(req, resp)) {
+                            return fn(this.webServer, req, resp);
+                        }
+                    },
+                });
+            route('GET', WebSignIn.SignInRoutePath, WebSignIn.routeStartPage);
+            route('POST', WebSignIn.SignInRoutePath, WebSignIn.routeSignIn);
+            route('POST', WebSignIn.SignOutRoutePath, WebSignIn.routeSignOut);
+        }
+
         return BrowserHandoff.registerRoutes(cb);
+    }
+
+    _checkSignInRateLimit(req, resp) {
+        const rateLimit = _.get(
+            Config(),
+            'contentServers.web.rateLimits.atProtoSignIn',
+            DefaultSignInRateLimit
+        );
+        return this.webServer.checkRateLimit(req, resp, 'atProtoSignIn', rateLimit);
     }
 
     //  |document| is null until AT support has started
@@ -100,6 +129,12 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
         const query = queryIndex > -1 ? req.url.slice(queryIndex + 1) : '';
 
         AtProtoOAuth.handleCallback(query, (err, result) => {
+            //  A browser signing in on the board's own page, not a terminal
+            const state = err ? err.state : _.get(result, 'state');
+            if (WebSignIn.ownsState(state)) {
+                return WebSignIn.completeSignIn(this.webServer, req, resp, err, result);
+            }
+
             if (err) {
                 //  The library returns the handoff id we gave as |state|
                 //  when it knows it, e.g. when the member pressed Deny

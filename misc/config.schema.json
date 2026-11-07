@@ -808,6 +808,11 @@
                 "webSocket": {
                     "type": "object",
                     "properties": {
+                        "firstMenuSignedIn": {
+                            "description": "Menu entered by callers signed in on the web (atProto.webSignIn); must name an entry in menu.hjson.",
+                            "type": "string",
+                            "default": "webSignInConnected"
+                        },
                         "ws": {
                             "type": "object",
                             "properties": {
@@ -1548,6 +1553,34 @@
                             "type": "number",
                             "minimum": 30,
                             "default": 300
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
+                },
+                "webSignIn": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "description": "Offer \"Sign in with Bluesky\" at /_enig/signin on the web server, after which enig-term logs in without a prompt.",
+                            "type": "boolean",
+                            "default": false
+                        },
+                        "sessionDays": {
+                            "description": "How long a browser stays signed in.",
+                            "type": "number",
+                            "minimum": 1,
+                            "default": 30
+                        },
+                        "allowedOrigins": {
+                            "description": "Web origins (e.g. \"https://bbs.example.com\") whose pages may use the sign-in, besides the board's own web address.",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": []
                         }
                     },
                     "patternProperties": {

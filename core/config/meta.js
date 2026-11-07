@@ -680,6 +680,11 @@ module.exports = {
         description:
             'Menu entered when connecting as one of users.newUserNames; must name an entry in menu.hjson.',
     },
+    'loginServers.webSocket.firstMenuSignedIn': {
+        type: 'string',
+        description:
+            'Menu entered by callers signed in on the web (atProto.webSignIn); must name an entry in menu.hjson.',
+    },
     'loginServers.webSocket.ws.port': PORT,
     'loginServers.webSocket.wss.port': PORT,
     'loginServers.webSocket.proxied': {
@@ -772,6 +777,22 @@ module.exports = {
         type: 'number',
         min: 30,
         description: 'How long the AT login screen waits for the login to be approved in a browser.',
+    },
+    'atProto.webSignIn.enabled': {
+        type: 'boolean',
+        description:
+            'Offer "Sign in with Bluesky" at /_enig/signin on the web server, after which enig-term logs in without a prompt.',
+    },
+    'atProto.webSignIn.sessionDays': {
+        type: 'number',
+        min: 1,
+        description: 'How long a browser stays signed in.',
+    },
+    'atProto.webSignIn.allowedOrigins': {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+            'Web origins (e.g. "https://bbs.example.com") whose pages may use the sign-in, besides the board\'s own web address.',
     },
 
     //  ── Chat servers ─────────────────────────────────────────────────────

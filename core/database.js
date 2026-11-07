@@ -1411,11 +1411,12 @@ const DB_INIT_TABLE = {
 //
 //  atproto.sqlite3 schema versions, kept in PRAGMA user_version:
 //    1: OAuth state and session stores (see core/atproto/store.js)
+//    2: web sign-in sessions (see core/atproto/web_sign_in.js)
 //
 //  Created with the other databases whether or not atProto.enabled is set,
 //  as activitypub.sqlite3 is; it simply stays empty while AT login is off.
 //
-const ATPROTO_DB_VERSION_LATEST = 1;
+const ATPROTO_DB_VERSION_LATEST = 2;
 
 function initAtProtoDatabase(db) {
     db.exec(`
@@ -1433,6 +1434,22 @@ function initAtProtoDatabase(db) {
             session_json        VARCHAR NOT NULL,
             updated_timestamp   INTEGER NOT NULL    --  Unix seconds
         );
+
+        --  One row per signed-in browser; only a hash of its cookie is kept
+        CREATE TABLE IF NOT EXISTS web_session (
+            token_hash          VARCHAR PRIMARY KEY NOT NULL,
+            did                 VARCHAR NOT NULL,
+            handle              VARCHAR,
+            created_timestamp   INTEGER NOT NULL,   --  Unix seconds
+            expires_timestamp   INTEGER NOT NULL,   --  Unix seconds
+            used_timestamp      INTEGER NOT NULL    --  Unix seconds
+        );
+
+        CREATE INDEX IF NOT EXISTS web_session_by_did_index0
+            ON web_session (did);
+
+        CREATE INDEX IF NOT EXISTS web_session_by_expires_timestamp_index0
+            ON web_session (expires_timestamp);
     `);
 
     if (db.pragma('user_version', { simple: true }) < ATPROTO_DB_VERSION_LATEST) {

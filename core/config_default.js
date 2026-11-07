@@ -403,6 +403,9 @@ module.exports = () => {
                 },
             },
             webSocket: {
+                //  for callers signed in on the web (atProto.webSignIn); others
+                //  start at loginServers.telnet.firstMenu, as before
+                firstMenuSignedIn: 'webSignInConnected',
                 ws: {
                     //  non-secure ws://
                     enabled: false,
@@ -668,6 +671,18 @@ module.exports = () => {
                 rootDid: '',
                 //  how long the login screen waits for approval in a browser
                 handoffTimeoutSeconds: 5 * 60,
+            },
+
+            //  "Sign in with Bluesky" on the web server's /_enig/signin page,
+            //  then one-click logins from enig-term (needs the atProto web
+            //  handler, and enig-term served from the same host name)
+            webSignIn: {
+                enabled: false,
+                //  how long a browser stays signed in
+                sessionDays: 30,
+                //  web origins (e.g. "https://bbs.example.com") whose pages
+                //  may use the sign-in, besides the board's own web address
+                allowedOrigins: [],
             },
         },
 

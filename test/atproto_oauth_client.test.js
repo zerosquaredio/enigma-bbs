@@ -70,8 +70,8 @@ function makeFakeLibrary(overrides = {}) {
             calls.push(['callback', params]);
             return behaviour.callback(params);
         }
-        restore(did) {
-            calls.push(['restore', did]);
+        restore(did, refresh) {
+            calls.push(['restore', did, refresh]);
             return behaviour.restore(did);
         }
         revoke(did) {
@@ -362,6 +362,22 @@ describe('atproto OAuth client adapter', () => {
                 scope: 'atproto',
                 expiresAt: new Date(0),
             });
+            //  refreshing only if the tokens are about to expire
+            assert.ok(
+                fake.calls.some(
+                    ([name, , refresh]) => name === 'restore' && refresh === 'auto'
+                )
+            );
+        });
+
+        it('refreshes the tokens now when asked, to check the grant still stands', async () => {
+            await call(OAuthClient.restore, 'did:plc:alice', { refresh: true });
+            assert.ok(
+                fake.calls.some(
+                    ([name, did, refresh]) =>
+                        name === 'restore' && did === 'did:plc:alice' && refresh === true
+                )
+            );
         });
 
         it('revokes a session at the account host', async () => {

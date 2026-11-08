@@ -1,6 +1,7 @@
 //  ENiGMA½
 const { MenuModule } = require('./menu_module.js');
 const UserProps = require('./user_property.js');
+const User = require('./user.js');
 
 //  deps
 const ssh2 = require('ssh2');
@@ -27,10 +28,20 @@ const MciViewIds = {
 const Messages = {
     instructions: [
         'Paste a single-line OpenSSH public key and choose "save/update key".',
-        'Use "remove key" to return to password-only logins.',
     ],
+    //  The second instruction line, by the ways left to log in without a key
+    removeInstructions: {
+        password: 'Use "remove key" to return to password-only logins.',
+        atProto: 'Use "remove key" to log in with Bluesky only.',
+    },
     saved: 'SSH public key saved. Test an SSH login to confirm.',
-    removed: 'SSH public key removed. Password authentication remains available.',
+    removedStillPassword:
+        'SSH public key removed. Password authentication remains available.',
+    removedStillAtProto: 'SSH public key removed. You can still log in with Bluesky.',
+    //  The status line is 70 columns in the default theme
+    lastWayIn: 'This key is your only way to log in, so it cannot be removed.',
+    lastWayInLinkFirst:
+        'This key is your only way to log in; link Bluesky before removing it.',
     missingKeyInput: 'A valid OpenSSH public key is required before saving.',
     noKeyToRemove: 'No SSH public key is currently stored for this account.',
     invalidKey: 'The provided SSH public key could not be parsed.',
@@ -94,6 +105,13 @@ exports.getModule = class UserSSHKeyConfigModule extends MenuModule {
         const storedKey = this.client.user.getProperty(UserProps.SSHPubKey);
         let infoLines = [...Messages.instructions];
 
+        const otherWays = this.otherWaysToLogIn();
+        if (otherWays.password) {
+            infoLines.push(Messages.removeInstructions.password);
+        } else if (otherWays.atProto) {
+            infoLines.push(Messages.removeInstructions.atProto);
+        }
+
         if (storedKey) {
             const details = this.formatKeyDetails(storedKey);
             infoLines = infoLines.concat(details);
@@ -143,10 +161,34 @@ exports.getModule = class UserSSHKeyConfigModule extends MenuModule {
         });
     }
 
+    //
+    //  How the user could still log in without their key, as the board is
+    //  configured (users.allowedAuthFactor1Types): by password, or with
+    //  their linked AT (Bluesky) account
+    //
+    otherWaysToLogIn() {
+        const types = User.AuthFactor1Types;
+        return {
+            password: User.isAuthFactor1TypeAllowed(types.Password),
+            atProto:
+                User.isAuthFactor1TypeAllowed(types.AtProto) &&
+                !!this.client.user.getProperty(UserProps.AtProtoDid),
+        };
+    }
+
     removeKey(cb) {
         const storedKey = this.client.user.getProperty(UserProps.SSHPubKey);
         if (!storedKey) {
             this.showStatus(Messages.noKeyToRemove);
+            return cb(null);
+        }
+
+        //  Never leave a user with no way back in
+        const otherWays = this.otherWaysToLogIn();
+        if (!otherWays.password && !otherWays.atProto) {
+            this.client.log.info('SSH key removal refused: no other way to log in');
+            const canLink = User.isAuthFactor1TypeAllowed(User.AuthFactor1Types.AtProto);
+            this.showStatus(canLink ? Messages.lastWayInLinkFirst : Messages.lastWayIn);
             return cb(null);
         }
 
@@ -159,7 +201,11 @@ exports.getModule = class UserSSHKeyConfigModule extends MenuModule {
 
             this.client.log.info('User removed SSH public key');
             this.refreshInfoText();
-            this.showStatus(Messages.removed);
+            this.showStatus(
+                otherWays.password
+                    ? Messages.removedStillPassword
+                    : Messages.removedStillAtProto
+            );
             return cb(null);
         });
     }

@@ -38,7 +38,7 @@ Commands break up operations by groups:
 | `fat`     | FAT disk image inspection and modification |
 | `v86`     | Boot disk images in the v86 x86 emulator |
 | `amiga-door` | Build and inspect Amiga door images (FFS) |
-| `atproto` | AT Protocol (Bluesky) invites and invite codes |
+| `atproto` | AT Protocol (Bluesky) invites, and the board's own account |
 
 Global arguments apply to most commands and actions:
 * `--config`: Specify configuration directory if it is not the default of `./config/`. Relative paths in that `config.hjson` resolve as they do for `main.js`; see [Relative Paths](../configuration/config-hjson.md#relative-paths).
@@ -653,13 +653,22 @@ console arguments:
 
 See [Amiga Doors](../doors/amiga.md#building-a-door-image) for what goes on an image.
 
-## AT Protocol Invites
-The `atproto` command manages invites and invite codes, which admit new users who log in with Bluesky when `atProto.admission.policy` includes `invite` or `invite-code`. See [Admission](../servers/contentservers/atproto-handler.md#admission).
+## AT Protocol
+The `atproto` command manages invites and invite codes, which admit new users who log in with Bluesky when `atProto.admission.policy` includes `invite` or `invite-code` (see [Admission](../servers/contentservers/atproto-handler.md#admission)), and the board's own Bluesky account, which publishes its listing and status and posts announcements (see [The Board's Own Account](../servers/contentservers/atproto-handler.md#the-boards-own-account)).
 
 ```
 usage: oputil.js atproto <invite|invite-code> <action> [<arguments>]
+       oputil.js atproto <board|publish|status|post> [<arguments>]
 
-Actions:
+Board account:
+  board                        Show the connected board account
+  publish                      Publish the listing now, if it changed
+                               (--force: even if not)
+  status STATE                 Publish the board's status: up, maintenance,
+                               degraded or down (--message TEXT, --until DATE)
+  post TEXT...                 Post an announcement to Bluesky (public!)
+
+Invites:
   invite add HANDLE|DID        Invite one Bluesky account, used once when it
                                applies. A handle needs atProto.enabled.
   invite list                  List invites
@@ -683,6 +692,8 @@ Arguments:
 ./oputil.js atproto invite add alice.bsky.social --days 14
 ./oputil.js atproto invite-code add --uses 10 --groups users,newbies
 ./oputil.js atproto invite-code list
+./oputil.js atproto status maintenance --message "New hardware" --until 2026-12-01T20:00Z
+./oputil.js atproto post "Door games night this Friday!"
 ```
 
 ## See Also

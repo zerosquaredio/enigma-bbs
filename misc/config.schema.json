@@ -1590,6 +1590,93 @@
                     },
                     "additionalProperties": false
                 },
+                "publishing": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "description": "Let a sysop connect the board's own AT account (the boardAtProtoAccount menu) to publish its listing and status and post announcements.",
+                            "type": "boolean",
+                            "default": false
+                        },
+                        "nsidPrefix": {
+                            "description": "Prefix of the published record type names: nexus.cyberspace.dev while the record shapes are drafts. Published names are permanent.",
+                            "type": "string",
+                            "default": "nexus.cyberspace.dev"
+                        },
+                        "minPostIntervalSeconds": {
+                            "description": "At most one announcement this often.",
+                            "type": "number",
+                            "minimum": 0,
+                            "default": 60
+                        },
+                        "postLangs": {
+                            "description": "Languages announcements are written in, as BCP-47 tags.",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": [
+                                "en"
+                            ]
+                        },
+                        "listing": {
+                            "type": "object",
+                            "properties": {
+                                "description": {
+                                    "type": "string",
+                                    "default": ""
+                                },
+                                "tags": {
+                                    "description": "Topics, for directories to filter on.",
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    },
+                                    "default": []
+                                },
+                                "rules": {
+                                    "type": "string",
+                                    "default": ""
+                                },
+                                "howToJoin": {
+                                    "description": "How to get in, in plain words.",
+                                    "type": "string",
+                                    "default": ""
+                                },
+                                "hours": {
+                                    "description": "When a part-time board is usually up: timezone (IANA), weekly ([{ days, from, to }]) and note.",
+                                    "type": "object"
+                                },
+                                "deriveEndpoints": {
+                                    "description": "List the enabled web, SSH and telnet servers as ways to connect, when their addresses are public.",
+                                    "type": "boolean",
+                                    "default": true
+                                },
+                                "endpoints": {
+                                    "description": "More ways to connect: [{ protocol, uri }].",
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    },
+                                    "default": []
+                                },
+                                "sysopDid": {
+                                    "description": "The sysop's personal DID, listed only if set.",
+                                    "type": "string",
+                                    "default": ""
+                                }
+                            },
+                            "patternProperties": {
+                                "^_": true
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
+                },
                 "webSignIn": {
                     "type": "object",
                     "properties": {

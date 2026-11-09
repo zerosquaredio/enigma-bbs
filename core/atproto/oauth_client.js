@@ -9,6 +9,8 @@ const { getBaseUrl } = require('../web_util');
 const { createStateStore, createSessionStore } = require('./store');
 const {
     OAuthScope,
+    DefaultNsidPrefix,
+    boardScope,
     ClientModes,
     CallbackRoutePath,
     ClientMetadataRoutePath,
@@ -37,24 +39,42 @@ const LibraryPackage = '@atproto/oauth-client-node';
 let loadLibrary = () => import(LibraryPackage);
 let client = null;
 
+//
+//  With atProto.publishing.enabled, a second client for the board's own
+//  account (core/atproto/publishing.js). It has the same client metadata
+//  but its own stores: its sessions are kept apart from members' (both are
+//  keyed by DID), and its in-flight requests are namespaced, so a callback
+//  can be handed to the client that started it.
+//
+let boardClient = null;
+let boardStateStore = null;
+const BoardStateNamespace = 'board:';
+
 exports.startup = startup;
 exports.isEnabled = isEnabled;
 exports.isReady = isReady;
+exports.isPublishingEnabled = isPublishingEnabled;
+exports.isBoardReady = isBoardReady;
 exports.buildClientMetadata = buildClientMetadata;
 exports.getClientMetadata = getClientMetadata;
 exports.getJwks = getJwks;
 exports.resolveIdentity = resolveIdentity;
 exports.authorize = authorize;
+exports.authorizeBoard = authorizeBoard;
 exports.handleCallback = handleCallback;
 exports.restore = restore;
 exports.revoke = revoke;
+exports.boardRequest = boardRequest;
+exports.revokeBoard = revokeBoard;
 
-//  For tests: substitute the library, and forget the client between cases
+//  For tests: substitute the library, and forget the clients between cases
 exports._setLibraryLoader = loader => {
     loadLibrary = loader;
 };
 exports._reset = () => {
     client = null;
+    boardClient = null;
+    boardStateStore = null;
 };
 
 function isEnabled() {
@@ -63,6 +83,30 @@ function isEnabled() {
 
 function isReady() {
     return null !== client;
+}
+
+function isPublishingEnabled(config = Config()) {
+    return (
+        true === _.get(config, 'atProto.enabled') &&
+        true === _.get(config, 'atProto.publishing.enabled')
+    );
+}
+
+function isBoardReady() {
+    return null !== boardClient;
+}
+
+function nsidPrefix(config = Config()) {
+    return _.get(config, 'atProto.publishing.nsidPrefix') || DefaultNsidPrefix;
+}
+
+//
+//  What the client may ask for: member logins only need |OAuthScope|; with
+//  publishing on, the board account's scopes too (members are still asked
+//  for |OAuthScope| alone)
+//
+function clientScope(config = Config()) {
+    return isPublishingEnabled(config) ? boardScope(nsidPrefix(config)) : OAuthScope;
 }
 
 function startup(cb) {
@@ -83,15 +127,32 @@ function startup(cb) {
         () =>
             loadLibrary().then(lib =>
                 (isPublic ? loadSigningKey(lib) : Promise.resolve(null)).then(key => {
-                    client = new lib.NodeOAuthClient({
+                    const common = {
                         clientMetadata,
                         keyset: key ? [key] : undefined,
-                        stateStore: createStateStore(dbs.atproto),
-                        sessionStore: createSessionStore(dbs.atproto),
                         //  ENiGMA½ is a single process, so an in-process lock
                         //  is enough to keep two token refreshes from racing
                         requestLock: lib.requestLocalLock,
-                    });
+                    };
+                    client = new lib.NodeOAuthClient(
+                        Object.assign({}, common, {
+                            stateStore: createStateStore(dbs.atproto),
+                            sessionStore: createSessionStore(dbs.atproto),
+                        })
+                    );
+                    if (isPublishingEnabled()) {
+                        boardStateStore = createStateStore(dbs.atproto, {
+                            namespace: BoardStateNamespace,
+                        });
+                        boardClient = new lib.NodeOAuthClient(
+                            Object.assign({}, common, {
+                                stateStore: boardStateStore,
+                                sessionStore: createSessionStore(dbs.atproto, {
+                                    table: 'oauth_board_session',
+                                }),
+                            })
+                        );
+                    }
                 })
             ),
         cb
@@ -129,12 +190,13 @@ function buildClientMetadata() {
     }
 
     const redirectUri = `http://127.0.0.1:${port}${CallbackRoutePath}`;
+    const scope = clientScope(config);
     return {
         client_id: `http://localhost?redirect_uri=${encodeURIComponent(
             redirectUri
-        )}&scope=${OAuthScope}`,
+        )}&scope=${encodeURIComponent(scope)}`,
         redirect_uris: [redirectUri],
-        scope: OAuthScope,
+        scope,
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: 'none',
@@ -162,7 +224,7 @@ function buildPublicClientMetadata(config) {
         client_name: _.get(config, 'general.boardName'),
         client_uri: base,
         redirect_uris: [`${base}${CallbackRoutePath}`],
-        scope: OAuthScope,
+        scope: clientScope(config),
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         application_type: 'web',
@@ -243,15 +305,54 @@ function authorize(input, options, cb) {
 }
 
 //
+//  As authorize(), for the board's own account: asks for its write scopes,
+//  and the session it ends in is kept apart from members' (see boardClient)
+//
+function authorizeBoard(input, options, cb) {
+    if (!cb && _.isFunction(options)) {
+        cb = options;
+        options = {};
+    }
+    if (!boardClient) {
+        const err = Errors.UnexpectedState(
+            'Publishing (atProto.publishing) is not enabled'
+        );
+        return setImmediate(() => cb(err));
+    }
+
+    const authorizeOptions = { scope: boardScope(nsidPrefix()) };
+    if (options.state) {
+        authorizeOptions.state = options.state;
+    }
+    return settle(
+        () => boardClient.authorize(input, authorizeOptions).then(url => url.toString()),
+        cb
+    );
+}
+
+//
 //  Complete a login from the redirect's query parameters (a URLSearchParams,
-//  query string, or plain object). Calls back with { did, state }.
+//  query string, or plain object). Calls back with { did, state, board }:
+//  |board| is true when it was the board account's (authorizeBoard()).
 //
 function handleCallback(params, cb) {
+    const searchParams = new URLSearchParams(params);
+
+    //  The library's own state key names the client that started it
+    let forBoard = false;
+    try {
+        forBoard = !!boardClient && boardStateStore.has(searchParams.get('state') || '');
+    } catch (e) {
+        //  read as a member login
+    }
+    const owner = forBoard ? boardClient : client;
+
     return withClient(
         () =>
-            client.callback(new URLSearchParams(params)).then(result => ({
+            owner.callback(searchParams).then(result => ({
                 did: result.session.did,
                 state: result.state,
+                board: forBoard,
             })),
         cb
     );
@@ -290,6 +391,69 @@ function restore(did, options, cb) {
 //  Revoke a member's tokens at their account host and forget the session
 function revoke(did, cb) {
     return withClient(() => client.revoke(did), cb);
+}
+
+//
+//  An XRPC call to the board account's own account host, authenticated as
+//  the board account |did|: |method| "GET" (a query, |params| in the query
+//  string) or "POST" (a procedure, |params| as its JSON body). Calls back
+//  with the parsed response; a failure carries |status| and the host's
+//  |error| name (e.g. "InvalidRequest").
+//
+function boardRequest(did, method, nsid, params, cb) {
+    if (!boardClient) {
+        const err = Errors.UnexpectedState(
+            'Publishing (atProto.publishing) is not enabled'
+        );
+        return setImmediate(() => cb(err));
+    }
+
+    const isQuery = 'GET' === method;
+    const query =
+        isQuery && params ? `?${new URLSearchParams(_.omitBy(params, _.isNil))}` : '';
+    const init = isQuery
+        ? { method }
+        : {
+              method,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(params || {}),
+          };
+
+    return settle(
+        () =>
+            boardClient.restore(did).then(session =>
+                session.fetchHandler(`/xrpc/${nsid}${query}`, init).then(resp =>
+                    resp.text().then(text => {
+                        let body = {};
+                        try {
+                            body = text ? JSON.parse(text) : {};
+                        } catch (e) {
+                            body = { message: text };
+                        }
+                        if (!resp.ok) {
+                            const err = Errors.General(
+                                `${nsid} failed (${resp.status}): ${
+                                    body.message || body.error || 'no detail'
+                                }`
+                            );
+                            err.status = resp.status;
+                            err.error = body.error;
+                            throw err;
+                        }
+                        return body;
+                    })
+                )
+            ),
+        cb
+    );
+}
+
+//  Revoke the board account's tokens and forget its session
+function revokeBoard(did, cb) {
+    if (!boardClient) {
+        return setImmediate(() => cb(null));
+    }
+    return settle(() => boardClient.revoke(did), cb);
 }
 
 //  ── Helpers ──────────────────────────────────────────────────────────────

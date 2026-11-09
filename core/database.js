@@ -1413,11 +1413,13 @@ const DB_INIT_TABLE = {
 //    1: OAuth state and session stores (see core/atproto/store.js)
 //    2: web sign-in sessions (see core/atproto/web_sign_in.js)
 //    3: invites and invite codes (see core/atproto/admission/store.js)
+//    4: the board's own AT account and its write session (see
+//       core/atproto/publishing.js)
 //
 //  Created with the other databases whether or not atProto.enabled is set,
 //  as activitypub.sqlite3 is; it simply stays empty while AT login is off.
 //
-const ATPROTO_DB_VERSION_LATEST = 3;
+const ATPROTO_DB_VERSION_LATEST = 4;
 
 function initAtProtoDatabase(db) {
     db.exec(`
@@ -1479,6 +1481,25 @@ function initAtProtoDatabase(db) {
             created_timestamp   INTEGER NOT NULL,
             expires_timestamp   INTEGER,
             revoked_timestamp   INTEGER
+        );
+
+        --  The board account's write session, apart from members' login
+        --  sessions (oauth_session): both are keyed by DID
+        CREATE TABLE IF NOT EXISTS oauth_board_session (
+            did                 VARCHAR PRIMARY KEY NOT NULL,
+            session_json        VARCHAR NOT NULL,
+            updated_timestamp   INTEGER NOT NULL
+        );
+
+        --  The board's own AT account: one row at most
+        CREATE TABLE IF NOT EXISTS board_account (
+            id                  INTEGER PRIMARY KEY CHECK (id = 1),
+            did                 VARCHAR NOT NULL,
+            handle              VARCHAR,
+            connected_timestamp INTEGER NOT NULL,
+            listing_hash        VARCHAR,            --  of the listing last written
+            listing_timestamp   INTEGER,
+            post_timestamp      INTEGER             --  last announcement
         );
     `);
 

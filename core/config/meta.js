@@ -792,6 +792,56 @@ module.exports = {
         description:
             'Group for applicants no verifier admits, instead of refusing them; they get no other group. Empty: refuse them.',
     },
+    'atProto.publishing.enabled': {
+        type: 'boolean',
+        description:
+            "Let a sysop connect the board's own AT account (the boardAtProtoAccount menu) to publish its listing and status and post announcements.",
+    },
+    'atProto.publishing.nsidPrefix': {
+        type: 'string',
+        description:
+            'Prefix of the published record type names: nexus.cyberspace.dev while the record shapes are drafts. Published names are permanent.',
+    },
+    'atProto.publishing.minPostIntervalSeconds': {
+        type: 'number',
+        min: 0,
+        description: 'At most one announcement this often.',
+    },
+    'atProto.publishing.postLangs': {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Languages announcements are written in, as BCP-47 tags.',
+    },
+    'atProto.publishing.listing.description': { type: 'string' },
+    'atProto.publishing.listing.tags': {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Topics, for directories to filter on.',
+    },
+    'atProto.publishing.listing.rules': { type: 'string' },
+    'atProto.publishing.listing.howToJoin': {
+        type: 'string',
+        description: 'How to get in, in plain words.',
+    },
+    'atProto.publishing.listing.hours': {
+        type: 'object',
+        description:
+            'When a part-time board is usually up: timezone (IANA), weekly ([{ days, from, to }]) and note.',
+    },
+    'atProto.publishing.listing.deriveEndpoints': {
+        type: 'boolean',
+        description:
+            'List the enabled web, SSH and telnet servers as ways to connect, when their addresses are public.',
+    },
+    'atProto.publishing.listing.endpoints': {
+        type: 'array',
+        items: { type: 'object' },
+        description: 'More ways to connect: [{ protocol, uri }].',
+    },
+    'atProto.publishing.listing.sysopDid': {
+        type: 'string',
+        description: "The sysop's personal DID, listed only if set.",
+    },
     'atProto.webSignIn.enabled': {
         type: 'boolean',
         description:

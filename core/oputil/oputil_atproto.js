@@ -103,14 +103,45 @@ function inviteAdd(target) {
             : identity.did;
         console.info(`Invite ${id} made for ${who}.`);
         console.info(
-            'They can now log in with Bluesky and apply. Let them know yourself: the board does not send invites.'
+            'They can now log in with Bluesky and apply. The board does not send invites, so send them something like:'
         );
+        console.info('');
+        console.info(inviteMessage(identity, lifetimeSeconds));
+        console.info('');
         if (!Admission().policy().includes('invite')) {
             console.info(
                 'Note: atProto.admission.policy does not include "invite", so the invite is not used until it does.'
             );
         }
     });
+}
+
+//
+//  A ready-made invitation for the sysop to send (a DM, an email...): the
+//  board, where to go, and when it expires
+//
+function inviteMessage(identity, lifetimeSeconds) {
+    const config = require('../config').get();
+    const boardName = _.get(config, 'general.boardName', 'our BBS');
+    const greeting = identity.handle ? `Hi @${identity.handle}!` : 'Hi!';
+
+    let where =
+        'Connect to the board, choose "bluesky login" and log in with this Bluesky account';
+    try {
+        const base = require('../web_util').getBaseUrl(config).replace(/\/+$/, '');
+        if (true === _.get(config, 'atProto.webSignIn.enabled')) {
+            where = `Sign in with this Bluesky account at ${base}/_enig/signin`;
+        } else if (_.get(config, 'contentServers.web.wsTerm.root')) {
+            where = `Connect at ${base}/_enig/ws-term/, choose "bluesky login" and log in with this Bluesky account`;
+        }
+    } catch (e) {
+        //  no web server: the general instructions
+    }
+
+    const expires = lifetimeSeconds
+        ? ` The invitation is good until ${when(moment().unix() + lifetimeSeconds)}.`
+        : '';
+    return `${greeting} You're invited to ${boardName}. ${where}, and apply when asked.${expires}`;
 }
 
 function inviteList() {
@@ -191,6 +222,91 @@ function revoke(store, idArg, what) {
     return fail(`No ${what} ${id} that can still be revoked`);
 }
 
+//  ── The board account (core/atproto/publishing.js) ──────────────────────
+
+//
+//  Start AT support with the board account's client, then run |fn|. The
+//  board's stored write session works without the BBS running.
+//
+function withBoardAccount(fn) {
+    const AtProtoOAuth = require('../atproto/oauth_client');
+    if (!AtProtoOAuth.isPublishingEnabled()) {
+        return fail(
+            'Publishing is off: set atProto.enabled and atProto.publishing.enabled'
+        );
+    }
+    AtProtoOAuth.startup(err => {
+        if (err) {
+            return fail(`Could not start AT Protocol support: ${err.message}`);
+        }
+        const Publishing = require('../atproto/publishing');
+        if (!Publishing.getBoardAccount()) {
+            return fail(
+                'No board account is connected: a sysop connects one with the board account menu'
+            );
+        }
+        return fn(Publishing);
+    });
+}
+
+function boardShow() {
+    withBoardAccount(Publishing => {
+        const account = Publishing.getBoardAccount();
+        const types = Publishing.recordTypes();
+        console.info(
+            `Board account : ${account.handle ? `@${account.handle} ` : ''}(${account.did})`
+        );
+        console.info(`Connected     : ${when(account.connectedAt)}`);
+        console.info(
+            `Listing       : ${types.listing}, last published ${when(account.listingPublishedAt)}`
+        );
+        console.info(`Status        : ${types.status}`);
+        console.info(`Last post     : ${when(account.lastPostAt)}`);
+    });
+}
+
+function publish() {
+    withBoardAccount(Publishing => {
+        Publishing.publishListing({ force: true === argv.force }, (err, result) => {
+            if (err) {
+                return fail(`Could not publish the listing: ${err.message}`);
+            }
+            console.info(
+                result.written
+                    ? 'Listing published:'
+                    : 'The listing has not changed since it was last published (--force to write it anyway):'
+            );
+            console.info(JSON.stringify(result.record, null, 2));
+        });
+    });
+}
+
+function status(state) {
+    withBoardAccount(Publishing => {
+        const message = _.isString(argv.message) ? argv.message : undefined;
+        const until = _.isString(argv.until) ? argv.until : undefined;
+        Publishing.setStatus({ state, message, until }, (err, record) => {
+            if (err) {
+                return fail(`Could not set the status: ${err.reason || err.message}`);
+            }
+            console.info(
+                `Status published: ${record.state}${record.message ? ` (${record.message})` : ''}`
+            );
+        });
+    });
+}
+
+function post(text) {
+    withBoardAccount(Publishing => {
+        Publishing.post(text, (err, result) => {
+            if (err) {
+                return fail(`Could not post: ${err.reason || err.message}`);
+            }
+            console.info(`Posted: ${result.uri}`);
+        });
+    });
+}
+
 function handleAtProtoCommand() {
     if (true === argv.help) {
         return printUsageAndSetExitCode(getHelpFor('AtProto'), ExitCodes.SUCCESS);
@@ -198,6 +314,26 @@ function handleAtProtoCommand() {
 
     const [, kind, action, arg] = argv._;
     const usage = () => printUsageAndSetExitCode(getHelpFor('AtProto'), ExitCodes.ERROR);
+
+    //  One-word commands: the board account
+    const boardCommands = {
+        board: boardShow,
+        publish,
+        status: () => (action ? status(String(action)) : usage()),
+        //  the rest of the words, so quotes are optional
+        post: () => {
+            const text = argv._.slice(2).map(String).join(' ');
+            return text ? post(text) : usage();
+        },
+    };
+    if (_.has(boardCommands, kind)) {
+        return initConfigAndDatabases(err => {
+            if (err) {
+                return fail(`Could not start: ${err.message}`);
+            }
+            return boardCommands[kind]();
+        });
+    }
 
     const commands = {
         invite: {

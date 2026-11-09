@@ -27,15 +27,28 @@ Commands:
   v86                       v86 x86 emulation tools
   amiga-door                Amiga door image (FFS) building and inspection
   rest                      REST API management
-  atproto                   AT Protocol (Bluesky) invites and invite codes
+  atproto                   AT Protocol (Bluesky) invites, and the board account
 `,
     AtProto: `usage: oputil.js atproto <invite|invite-code> <action> [<arguments>]
+       oputil.js atproto <board|publish|status|post> [<arguments>]
 
 Invites and invite codes admit new users who log in with Bluesky, when
 atProto.admission.policy includes "invite" or "invite-code". They work on a
 board closed to new users (atProto.login.allowNewUsers false) too.
 
-Actions:
+The board account (atProto.publishing; a sysop connects it with the board
+account menu) publishes the board's listing and status, and posts
+announcements. These work without the board running.
+
+Board account:
+  board                        Show the connected board account
+  publish                      Publish the listing now, if it changed
+                               (--force: even if not)
+  status STATE                 Publish the board's status: up, maintenance,
+                               degraded or down (--message TEXT, --until DATE)
+  post TEXT...                 Post an announcement to Bluesky (public!)
+
+Invites:
   invite add HANDLE|DID        Invite one Bluesky account, used once when it
                                applies. A handle needs atProto.enabled.
   invite list                  List invites
@@ -55,6 +68,8 @@ Arguments:
 Examples:
   oputil.js atproto invite add alice.bsky.social --days 14
   oputil.js atproto invite-code add --uses 10 --groups users,newbies
+  oputil.js atproto status maintenance --message "New hardware" --until 2026-12-01T20:00Z
+  oputil.js atproto post "Door games night this Friday!"
 `,
     User: `usage: oputil.js user <action> [<arguments>]
 

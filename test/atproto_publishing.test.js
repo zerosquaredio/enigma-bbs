@@ -148,10 +148,35 @@ describe('AT publishing (the board account)', () => {
         });
 
         it('never lists a private or loopback address', () => {
-            ['192.168.50.233', '10.0.0.5', '127.0.0.1', 'localhost'].forEach(domain => {
+            [
+                '192.168.50.233',
+                '10.0.0.5',
+                '127.0.0.1',
+                'localhost',
+                'coolbbs.hub.localhost',
+                'bbs.local',
+            ].forEach(domain => {
                 testConfig.contentServers.web.domain = domain;
                 assert.deepEqual(Publishing.buildListing().endpoints, [], domain);
             });
+        });
+
+        it('behind a hub, lists the hub address for the web only', () => {
+            //  at home: the hub carries the web; SSH has no public address
+            testConfig.contentServers.web.overrideUrlPrefix =
+                'https://coolbbs.hub.example';
+            testConfig.contentServers.web.domain = '192.168.1.20';
+            testConfig.atProto.webSignIn = { enabled: true };
+            assert.deepEqual(Publishing.buildListing().endpoints, [
+                { protocol: 'web', uri: 'https://coolbbs.hub.example/_enig/signin' },
+            ]);
+
+            //  with its own public name too, SSH is listed there, not at the hub
+            testConfig.contentServers.web.domain = 'bbs.example.com';
+            assert.deepEqual(Publishing.buildListing().endpoints, [
+                { protocol: 'web', uri: 'https://coolbbs.hub.example/_enig/signin' },
+                { protocol: 'ssh', uri: 'ssh://bbs.example.com:8889' },
+            ]);
         });
 
         it('lists only the given endpoints when deriving is off', () => {

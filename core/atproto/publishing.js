@@ -6,7 +6,7 @@ const Config = require('../config').get;
 const Log = require('../logger').log;
 const { Errors, ErrorReasons } = require('../enig_error');
 const { dbs } = require('../database');
-const { getBaseUrl, getWebDomain } = require('../web_util');
+const { getBaseUrl } = require('../web_util');
 const AtProtoOAuth = require('./oauth_client');
 const { recordTypes, DefaultNsidPrefix, PostCollection } = require('./const');
 
@@ -184,7 +184,12 @@ function putSelf(did, collection, record, cb) {
 //  a loopback or private address
 //
 function isPublicHost(host) {
-    if (!_.isString(host) || !host || 'localhost' === host.toLowerCase()) {
+    if (!_.isString(host) || !host) {
+        return false;
+    }
+    //  localhost and its subdomains (RFC 6761), and mDNS names on the LAN
+    const name = host.toLowerCase().replace(/\.$/, '');
+    if ('localhost' === name || name.endsWith('.localhost') || name.endsWith('.local')) {
         return false;
     }
     const version = net.isIP(host);
@@ -213,16 +218,22 @@ function isPublicHost(host) {
 }
 
 //  Ways to connect, from the servers that are enabled
+//
+//  The web endpoint is at the board's public web address, which behind a
+//  proxy, tunnel or hub is contentServers.web.overrideUrlPrefix. SSH and
+//  telnet are not carried by those (the hub forwards web traffic only), so
+//  they are at the board's own domain, contentServers.web.domain, and only
+//  when that is a public name.
+//
 function derivedEndpoints(config) {
     const endpoints = [];
     let base = null;
-    let domain = null;
     try {
         base = getBaseUrl(config).replace(/\/+$/, '');
-        domain = getWebDomain(config);
     } catch (e) {
         //  no web server configured
     }
+    const domain = _.get(config, 'contentServers.web.domain');
 
     const webHost = base ? new URL(base).hostname : null;
     if (base && isPublicHost(webHost)) {

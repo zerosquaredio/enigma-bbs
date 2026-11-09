@@ -81,6 +81,8 @@ exports.Config = class Config extends ConfigLoader {
             'users.allowedAuthFactor1Types',
             //  nor take "open" out of the admission policy
             'atProto.admission.policy',
+            //  nor keep "en" among a board's post languages
+            'atProto.publishing.postLangs',
         ];
 
         const replaceKeys = ['args', 'sendArgs', 'recvArgs', 'recvArgsNonBatch'];

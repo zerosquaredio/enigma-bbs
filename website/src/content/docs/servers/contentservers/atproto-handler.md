@@ -70,6 +70,11 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `contentServers.web.handlers.atProto.enabled` | Boolean. Serve the AT login routes. Needs `atProto.enabled`. | `false` |
 | `contentServers.web.rateLimits.handoffGet` | Requests per address to the login links. | 20 per 10 minutes |
 | `contentServers.web.rateLimits.atProtoCallback` | Requests per address to the OAuth callback. | 20 per 10 minutes |
+| `atProto.publishing.enabled` | Boolean. Let a sysop connect [the board's own account](#the-boards-own-account). | `false` |
+| `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`. | (empty) |
+| `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
+| `atProto.publishing.postLangs` | Array. Languages announcements are written in. | `["en"]` |
+| `atProto.publishing.nsidPrefix` | String. Prefix of the published record names. | `nexus.cyberspace.dev` |
 | `atProto.webSignIn.enabled` | Boolean. Offer [web sign-in](#web-sign-in) at `/_enig/signin`. | `false` |
 | `atProto.webSignIn.sessionDays` | Number. How long a browser stays signed in. | `30` |
 | `atProto.webSignIn.allowedOrigins` | Array. Web origins, such as `"https://bbs.example.com"`, whose pages may use web sign-in besides the board's own web address. | `[]` |
@@ -216,6 +221,53 @@ atProto: {
 **The menu.** Signed-in callers start at the menu named by `loginServers.webSocket.firstMenuSignedIn`, `webSignInConnected` in the login menu template, instead of `telnetConnected`. It is the `atproto_web_sign_in` module, with the same `config` and `next` as `atprotoLogin`, plus `fallback`: the menu to go to when the login can't be done, `matrix` in the template. It has no views; its art (`CONNECT` in the template) is optional.
 
 **Development.** In loopback mode the start page and enig-term must be opened on `http://127.0.0.1`. With the board on another machine, tunnel both ports, for example `ssh -L 8080:127.0.0.1:8080 -L 8810:127.0.0.1:8810 bbs-host`, enable the plain `ws` listener, and set `contentServers.web.wsTerm.endpoint` to `ws://127.0.0.1:8810` (enig-term allows `ws://` for loopback addresses). Over plain `ws://` the connection is not secure, so `atProto.login.secureConnectionsOnly` must be `false` for the sign-in to log callers in.
+
+### The Board's Own Account
+A board can have its own Bluesky (AT) account, separate from the sysop's personal one, which publishes:
+
+* a **listing**: the board's name, description, how to connect, how to join, and its hours, for hubs and directories to show;
+* a **status**: the sysop's notice, such as planned maintenance;
+* **announcements**: ordinary Bluesky posts, seen by the account's followers.
+
+Nothing about members is ever published. Turn it on with:
+
+```hjson
+atProto: {
+    publishing: {
+        enabled: true
+        listing: {
+            description: "Door games and ANSI art since 1994"
+            tags: [ "doors", "ansi" ]
+            howToJoin: "Log in with Bluesky and apply"
+            //  for a board that is not always up
+            hours: {
+                timezone: "America/Los_Angeles"
+                weekly: [ { days: [ "fri", "sat" ], from: "19:00", to: "23:00" } ]
+                note: "Weekend evenings"
+            }
+        }
+    }
+}
+```
+
+then restart, and connect the account from the **board account** menu (`boardAtProtoAccount` in the main menu template, behind a commented out `BA` command): enter the board account's handle and approve it in a browser, as for Bluesky login. The board asks only for what it needs: to write its listing and status records, to create posts, and to upload images. Members are still asked for proof of identity alone. The board keeps this write session apart from members' logins, so the account may also be someone's login here.
+
+The menu is for sysops: its `config.acs` is `GM[sysops]` in the template. Change it to `ID1` to let only the root user (#1) in. It shows the connected account, and can post an announcement, publish the listing now, or disconnect the account (which revokes the board's access; its records stay until removed).
+
+**The listing** is written when the account is connected, at startup, daily, and soon after `config.hjson` changes, and only when it differs from what was last written. Its ways to connect are taken from the enabled servers (the web sign-in page, or enig-term; SSH; telnet) when their addresses are public, plus any in `listing.endpoints`; set `listing.deriveEndpoints: false` to list only those. Its admission policy is `atProto.admission.policy`. Private and loopback addresses are never listed.
+
+**From the command line**, using the stored session, whether or not the board is running:
+
+```shell
+./oputil.js atproto board                       # which account, and when it last published
+./oputil.js atproto publish                     # the listing, if it changed (--force: anyway)
+./oputil.js atproto status maintenance --message "New hardware" --until 2026-12-01T20:00Z
+./oputil.js atproto post "Door games night this Friday!"
+```
+
+Posts are plain text, up to 300 characters, with web links made clickable, and at most one per `minPostIntervalSeconds`. They are public and effectively permanent: Bluesky honors deletes, but copies may persist.
+
+**Record names.** The listing and status are custom AT records, which the Bluesky app ignores. While their layout is a draft they are named under `nexus.cyberspace.dev` (`nexus.cyberspace.dev.leaf.listing`, `.leaf.status`); `atProto.publishing.nsidPrefix` changes the prefix once the layout is final. Published names are permanent.
 
 ## Routes
 | Route | Purpose |

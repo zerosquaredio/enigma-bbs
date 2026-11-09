@@ -3,8 +3,38 @@
 
 //  The base AT Protocol OAuth scope. The BBS needs only proof of identity,
 //  never permission to write to a member's repository, so nothing broader is
-//  ever requested.
+//  ever requested from members.
 exports.OAuthScope = 'atproto';
+
+//
+//  The board's own account (core/atproto/publishing.js) writes its listing
+//  and status records and posts announcements, so it asks for exactly
+//  that: granular scopes, never transition:generic. Images (blob) are for
+//  ANSI art posts.
+//
+//  Record types are named under |nsidPrefix| (atProto.publishing.nsidPrefix):
+//  "nexus.cyberspace.dev" while the record shapes are drafts, the real
+//  "nexus.cyberspace" once they are final, since published names are
+//  permanent.
+//
+exports.DefaultNsidPrefix = 'nexus.cyberspace.dev';
+exports.PostCollection = 'app.bsky.feed.post';
+
+exports.recordTypes = (nsidPrefix = exports.DefaultNsidPrefix) => ({
+    listing: `${nsidPrefix}.leaf.listing`,
+    status: `${nsidPrefix}.leaf.status`,
+});
+
+exports.boardScope = (nsidPrefix = exports.DefaultNsidPrefix) => {
+    const types = exports.recordTypes(nsidPrefix);
+    return [
+        exports.OAuthScope,
+        `repo:${types.listing}`,
+        `repo:${types.status}`,
+        `repo:${exports.PostCollection}`,
+        'blob:image/*',
+    ].join(' ');
+};
 
 exports.ClientModes = {
     //  Development: no public URL, hosted metadata, or keys required

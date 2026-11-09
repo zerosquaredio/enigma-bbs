@@ -688,6 +688,37 @@ module.exports = () => {
                 provisionalGroup: '',
             },
 
+            //  The board's own AT account (connected by a sysop with the
+            //  boardAtProtoAccount menu): publishes its listing and status,
+            //  and posts announcements. Nothing about members is published.
+            publishing: {
+                enabled: false,
+                //  record type names: the draft "nexus.cyberspace.dev" until
+                //  the record shapes are final; published names are permanent
+                nsidPrefix: 'nexus.cyberspace.dev',
+                //  at most one announcement this often
+                minPostIntervalSeconds: 60,
+                //  languages announcements are written in (BCP-47)
+                postLangs: ['en'],
+                //  the board's public listing, for the hub and directories
+                listing: {
+                    description: '',
+                    tags: [],
+                    rules: '',
+                    //  how to get in, in plain words, e.g. "Ask for an invite"
+                    howToJoin: '',
+                    //  when a part-time board is usually up, e.g.
+                    //  { timezone: "America/Los_Angeles", weekly: [ { days: [ "fri", "sat" ], from: "19:00", to: "23:00" } ], note: "Weekend evenings" }
+                    hours: {},
+                    //  list the enabled servers (web, SSH, telnet) at public addresses
+                    deriveEndpoints: true,
+                    //  more ways to connect: [ { protocol: "ssh", uri: "ssh://bbs.example.com:22" } ]
+                    endpoints: [],
+                    //  the sysop's personal DID, only if they choose to show it
+                    sysopDid: '',
+                },
+            },
+
             //  "Sign in with Bluesky" on the web server's /_enig/signin page,
             //  then one-click logins from enig-term (needs the atProto web
             //  handler, and enig-term served from the same host name)

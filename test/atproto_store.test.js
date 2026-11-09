@@ -24,8 +24,10 @@ describe('atproto database', () => {
             .all()
             .map(r => r.name);
         assert.deepEqual(tables, [
+            'board_account',
             'invite',
             'invite_code',
+            'oauth_board_session',
             'oauth_session',
             'oauth_state',
             'web_session',
@@ -33,9 +35,9 @@ describe('atproto database', () => {
         db.close();
     });
 
-    it('records schema version 3', () => {
+    it('records schema version 4', () => {
         const db = freshDb();
-        assert.equal(db.pragma('user_version', { simple: true }), 3);
+        assert.equal(db.pragma('user_version', { simple: true }), 4);
         db.close();
     });
 
@@ -44,7 +46,7 @@ describe('atproto database', () => {
         createSessionStore(db).set('did:plc:abc', { tokenSet: { sub: 'did:plc:abc' } });
         initAtProtoDatabase(db);
         assert.equal(rowCount(db, 'oauth_session'), 1);
-        assert.equal(db.pragma('user_version', { simple: true }), 3);
+        assert.equal(db.pragma('user_version', { simple: true }), 4);
         db.close();
     });
 });

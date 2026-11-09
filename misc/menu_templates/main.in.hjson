@@ -220,6 +220,13 @@
                     value: { command: "AT" }
                     action: @menu:userAtProtoConfig
                 }
+                {
+                    //  Sysops: the board's own Bluesky account, which
+                    //  publishes its listing and announcements. Needs
+                    //  atProto.publishing; see docs.
+                    value: { command: "BA" }
+                    action: @menu:boardAtProtoAccount
+                }
                 */
                 {
                     value: { command: "T" }
@@ -994,6 +1001,88 @@
                             }
                             {
                                 value: { submission: 2 }
+                                action: @systemMethod:prevMenu
+                            }
+                        ]
+                    }
+                    actionKeys: [
+                        {
+                            keys: [ "escape" ]
+                            action: @method:cancel
+                        }
+                    ]
+                }
+            }
+        }
+
+        //
+        //  The board's own Bluesky (AT Protocol) account, for sysops: connect
+        //  it (approved in a web browser, with permission to publish), post
+        //  announcements, publish the board's listing now, or disconnect it.
+        //  Change the acs to ID1 to let only the root user (#1) in.
+        //
+        boardAtProtoAccount: {
+            desc: Board Account
+            module: atproto_board_account
+            art: BOARDACCT
+            config: {
+                //  Only core/acs.js hasMenuModuleAccess() gates a menu, and it
+                //  reads config.acs -- a menu level "acs" is never consulted.
+                acs: GM[sysops]
+            }
+            form: {
+                0: {
+                    mci: {
+                        ET1: {
+                            argName: handle
+                            maxLength: 253
+                            width: 40
+                            focus: true
+                            submit: true
+                        }
+                        MT2: {
+                            argName: status
+                            mode: preview
+                            width: 76
+                            height: 6
+                            focus: false
+                            acceptsFocus: false
+                        }
+                        ET3: {
+                            argName: announcement
+                            maxLength: 300
+                            width: 76
+                        }
+                        HM4: {
+                            argName: submission
+                            items: [ "connect", "post", "publish", "disconnect", "cancel" ]
+                            submit: true
+                            //  The plain-text art has no colors
+                            styleSGR1: "|00|08"
+                            styleSGR2: "|00|15"
+                            focusTextStyle: upper
+                        }
+                    }
+                    submit: {
+                        *: [
+                            {
+                                value: { submission: 0 }
+                                action: @method:startLogin
+                            }
+                            {
+                                value: { submission: 1 }
+                                action: @method:post
+                            }
+                            {
+                                value: { submission: 2 }
+                                action: @method:publish
+                            }
+                            {
+                                value: { submission: 3 }
+                                action: @method:disconnect
+                            }
+                            {
+                                value: { submission: 4 }
                                 action: @systemMethod:prevMenu
                             }
                         ]

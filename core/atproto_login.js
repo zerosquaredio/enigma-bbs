@@ -215,7 +215,7 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
                     //  as it expires within minutes. Authorizing the DID
                     //  pins the login to the account the caller named.
                     onOpen: (handoff, next) =>
-                        AtProtoOAuth.authorize(identity.did, { state: handoff.id }, next),
+                        this.authorizeIdentity(identity.did, { state: handoff.id }, next),
                 },
                 (err, handoff) => {
                     if (err) {
@@ -239,6 +239,12 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
                 }
             );
         });
+    }
+
+    //  The approval request for |did|; modules that need more than proof of
+    //  identity (core/atproto_board_account.js) ask for it here
+    authorizeIdentity(did, options, cb) {
+        return AtProtoOAuth.authorize(did, options, cb);
     }
 
     finishLogin(err, result, identity) {

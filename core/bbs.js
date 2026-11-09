@@ -718,7 +718,10 @@ function initialize(cb) {
                     } else if (AtProtoOAuth.isReady()) {
                         logger.log.info('AT Protocol support started');
                     }
-                    return callback(null);
+                    //  The board account's listing (atProto.publishing)
+                    return require('./atproto/publishing.js').startup(() =>
+                        callback(null)
+                    );
                 });
             },
             function readyEventScheduler(callback) {

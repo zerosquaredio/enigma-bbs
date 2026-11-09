@@ -28,9 +28,13 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
 //  library deletes an entry when its callback arrives; requests that are
 //  never completed are pruned once older than |maxAgeSeconds|.
 //
+//  |namespace| keeps one client's entries apart from another's in the same
+//  table (the board account's client, core/atproto/publishing.js, uses
+//  "board:"), so has() can tell which client a callback belongs to.
+//
 function createStateStore(
     db,
-    { maxAgeSeconds = StateMaxAgeSeconds, now = nowSeconds } = {}
+    { maxAgeSeconds = StateMaxAgeSeconds, now = nowSeconds, namespace = '' } = {}
 ) {
     const selectStmt = db.prepare(
         'SELECT state_json, created_timestamp FROM oauth_state WHERE state_key = ?'
@@ -41,26 +45,30 @@ function createStateStore(
     );
     const deleteStmt = db.prepare('DELETE FROM oauth_state WHERE state_key = ?');
     const pruneStmt = db.prepare('DELETE FROM oauth_state WHERE created_timestamp < ?');
+    const k = key => `${namespace}${key}`;
+
+    const get = key => {
+        const row = selectStmt.get(k(key));
+        if (!row) {
+            return undefined;
+        }
+        if (now() - row.created_timestamp > maxAgeSeconds) {
+            deleteStmt.run(k(key));
+            return undefined;
+        }
+        return JSON.parse(row.state_json);
+    };
 
     return {
-        get: key => {
-            const row = selectStmt.get(key);
-            if (!row) {
-                return undefined;
-            }
-            if (now() - row.created_timestamp > maxAgeSeconds) {
-                deleteStmt.run(key);
-                return undefined;
-            }
-            return JSON.parse(row.state_json);
-        },
+        get,
+        has: key => undefined !== get(key),
         set: (key, value) => {
             const timestamp = now();
             pruneStmt.run(timestamp - maxAgeSeconds);
-            upsertStmt.run(key, JSON.stringify(value), timestamp);
+            upsertStmt.run(k(key), JSON.stringify(value), timestamp);
         },
         del: key => {
-            deleteStmt.run(key);
+            deleteStmt.run(k(key));
         },
     };
 }
@@ -69,13 +77,22 @@ function createStateStore(
 //  Logged-in sessions, one per member DID. Token lifetime is the account
 //  host's business; the library refreshes or discards sessions itself.
 //
-function createSessionStore(db, { now = nowSeconds } = {}) {
-    const selectStmt = db.prepare('SELECT session_json FROM oauth_session WHERE did = ?');
+//  |table| is oauth_session, or oauth_board_session for the board account's
+//  write session, kept apart because both are keyed by DID: the board
+//  account's owner may also log in as a member.
+//
+const SessionTables = ['oauth_session', 'oauth_board_session'];
+
+function createSessionStore(db, { now = nowSeconds, table = 'oauth_session' } = {}) {
+    if (!SessionTables.includes(table)) {
+        throw new Error(`Unknown session table "${table}"`);
+    }
+    const selectStmt = db.prepare(`SELECT session_json FROM ${table} WHERE did = ?`);
     const upsertStmt = db.prepare(
-        `REPLACE INTO oauth_session (did, session_json, updated_timestamp)
+        `REPLACE INTO ${table} (did, session_json, updated_timestamp)
         VALUES (?, ?, ?)`
     );
-    const deleteStmt = db.prepare('DELETE FROM oauth_session WHERE did = ?');
+    const deleteStmt = db.prepare(`DELETE FROM ${table} WHERE did = ?`);
 
     return {
         get: did => {

@@ -269,6 +269,39 @@ Posts are plain text, up to 300 characters, with web links made clickable, and a
 
 **Record names.** The listing and status are custom AT records, which the Bluesky app ignores. While their layout is a draft they are named under `nexus.cyberspace.dev` (`nexus.cyberspace.dev.leaf.listing`, `.leaf.status`); `atProto.publishing.nsidPrefix` changes the prefix once the layout is final. Published names are permanent.
 
+## Behind a Proxy, Tunnel or Hub
+A board often isn't reached at its own address: it sits behind a reverse proxy (nginx, Caddy), a tunnel (Cloudflare Tunnel, ngrok, frp), or a hub that carries boards on home connections. AT login, web sign-in and the board's listing need to know the address callers actually use, and that their connections arrived over `https`:
+
+```hjson
+contentServers: {
+    web: {
+        //  the address callers use
+        overrideUrlPrefix: "https://bbs.example.com"
+        //  visitors' addresses come from the proxy's X-Forwarded-For
+        proxied: true
+    }
+}
+loginServers: {
+    webSocket: {
+        //  a connection the proxy took over https counts as secure
+        proxied: true
+    }
+}
+atProto: {
+    oauth: {
+        clientMode: public
+    }
+}
+```
+
+* **The public address** (`overrideUrlPrefix`) is used for everything callers see or follow: the links the terminal shows, the board's identity to account hosts in public mode, the origin web sign-in accepts, and the web address in the board's listing.
+* **The proxy must say how the caller connected.** It sends `X-Forwarded-For` with the caller's address and `X-Forwarded-Proto: https`. With `loginServers.webSocket.proxied`, a WebSocket connection whose proxy says `https` counts as secure, so AT login is offered over it. These headers are believed only from `trustedProxies` ([Reverse Proxies](./web-server.md#reverse-proxies)), whose default covers the same machine and the LAN, so a proxy or tunnel agent on the board's own machine needs no entry.
+* **Forward** the [routes](#routes) below, and the WebSocket path for enig-term. Web sign-in needs the start page, enig-term and the WebSocket under the **one host name** in `overrideUrlPrefix`.
+* **enig-term** can be served by the board (set `contentServers.web.wsTerm.endpoint` to the public `wss://` address), or by the proxy or hub itself at `/_enig/ws-term/`, the path web sign-in sends the browser to.
+* **The listing** (with [the board's own account](#the-boards-own-account)) gives the public address for the web. SSH and telnet aren't carried by a web proxy, so they are listed at `contentServers.web.domain`, the board's own name, and only when that is a public name: a board at home with a LAN address lists none, unless you give them in `atProto.publishing.listing.endpoints`.
+
+**Through a hub,** `overrideUrlPrefix` is the board's address on the hub (such as `https://coolbbs.hub.example`). The hub's tunnel agent runs next to the board and connects to it on `127.0.0.1`, which the default `trustedProxies` covers, and its generated config sets `X-Forwarded-Proto` for the board. The hub serves enig-term itself.
+
 ## Routes
 | Route | Purpose |
 |-------|---------|

@@ -76,6 +76,9 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
 | `atProto.publishing.postLangs` | Array. Languages announcements are written in. | `["en"]` |
 | `atProto.publishing.nsidPrefix` | String. Prefix of the published record names. | `nexus.cyberspace.dev` |
+| `atProto.hub.url`, `atProto.hub.name`, `atProto.hub.token` | Strings. The hub the board runs behind, its name there and its token, for [presence on the hub](#presence-on-the-hub). | (empty) |
+| `atProto.hub.presence.enabled` | Boolean. Tell the hub which members are on, for those who chose to be shown. | `false` |
+| `atProto.hub.presence.includeLocalUsers` | Boolean. Also report members with no linked AT account, by user name. | `false` |
 | `atProto.webSignIn.enabled` | Boolean. Offer [web sign-in](#web-sign-in) at `/_enig/signin`. | `false` |
 | `atProto.webSignIn.sessionDays` | Number. How long a browser stays signed in. | `30` |
 | `atProto.webSignIn.allowedOrigins` | Array. Web origins, such as `"https://bbs.example.com"`, whose pages may use web sign-in besides the board's own web address. | `[]` |
@@ -306,6 +309,31 @@ atProto: {
 * **The listing** (with [the board's own account](#the-boards-own-account)) gives the public address for the web. SSH and telnet aren't carried by a web proxy, so they are listed at `contentServers.web.domain`, the board's own name, and only when that is a public name: a board at home with a LAN address lists none, unless you give them in `atProto.publishing.listing.endpoints`.
 
 **Through a hub,** `overrideUrlPrefix` is the board's address on the hub (such as `https://coolbbs.hub.example`). The hub's tunnel agent runs next to the board and connects to it on `127.0.0.1`, which the default `trustedProxies` covers, and its generated config sets `X-Forwarded-Proto` for the board. The hub serves enig-term itself.
+
+### Presence on the Hub
+A hub can have a common space where people from all its boards see who is around. With `atProto.hub.presence.enabled`, the board tells its hub which of its members are on, **only for members who chose it**:
+
+```hjson
+atProto: {
+    hub: {
+        //  the hub's own address
+        url: "https://hub.example.net"
+        //  both are in the agent config the hub gave you:
+        //  "subdomain", and "metadatas.token"
+        name: coolbbs
+        token: "hub_..."
+        presence: {
+            enabled: true
+        }
+    }
+}
+```
+
+* **Each member chooses.** Being shown is off for every member until they turn it on, from the hub presence menu (`hubPresenceConfig` in the main menu template, behind a commented out `HP` command). A member set invisible on the board counts as not on.
+* **The sysop can keep anyone off the hub,** whatever they choose: `./oputil.js user hub USERNAME withhold` (and `allow` to undo). `./oputil.js user info USERNAME` shows both settings.
+* **What is sent:** for each member who chose it, their linked AT identity (DID), their user name here, when they joined, and whether they are on now. Nothing else. The hub uses this to show them, and to know they are a member of a board on it, which by default is what lets them into its common space. It is sent to the hub only, never published, and each report is the whole list, so a member who turns it off is gone from the next one.
+* **The hub decides how to show them.** A member is shown by their user name here, as "alice via coolbbs", until they sign in at the hub and confirm this board; then they appear as their own Bluesky account. With `includeLocalUsers`, members with no linked AT account are reported by user name, and the hub shows them as `alice@coolbbs` if its admin accepts them from this board.
+* **When:** after each login and logoff, a member's change of setting, and every minute, so the hub knows the board is still up. The token is sent only over `https://`, or `http://` to `127.0.0.1` for a hub on the same machine.
 
 ## Routes
 | Route | Purpose |

@@ -735,6 +735,25 @@ module.exports = () => {
                 },
             },
 
+            //  The hub this board runs behind (its tunnel agent's hub), for
+            //  the hub's common space
+            hub: {
+                //  the hub's own address, e.g. "https://hub.example.net"
+                url: '',
+                //  the board's name on the hub, and its token: both are in
+                //  the agent config the hub gave (subdomain, metadatas.token)
+                name: '',
+                token: '',
+                //  tell the hub which members are on, for those who chose to
+                //  be shown there (off for each member until they turn it on)
+                presence: {
+                    enabled: false,
+                    //  also members with no linked AT account, by user name
+                    //  (the hub decides whether to show them, as name@board)
+                    includeLocalUsers: false,
+                },
+            },
+
             //  "Sign in with Bluesky" on the web server's /_enig/signin page,
             //  then one-click logins from enig-term (needs the atProto web
             //  handler, and enig-term served from the same host name)

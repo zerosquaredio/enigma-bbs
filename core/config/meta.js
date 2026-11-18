@@ -929,6 +929,29 @@ module.exports = {
         type: 'string',
         description: 'The moved post; {boardName} and {addresses} are filled in.',
     },
+    'atProto.hub.url': {
+        type: 'string',
+        description:
+            'The hub this board runs behind, e.g. "https://hub.example.net": https://, or http:// to 127.0.0.1.',
+    },
+    'atProto.hub.name': {
+        type: 'string',
+        description: "The board's name on the hub (subdomain in the hub's agent config).",
+    },
+    'atProto.hub.token': {
+        type: 'string',
+        description: "The board's token on the hub (metadatas.token in the hub's agent config).",
+    },
+    'atProto.hub.presence.enabled': {
+        type: 'boolean',
+        description:
+            "Tell the hub which members are on, for those who chose to be shown in the hub's common space.",
+    },
+    'atProto.hub.presence.includeLocalUsers': {
+        type: 'boolean',
+        description:
+            'Also report members with no linked AT account, by user name; the hub decides whether to show them.',
+    },
     'atProto.webSignIn.enabled': {
         type: 'boolean',
         description:

@@ -97,6 +97,8 @@ module.exports = {
 
     AtProtoDid: 'atproto_did', //  AT Protocol (Bluesky) DID this user logs in with
     AtProtoHandle: 'atproto_handle', //  Handle at last AT login; display only, never used for lookup
+    AtProtoHubPresence: 'atproto_hub_presence', //  '1': the member chose to be shown on the board's hub
+    AtProtoHubWithheld: 'atproto_hub_withheld', //  '1': the sysop keeps this member off the hub
 
     PublicActivityPubSigningKey: 'public_key_activitypub_sign_rsa_pem', // RSA public key for ActivityPub signing
     PrivateActivityPubSigningKey: 'private_key_activitypub_sign_rsa_pem', // RSA private key (corresponding to PublicActivityPubSigningKey)

@@ -122,6 +122,10 @@ Actions:
                                up a DID with https://bsky.social/xrpc/
                                com.atproto.identity.resolveHandle?handle=HANDLE
 
+  hub USERNAME withhold        Keep a member off the board's hub (never reported
+  hub USERNAME allow           by atProto.hub.presence, whatever they choose), or
+                               allow them again
+
   fix-achievement-stats        Recalculate every user's achievement totals from
                                the achievements they actually earned. Totals
                                awarded before the duplicate-award fix can sit

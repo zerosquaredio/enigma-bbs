@@ -504,6 +504,36 @@ function setAtProtoIdentity(user) {
     });
 }
 
+function formatHubInfo(user) {
+    const HubPresence = require('../atproto/hub_presence.js');
+    const shown = HubPresence.isShown(user) ? 'shown' : 'not shown';
+    return HubPresence.isWithheld(user) ? `${shown}, withheld by the sysop` : shown;
+}
+
+//
+//  user hub USERNAME withhold|allow: keep a member off the board's hub (they
+//  are never reported, whatever their own setting), or allow them again
+//
+function setHubWithheld(user) {
+    const HubPresence = require('../atproto/hub_presence.js');
+    const value = argv._[argv._.length - 1].toString().toLowerCase();
+    if (!['withhold', 'allow'].includes(value)) {
+        process.exitCode = ExitCodes.BAD_ARGS;
+        return console.error('Expected "withhold" or "allow"');
+    }
+    return HubPresence.setWithheld(user, 'withhold' === value, err => {
+        if (err) {
+            process.exitCode = ExitCodes.ERROR;
+            return console.error(err.message);
+        }
+        return console.info(
+            'withhold' === value
+                ? `"${user.username}" is kept off the hub; the next report leaves them out`
+                : `"${user.username}" may be shown on the hub, if they choose`
+        );
+    });
+}
+
 function showUserInfo(user) {
     const User = require('../user');
     const ActivityPubSettings = require('../activitypub/settings');
@@ -592,6 +622,7 @@ ActivityPub  : ${apSettings.enabled ? 'enabled' : 'disabled'}`;
     infoDump += `\n2FA OTP      : ${oppDesc}`;
     infoDump += `\nSSH key      : ${formatSSHKeyInfo(user)}`;
     infoDump += `\nAT identity  : ${formatAtProtoInfo(user)}`;
+    infoDump += `\nOn the hub   : ${formatHubInfo(user)}`;
 
     if (argv.security && otp) {
         const backupCodesOrNa = () => {
@@ -1275,6 +1306,7 @@ function handleUserCommand() {
         'import-ssh-key',
         'time',
         'atproto',
+        'hub',
     ].includes(action);
 
     let userName;
@@ -1330,6 +1362,7 @@ function handleUserCommand() {
                 'remove-ssh-key': removeSSHKey,
 
                 atproto: setAtProtoIdentity,
+                hub: setHubWithheld,
 
                 'fix-achievement-stats': fixAchievementStats,
                 'backfill-post-areas': backfillPostAreas,

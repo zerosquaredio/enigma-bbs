@@ -1770,6 +1770,49 @@
                     },
                     "additionalProperties": false
                 },
+                "hub": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "description": "The hub this board runs behind, e.g. \"https://hub.example.net\": https://, or http:// to 127.0.0.1.",
+                            "type": "string",
+                            "default": ""
+                        },
+                        "name": {
+                            "description": "The board's name on the hub (subdomain in the hub's agent config).",
+                            "type": "string",
+                            "default": ""
+                        },
+                        "token": {
+                            "description": "The board's token on the hub (metadatas.token in the hub's agent config).",
+                            "type": "string",
+                            "default": ""
+                        },
+                        "presence": {
+                            "type": "object",
+                            "properties": {
+                                "enabled": {
+                                    "description": "Tell the hub which members are on, for those who chose to be shown in the hub's common space.",
+                                    "type": "boolean",
+                                    "default": false
+                                },
+                                "includeLocalUsers": {
+                                    "description": "Also report members with no linked AT account, by user name; the hub decides whether to show them.",
+                                    "type": "boolean",
+                                    "default": false
+                                }
+                            },
+                            "patternProperties": {
+                                "^_": true
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
+                },
                 "webSignIn": {
                     "type": "object",
                     "properties": {

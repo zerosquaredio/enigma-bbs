@@ -227,6 +227,13 @@
                     value: { command: "BA" }
                     action: @menu:boardAtProtoAccount
                 }
+                {
+                    //  Whether the board tells its hub you are on, so you
+                    //  appear in the hub's common space. Needs
+                    //  atProto.hub.presence; see docs.
+                    value: { command: "HP" }
+                    action: @menu:hubPresenceConfig
+                }
                 */
                 {
                     value: { command: "T" }
@@ -1093,6 +1100,57 @@
                             action: @method:cancel
                         }
                     ]
+                }
+            }
+        }
+
+        //
+        //  Whether the board tells its hub (atProto.hub.presence) that this
+        //  user is on, so they appear in the hub's common space. Off until
+        //  they choose "show".
+        //
+        hubPresenceConfig: {
+            desc: Hub Presence
+            module: hub_presence_config
+            art: HUBPRES
+            form: {
+                0: {
+                    mci: {
+                        MT1: {
+                            mode: preview
+                            width: 76
+                            height: 8
+                            focus: false
+                            acceptsFocus: false
+                        }
+                        HM2: {
+                            argName: submission
+                            items: [ "show", "hide", "back" ]
+                            focus: true
+                            submit: true
+                            //  The plain-text art has no colors
+                            styleSGR1: "|00|08"
+                            styleSGR2: "|00|15"
+                            focusTextStyle: upper
+                        }
+                    }
+                    submit: {
+                        *: [
+                            {
+                                value: { submission: 0 }
+                                action: @method:show
+                            }
+                            {
+                                value: { submission: 1 }
+                                action: @method:hide
+                            }
+                            {
+                                value: { submission: 2 }
+                                action: @systemMethod:prevMenu
+                            }
+                        ]
+                    }
+                    actionKeys: @reference:common.escToPrev
                 }
             }
         }

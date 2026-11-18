@@ -45,6 +45,15 @@ exports.post = post;
 exports.buildPost = buildPost;
 exports.startup = startup;
 exports.StatusStates = ['up', 'maintenance', 'degraded', 'down'];
+//  Content ratings (hub spec §5.4), and the AT self-labels each carries, so
+//  ordinary AT apps and moderation services see it too (a first draft of
+//  the mapping, from the hub spec)
+exports.Ratings = ['general', 'mature', 'adult'];
+exports.RatingLabels = {
+    general: [],
+    mature: ['graphic-media', 'nudity'],
+    adult: ['sexual', 'porn'],
+};
 exports.MaxPostLength = 300;
 
 exports._setStore = s => {
@@ -59,6 +68,7 @@ const nowSeconds = () => Math.floor(nowMs() / 1000);
 const iso = seconds => new Date(seconds * 1000).toISOString();
 
 const DefaultMinPostIntervalSeconds = 60;
+const DefaultMovedMessage = '{boardName} has moved! Find it now at: {addresses}';
 const ListingRefreshMs = 24 * 60 * 60 * 1000;
 const ConfigSettleMs = 5 * 1000;
 
@@ -326,6 +336,22 @@ function buildListing(config = Config(), account = getBoardAccount()) {
     if (_.isString(listing.sysopDid) && listing.sysopDid.startsWith('did:')) {
         record.sysop = listing.sysopDid;
     }
+
+    //  A misspelt rating stops the listing rather than passing as all ages
+    const rating = undefined === listing.rating ? 'general' : listing.rating;
+    if (!exports.Ratings.includes(rating)) {
+        throw Errors.Invalid(
+            `atProto.publishing.listing.rating is "${rating}"; it must be one of ${exports.Ratings.join(', ')}`
+        );
+    }
+    record.rating = rating;
+    const labels = exports.RatingLabels[rating];
+    if (labels.length > 0) {
+        record.labels = {
+            $type: 'com.atproto.label.defs#selfLabels',
+            values: labels.map(val => ({ val })),
+        };
+    }
     return record;
 }
 
@@ -358,18 +384,93 @@ function publishListing(options, cb) {
         return setImmediate(() => cb(null, { written: false, record }));
     }
 
-    putSelf(account.did, record.$type, record, err => {
-        if (err) {
-            Log.warn(
-                { did: account.did, error: err.message },
-                'Could not publish the board listing'
-            );
-            return cb(err);
-        }
-        getStore().listed(hash, nowSeconds());
-        Log.info({ did: account.did }, 'Board listing published');
-        return cb(null, { written: true, record });
+    const moved = _.get(Config(), 'atProto.publishing.triggers.moved', {});
+    const watchMoves = true === moved.enabled;
+
+    //  the addresses published now, to tell whether the board has moved
+    const before = next =>
+        watchMoves ? publishedEndpoints(account.did, record.$type, next) : next(null);
+
+    before(previous => {
+        putSelf(account.did, record.$type, record, err => {
+            if (err) {
+                Log.warn(
+                    { did: account.did, error: err.message },
+                    'Could not publish the board listing'
+                );
+                return cb(err);
+            }
+            getStore().listed(hash, nowSeconds());
+            Log.info({ did: account.did }, 'Board listing published');
+
+            const result = { written: true, record };
+            if (!watchMoves || !hasMoved(previous, record.endpoints)) {
+                return cb(null, result);
+            }
+            const text = movedMessage(moved.message, record);
+            post(text, (err, posted) => {
+                if (err) {
+                    Log.warn(
+                        { did: account.did, error: err.message },
+                        'Could not post that the board has moved'
+                    );
+                    result.movedPost = { error: err.message };
+                } else {
+                    result.movedPost = posted;
+                }
+                return cb(null, result);
+            });
+        });
     });
+}
+
+//
+//  The endpoints of the listing published now, or null when there is none
+//  (or it can't be read: then nothing is posted)
+//
+function publishedEndpoints(did, collection, cb) {
+    AtProtoOAuth.boardRequest(
+        did,
+        'GET',
+        'com.atproto.repo.getRecord',
+        { repo: did, collection, rkey: 'self' },
+        (err, result) => {
+            const endpoints = _.get(result, 'value.endpoints');
+            return cb(!err && Array.isArray(endpoints) ? endpoints : null);
+        }
+    );
+}
+
+//  Its addresses changed, from some to others (not to none)
+function hasMoved(previous, endpoints) {
+    if (!Array.isArray(previous) || 0 === previous.length || 0 === endpoints.length) {
+        return false;
+    }
+    const uris = list =>
+        _.sortBy(_.uniq(list.map(e => _.get(e, 'uri')).filter(_.isString)));
+    return !_.isEqual(uris(previous), uris(endpoints));
+}
+
+//
+//  The moved post from its template: {boardName} and {addresses}, dropping
+//  addresses from the end until it fits a post
+//
+function movedMessage(template, record) {
+    const text = _.isString(template) && template ? template : DefaultMovedMessage;
+    const uris = record.endpoints.map(e => e.uri);
+    for (let n = uris.length; n >= 1; --n) {
+        const message = text
+            .replace(/\{boardName\}/g, record.name)
+            .replace(/\{addresses\}/g, uris.slice(0, n).join(' '));
+        if ([...message].length <= exports.MaxPostLength) {
+            return message;
+        }
+    }
+    return [
+        ...text.replace(/\{boardName\}/g, record.name).replace(/\{addresses\}/g, uris[0]),
+    ]
+        .slice(0, exports.MaxPostLength)
+        .join('');
 }
 
 //

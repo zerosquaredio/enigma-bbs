@@ -71,7 +71,8 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `contentServers.web.rateLimits.handoffGet` | Requests per address to the login links. | 20 per 10 minutes |
 | `contentServers.web.rateLimits.atProtoCallback` | Requests per address to the OAuth callback. | 20 per 10 minutes |
 | `atProto.publishing.enabled` | Boolean. Let a sysop connect [the board's own account](#the-boards-own-account). | `false` |
-| `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`. | (empty) |
+| `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`, `rating`. | (empty) |
+| `atProto.publishing.triggers.moved` | Object. `enabled` and `message`: post the new addresses when the listing's addresses change. | off |
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
 | `atProto.publishing.postLangs` | Array. Languages announcements are written in. | `["en"]` |
 | `atProto.publishing.nsidPrefix` | String. Prefix of the published record names. | `nexus.cyberspace.dev` |
@@ -255,6 +256,10 @@ then restart, and connect the account from the **board account** menu (`boardAtP
 The menu is for sysops: its `config.acs` is `GM[sysops]` in the template. Change it to `ID1` to let only the root user (#1) in. It shows the connected account, and can post an announcement, publish the listing now, or disconnect the account (which revokes the board's access; its records stay until removed).
 
 **The listing** is written when the account is connected, at startup, daily, and soon after `config.hjson` changes, and only when it differs from what was last written. Its ways to connect are taken from the enabled servers (the web sign-in page, or enig-term; SSH; telnet) when their addresses are public, plus any in `listing.endpoints`; set `listing.deriveEndpoints: false` to list only those. Its admission policy is `atProto.admission.policy`. Private and loopback addresses are never listed.
+
+**Its rating** (`listing.rating`) is the most mature content anything on the board may have: `general` (all ages, the default), `mature` or `adult`. Hubs list only the ratings they allow, so an adult board appears only on hubs that admit adult boards. It is also published as AT self-labels (`graphic-media` and `nudity` for `mature`; `sexual` and `porn` for `adult`), so other AT apps and moderation services see it. A rating that isn't one of the three stops the listing from being published, rather than listing the board as all ages.
+
+**A "we've moved" post.** With `triggers.moved.enabled`, when the listing's addresses change (the board has moved to another hub, or to its own address), the board posts the new ones from its account, which its followers see wherever it went. The message is `triggers.moved.message`, with `{boardName}` and `{addresses}` filled in; addresses that don't fit in a post are left off. Nothing is posted for the first listing, for other changes, or when no address is left to list. It counts as an announcement, so it waits for `minPostIntervalSeconds`; if it can't be posted, the listing is still published.
 
 **From the command line**, using the stored session, whether or not the board is running:
 

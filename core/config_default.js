@@ -716,6 +716,22 @@ module.exports = () => {
                     endpoints: [],
                     //  the sysop's personal DID, only if they choose to show it
                     sysopDid: '',
+                    //  the most mature content anything on the board may have:
+                    //  "general" (all ages), "mature" or "adult". Hubs show
+                    //  only the ratings they allow; also published as AT
+                    //  self-labels
+                    rating: 'general',
+                },
+                //  posts made by themselves when something happens; each is off
+                //  until enabled
+                triggers: {
+                    //  when the listing's addresses change (the board moved to
+                    //  another hub, or to its own address), post the new ones.
+                    //  {boardName} and {addresses} are filled in
+                    moved: {
+                        enabled: false,
+                        message: '{boardName} has moved! Find it now at: {addresses}',
+                    },
                 },
             },
 

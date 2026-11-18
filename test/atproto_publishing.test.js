@@ -136,7 +136,33 @@ describe('AT publishing (the board account)', () => {
                 },
                 sysop: 'did:plc:sysop',
                 createdAt: '2026-11-07T12:00:00.000Z',
+                rating: 'general',
             });
+        });
+
+        it('carries its rating, and the self-labels for it', () => {
+            const listing = testConfig.atProto.publishing.listing;
+            assert.equal(Publishing.buildListing().labels, undefined, 'general: none');
+
+            listing.rating = 'mature';
+            let record = Publishing.buildListing();
+            assert.equal(record.rating, 'mature');
+            assert.deepEqual(record.labels, {
+                $type: 'com.atproto.label.defs#selfLabels',
+                values: [{ val: 'graphic-media' }, { val: 'nudity' }],
+            });
+
+            listing.rating = 'adult';
+            record = Publishing.buildListing();
+            assert.deepEqual(
+                record.labels.values.map(v => v.val),
+                ['sexual', 'porn']
+            );
+        });
+
+        it('refuses a misspelt rating rather than listing it as all ages', () => {
+            testConfig.atProto.publishing.listing.rating = 'adlt';
+            assert.throws(() => Publishing.buildListing(), /rating is "adlt"/);
         });
 
         it('points at web sign-in when it is on', () => {
@@ -225,6 +251,110 @@ describe('AT publishing (the board account)', () => {
             await assert.rejects(call(Publishing.publishListing, {}), {
                 message: /No board account/,
             });
+        });
+    });
+
+    describe('the "we\'ve moved" post', () => {
+        let published;
+
+        //  the account's host: keeps the listing written, answers reads of it
+        beforeEach(() => {
+            published = null;
+            AtProtoOAuth.boardRequest = (did, method, nsid, params, cb) => {
+                requests.push({ did, method, nsid, params });
+                if ('com.atproto.repo.getRecord' === nsid) {
+                    return setImmediate(() =>
+                        published
+                            ? cb(null, { value: published })
+                            : cb(
+                                  Object.assign(new Error('RecordNotFound'), {
+                                      status: 400,
+                                  })
+                              )
+                    );
+                }
+                if ('com.atproto.repo.putRecord' === nsid) {
+                    published = params.record;
+                }
+                setImmediate(() => cb(null, { uri: `at://${did}/x/1`, cid: 'c' }));
+            };
+            testConfig.atProto.publishing.triggers = { moved: { enabled: true } };
+        });
+
+        const posts = () =>
+            requests.filter(r => 'com.atproto.repo.createRecord' === r.nsid);
+        const moveTo = domain => {
+            testConfig.contentServers.web.domain = domain;
+        };
+
+        it('posts the new addresses when the board moves', async () => {
+            await connect();
+            assert.equal(posts().length, 0, 'not on the first listing');
+
+            moveTo('newhome.example.com');
+            const result = await call(Publishing.publishListing, {});
+            assert.equal(result.written, true);
+            assert.equal(result.movedPost.uri, 'at://did:plc:board/x/1');
+            const [post] = posts();
+            assert.equal(
+                post.params.record.text,
+                'Test BBS has moved! Find it now at: https://newhome.example.com/_enig/ws-term/ ssh://newhome.example.com:8889'
+            );
+            assert.equal(
+                post.params.record.facets.length,
+                1,
+                'the web address is a link'
+            );
+        });
+
+        it('is quiet when other things change, or when it has no addresses left', async () => {
+            await connect();
+            testConfig.atProto.publishing.listing.description = 'Changed';
+            await call(Publishing.publishListing, {});
+            moveTo('192.168.1.20');
+            await call(Publishing.publishListing, {});
+            assert.equal(posts().length, 0);
+        });
+
+        it('is off unless enabled', async () => {
+            testConfig.atProto.publishing.triggers.moved.enabled = false;
+            await connect();
+            moveTo('newhome.example.com');
+            await call(Publishing.publishListing, {});
+            assert.equal(posts().length, 0);
+            assert.equal(
+                requests.filter(r => 'com.atproto.repo.getRecord' === r.nsid).length,
+                0,
+                'nor reads the old listing'
+            );
+        });
+
+        it("uses the sysop's message, shortened to fit", async () => {
+            testConfig.atProto.publishing.triggers.moved.message =
+                'Moved: {addresses} ' + 'x'.repeat(240);
+            await connect();
+            moveTo('newhome.example.com');
+            await call(Publishing.publishListing, {});
+            const { text } = posts()[0].params.record;
+            assert.ok([...text].length <= 300);
+            assert.match(
+                text,
+                /^Moved: https:\/\/newhome\.example\.com\/_enig\/ws-term\/ x/
+            );
+            assert.doesNotMatch(
+                text,
+                /ssh:/,
+                'the addresses that did not fit are dropped'
+            );
+        });
+
+        it('still publishes the listing when the post is refused', async () => {
+            await connect();
+            await call(Publishing.post, 'Just posted');
+            moveTo('newhome.example.com');
+            const result = await call(Publishing.publishListing, {});
+            assert.equal(result.written, true);
+            assert.match(result.movedPost.error, /Wait 60 seconds/);
         });
     });
 

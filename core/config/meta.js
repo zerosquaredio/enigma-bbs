@@ -915,6 +915,20 @@ module.exports = {
         type: 'string',
         description: "The sysop's personal DID, listed only if set.",
     },
+    'atProto.publishing.listing.rating': {
+        type: 'string',
+        enum: ['general', 'mature', 'adult'],
+        description:
+            'The most mature content anything on the board may have. Hubs show only the ratings they allow; also published as AT self-labels.',
+    },
+    'atProto.publishing.triggers.moved.enabled': {
+        type: 'boolean',
+        description: "When the listing's addresses change, post the new ones.",
+    },
+    'atProto.publishing.triggers.moved.message': {
+        type: 'string',
+        description: 'The moved post; {boardName} and {addresses} are filled in.',
+    },
     'atProto.webSignIn.enabled': {
         type: 'boolean',
         description:

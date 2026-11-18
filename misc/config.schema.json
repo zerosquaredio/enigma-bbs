@@ -1719,6 +1719,44 @@
                                     "description": "The sysop's personal DID, listed only if set.",
                                     "type": "string",
                                     "default": ""
+                                },
+                                "rating": {
+                                    "description": "The most mature content anything on the board may have. Hubs show only the ratings they allow; also published as AT self-labels.",
+                                    "type": "string",
+                                    "enum": [
+                                        "general",
+                                        "mature",
+                                        "adult"
+                                    ],
+                                    "default": "general"
+                                }
+                            },
+                            "patternProperties": {
+                                "^_": true
+                            },
+                            "additionalProperties": false
+                        },
+                        "triggers": {
+                            "type": "object",
+                            "properties": {
+                                "moved": {
+                                    "type": "object",
+                                    "properties": {
+                                        "enabled": {
+                                            "description": "When the listing's addresses change, post the new ones.",
+                                            "type": "boolean",
+                                            "default": false
+                                        },
+                                        "message": {
+                                            "description": "The moved post; {boardName} and {addresses} are filled in.",
+                                            "type": "string",
+                                            "default": "{boardName} has moved! Find it now at: {addresses}"
+                                        }
+                                    },
+                                    "patternProperties": {
+                                        "^_": true
+                                    },
+                                    "additionalProperties": false
                                 }
                             },
                             "patternProperties": {

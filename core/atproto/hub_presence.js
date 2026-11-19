@@ -106,6 +106,7 @@ function hubSettings() {
     }
     return {
         settings: {
+            origin: url.origin,
             reportUrl: new URL(exports.ReportPath, url.origin).toString(),
             name: hub.name.toLowerCase(),
             token: hub.token,

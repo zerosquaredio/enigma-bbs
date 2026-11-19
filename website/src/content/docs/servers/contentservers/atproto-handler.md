@@ -335,6 +335,15 @@ atProto: {
 * **The hub decides how to show them.** A member is shown by their user name here, as "alice via coolbbs", until they sign in at the hub and confirm this board; then they appear as their own Bluesky account. With `includeLocalUsers`, members with no linked AT account are reported by user name, and the hub shows them as `alice@coolbbs` if its admin accepts them from this board.
 * **When:** after each login and logoff, a member's change of setting, and every minute, so the hub knows the board is still up. The token is sent only over `https://`, or `http://` to `127.0.0.1` for a hub on the same machine.
 
+### The Hub's Space as a Door
+With presence on the hub set up, members can open the hub's common space from inside the board: the `hubSpace` menu in the main menu template, behind a commented out `HS` command. It needs nothing more in `config.hjson`.
+
+* **Who is around** on the hub's boards and in its chat room, one line a place, kept up to date while the member watches.
+* **The hub's chat room,** shared with people on other boards and on the hub's web page. Only members who confirmed this board at the hub can talk: the hub never lets a board speak as someone's Bluesky account on the board's word alone. Others can watch who is around.
+* **Who can open it:** members the board reports to the hub, so being shown has to be on (Hub Presence), and the hub has to let them into its space. A member who can't is told why.
+* **How:** the board connects to the hub for the member, with its token, and names the member as presence reports do. Names and messages from elsewhere are shown as plain text: color and control codes in them are not used.
+* **Idle logoff** is off while a member is in it, as in MRC chat, unless the menu's `idleLogoutSeconds` is set (60 or more).
+
 ## Routes
 | Route | Purpose |
 |-------|---------|

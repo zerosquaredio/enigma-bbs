@@ -234,6 +234,13 @@
                     value: { command: "HP" }
                     action: @menu:hubPresenceConfig
                 }
+                {
+                    //  The hub's common space: who is around on its
+                    //  boards, and its chat room. Needs
+                    //  atProto.hub.presence; see docs.
+                    value: { command: "HS" }
+                    action: @menu:hubSpace
+                }
                 */
                 {
                     value: { command: "T" }
@@ -1112,7 +1119,11 @@
         hubPresenceConfig: {
             desc: Hub Presence
             module: hub_presence_config
-            art: HUBPRES
+            config: {
+                art: {
+                    menu: HUBPRES
+                }
+            }
             form: {
                 0: {
                     mci: {
@@ -1151,6 +1162,74 @@
                         ]
                     }
                     actionKeys: @reference:common.escToPrev
+                }
+            }
+        }
+
+        //
+        //  The hub's common space (atProto.hub): who is around on the hub's
+        //  boards, kept up to date, and the hub's chat room, for members
+        //  shown on the hub. Members who confirmed this board at the hub
+        //  can talk; others can watch.
+        //
+        hubSpace: {
+            desc: Hub Space
+            module: hub_space
+            config: {
+                art: {
+                    main: HUBSPACE
+                }
+                cls: true
+                //  chat lines kept on screen
+                maxScrollbackLines: 300
+                //  no idle logoff while here, unless set (60 or more)
+                //  idleLogoutSeconds: 600
+            }
+            form: {
+                0: {
+                    mci: {
+                        MT1: {
+                            mode: preview
+                            width: 78
+                            height: 8
+                            focus: false
+                            acceptsFocus: false
+                        }
+                        MT2: {
+                            mode: preview
+                            width: 78
+                            height: 10
+                            autoScroll: true
+                            focus: false
+                            acceptsFocus: false
+                        }
+                        ET3: {
+                            argName: inputArea
+                            width: 76
+                            maxLength: 400
+                            submit: true
+                            focus: true
+                        }
+                        TL4: {
+                            width: 42
+                            justify: right
+                        }
+                    }
+                    actionKeys: [
+                        @reference:common.escToPrevEntry
+                        {
+                            keys: [ "page up", "page down" ]
+                            action: @method:movementKeyPressed
+                        }
+                    ]
+                    submit: {
+                        *: [
+                            {
+                                value: { inputArea: null }
+                                action: @method:sendChatMessage
+                            }
+                        ]
+                    }
                 }
             }
         }

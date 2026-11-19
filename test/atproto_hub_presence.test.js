@@ -90,6 +90,7 @@ describe('Presence reports to the hub', () => {
 
         it('give the report address, and the name in lower case', () => {
             assert.deepEqual(settings(), {
+                origin: 'https://hub.example.net',
                 reportUrl: 'https://hub.example.net/api/bbs/presence',
                 name: 'coolbbs',
                 token: 'hub_secret',

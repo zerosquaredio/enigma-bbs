@@ -27,6 +27,10 @@ exports.moduleInfo = {
 //
 //  Views: MT1 who is where, MT2 the chat log, ET3 what to say, TL4 status.
 //
+//  Commands, typed where you talk: /mute and /unmute someone (for yourself
+//  only, as on the hub's page), /mutes, /report someone to the hub's admin,
+//  and /help.
+//
 
 const FormIds = {
     main: 0,
@@ -58,7 +62,9 @@ exports.getModule = class HubSpaceModule extends MenuModule {
             sendChatMessage: (formData, extraArgs, cb) => {
                 const input = this.getView('main', MciViewIds.input);
                 const text = input ? input.getData() : '';
-                if (text && this.chat) {
+                if (text && '/' === text.trim()[0]) {
+                    this.command(text.trim());
+                } else if (text && this.chat) {
                     this.chat.send(text);
                 } else if (text) {
                     this.addLine('|08You can only watch from here.');
@@ -112,6 +118,7 @@ exports.getModule = class HubSpaceModule extends MenuModule {
 
     startSpace() {
         const found = HubSpace.memberQuery(this.client.user);
+        this.found = found;
         if (!found.settings) {
             this.setStatus('live', '');
             this.drawMap(`|07${HubSpace.pipeSafe(found.reason, 400)}`);
@@ -141,6 +148,7 @@ exports.getModule = class HubSpaceModule extends MenuModule {
         });
         this.live.start();
         this.drawMap(HubSpace.renderMap(this.live.model, this.mapSize()));
+        this.addLine('|08Type |07/help|08 for what you can do here.');
 
         if (!found.did) {
             this.addLine('|08Members with a linked Bluesky account can talk here.');
@@ -168,6 +176,7 @@ exports.getModule = class HubSpaceModule extends MenuModule {
     }
 
     leave() {
+        this.left = true;
         clearTimeout(this.redrawTimer);
         if (this.live) {
             this.live.stop();
@@ -180,6 +189,153 @@ exports.getModule = class HubSpaceModule extends MenuModule {
         this.client.restoreIdleLogoutSeconds();
         this.client.startIdleMonitor();
         return super.leave();
+    }
+
+    //  ── Commands ──
+
+    command(text) {
+        const word = text.split(/\s+/, 1)[0].toLowerCase();
+        const rest = text.slice(word.length).trim();
+        switch (word) {
+            case '/mute':
+                return this.mute(rest);
+            case '/unmute':
+                return this.unmute(rest);
+            case '/mutes':
+                return this.listMutes();
+            case '/report':
+                return this.report(rest);
+            default:
+                return this.help();
+        }
+    }
+
+    help() {
+        [
+            '|07/mute |08name        hide someone from yourself, here and on the hub',
+            '|07/unmute |08name      show them again',
+            '|07/mutes             |08who you muted',
+            "|07/report |08name what  tell the hub's admin, with what was just said",
+        ].forEach(line => this.addLine(line));
+    }
+
+    //  Everyone shown here but the member: on the map, and in the room
+    people() {
+        const out = this.live ? this.live.model.people() : [];
+        for (const p of this.chat ? this.chat.inRoom() : []) {
+            if (!out.some(o => o.id === p.id)) {
+                out.push(p);
+            }
+        }
+        return out;
+    }
+
+    //  A call to the hub for this member; cb(body) on success, else the
+    //  hub's reason is shown
+    call(method, path, body, cb) {
+        const { settings, query } = this.found || {};
+        if (!settings) {
+            return this.addLine('|08This board is not connected to a hub.');
+        }
+        HubSpace.hubCall(settings, query, method, path, body).then(
+            ({ status, body: reply }) => {
+                if (this.left) {
+                    return;
+                }
+                if (status >= 200 && status < 300) {
+                    return cb(reply);
+                }
+                this.addLine(
+                    `|08${HubSpace.pipeSafe(reply.error || 'The hub did not take that.', 300)}`
+                );
+            },
+            () => {
+                if (!this.left) {
+                    this.addLine('|08The hub could not be reached; try again.');
+                }
+            }
+        );
+    }
+
+    mute(rest) {
+        const found = HubSpace.findPerson(this.people(), rest);
+        if (!found || found.rest) {
+            return this.addLine('|08Type |07/mute|08 and a name as it is shown here.');
+        }
+        const label = HubSpace.pipeSafe(found.person.label, 60);
+        this.call(
+            'POST',
+            HubSpace.MutePath,
+            { person: found.person.id, mute: true },
+            () => {
+                this.addLine(
+                    `|08Muted |07${label}|08: hidden from you, here and on the hub.`
+                );
+                if (this.chat) {
+                    this.chat.refreshPeople();
+                }
+            }
+        );
+    }
+
+    unmute(rest) {
+        this.call('GET', HubSpace.MutesPath, null, body => {
+            const mutes = (Array.isArray(body.mutes) ? body.mutes : []).map(m => ({
+                id: m.person,
+                label: m.label,
+            }));
+            const found = HubSpace.findPerson(mutes, rest);
+            if (!found || found.rest) {
+                return this.addLine(
+                    '|08Type |07/unmute|08 and a name from |07/mutes|08.'
+                );
+            }
+            const label = HubSpace.pipeSafe(found.person.label, 60);
+            this.call(
+                'POST',
+                HubSpace.MutePath,
+                { person: found.person.id, mute: false },
+                () => {
+                    this.addLine(`|08Unmuted |07${label}|08.`);
+                    if (this.chat) {
+                        this.chat.refreshPeople();
+                    }
+                }
+            );
+        });
+    }
+
+    listMutes() {
+        this.call('GET', HubSpace.MutesPath, null, body => {
+            const mutes = Array.isArray(body.mutes) ? body.mutes : [];
+            if (!mutes.length) {
+                return this.addLine('|08You have muted nobody.');
+            }
+            this.addLine(
+                `|08Muted: |07${mutes
+                    .map(m => HubSpace.pipeSafe(m.label, 60))
+                    .join('|08, |07')}`
+            );
+        });
+    }
+
+    report(rest) {
+        const found = HubSpace.findPerson(this.people(), rest);
+        if (!found || !found.rest) {
+            return this.addLine(
+                '|08Type |07/report|08, their name as shown here, then what happened.'
+            );
+        }
+        const label = HubSpace.pipeSafe(found.person.label, 60);
+        this.call(
+            'POST',
+            HubSpace.ReportPath,
+            { person: found.person.id, note: found.rest.slice(0, 1000) },
+            () =>
+                this.addLine(
+                    `|08Reported |07${label}|08 to the hub's admin, with what was said in the room lately.`
+                )
+        );
     }
 
     mapSize() {

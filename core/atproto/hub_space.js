@@ -32,6 +32,9 @@ const WebSocket = require('ws');
 exports.LivePath = '/api/bbs/live';
 exports.ChatTokenPath = '/api/bbs/chat/token';
 exports.ChatPeoplePath = '/api/bbs/chat/people';
+exports.MutePath = '/api/bbs/mute';
+exports.MutesPath = '/api/bbs/mutes';
+exports.ReportPath = '/api/bbs/report';
 exports.LiveVersion = 1;
 //  closed by the hub because access ended: don't just reconnect
 exports.AccessEnded = 4403;
@@ -43,6 +46,8 @@ exports.pipeSafe = pipeSafe;
 exports.SpaceModel = SpaceModel;
 exports.renderMap = renderMap;
 exports.parseIrc = parseIrc;
+exports.hubCall = hubCall;
+exports.findPerson = findPerson;
 
 //  test hooks
 let fetchImpl = (...args) => fetch(...args);
@@ -119,6 +124,88 @@ function pipeSafe(text, max) {
 
 function wsUrl(settings, path, query) {
     return `${settings.origin.replace(/^http/, 'ws')}${path}?${query.toString()}`;
+}
+
+//
+//  A call to the hub for this member, with the board's token: resolves with
+//  { status, body }, body {} when there is none
+//
+function hubCall(settings, query, method, path, body) {
+    return fetchImpl(`${settings.origin}${path}?${query.toString()}`, {
+        method,
+        headers: Object.assign(
+            { Authorization: `Bearer ${settings.token}` },
+            body ? { 'Content-Type': 'application/json' } : {}
+        ),
+        body: body ? JSON.stringify(body) : undefined,
+        redirect: 'error',
+        signal: AbortSignal.timeout(RequestTimeoutMs),
+    }).then(res =>
+        res.json().then(
+            json => ({
+                status: res.status,
+                body: json && 'object' === typeof json ? json : {},
+            }),
+            () => ({ status: res.status, body: {} })
+        )
+    );
+}
+
+//
+//  Who a member means, from what they typed after a command: the person
+//  whose name starts it (the longest, so "bob via coolbbs" beats "bob"),
+//  with or without the @, and what follows it. people: [{ id, label }]
+//
+function findPerson(people, text) {
+    const said = String(text || '').trim();
+    const lower = said.toLowerCase();
+    let best = null;
+    for (const person of people) {
+        const label = String(person.label || '');
+        for (const name of [label, label.replace(/^@/, '')]) {
+            const n = name.toLowerCase();
+            if (
+                n &&
+                (lower === n || lower.startsWith(`${n} `)) &&
+                (!best || n.length > best.length)
+            ) {
+                best = { person, length: n.length };
+            }
+        }
+    }
+    return best ? { person: best.person, rest: said.slice(best.length).trim() } : null;
+}
+
+//
+//  Why the hub refused a connection, if it said: its JSON error, cleaned
+//
+function refusal(req, res, cb) {
+    let text = '';
+    let done = false;
+    const finish = () => {
+        if (done) {
+            return;
+        }
+        done = true;
+        req.destroy();
+        let error = null;
+        try {
+            error = JSON.parse(text).error;
+        } catch (e) {
+            //  no reason given
+        }
+        return cb('string' === typeof error && error ? clean(error, 300) : null);
+    };
+    res.setEncoding('utf8');
+    res.on('data', d => {
+        text += d;
+        if (text.length > 4096) {
+            finish();
+        }
+    });
+    res.on('end', finish);
+    res.on('error', finish);
+    res.on('close', finish);
 }
 
 //  ── The live model ─────────────────────────────────────────────────────────
@@ -205,6 +292,17 @@ SpaceModel.prototype.peopleAt = function (placeId) {
             (b.id === this.you) - (a.id === this.you) ||
             String(a.label).localeCompare(String(b.label))
     );
+};
+
+//  Everyone the model shows, but the viewer: [{ id, label }]
+SpaceModel.prototype.people = function () {
+    const out = [];
+    for (const e of this.state.entities.values()) {
+        if ('person' === e.type && e.id !== this.you) {
+            out.push({ id: e.id, label: String(e.label || '') });
+        }
+    }
+    return out;
 };
 
 //  The label of whoever has this DID, if the model shows them
@@ -331,16 +429,20 @@ class HubLive extends EventEmitter {
         });
         this.ws = ws;
         ws.on('unexpected-response', (req, res) => {
-            req.destroy();
             this.ws = null;
-            if ([401, 403, 404].includes(res.statusCode)) {
-                return this.end(
-                    401 === res.statusCode
-                        ? 'The hub does not know this board.'
-                        : 'The hub does not let you into its space right now.'
-                );
+            if (![401, 403, 404].includes(res.statusCode)) {
+                req.destroy();
+                return this.retry();
             }
-            return this.retry();
+            //  the hub says why: who blocked them, for one
+            return refusal(req, res, why =>
+                this.end(
+                    why ||
+                        (401 === res.statusCode
+                            ? 'The hub does not know this board.'
+                            : 'The hub does not let you into its space right now.')
+                )
+            );
         });
         ws.on('message', data => {
             let message;
@@ -361,13 +463,18 @@ class HubLive extends EventEmitter {
                 this.emit('change', this.model);
             }
         });
-        ws.on('close', code => {
+        ws.on('close', (code, reason) => {
             if (this.ws !== ws) {
                 return;
             }
             this.ws = null;
             if (exports.AccessEnded === code) {
-                return this.end("You are no longer in the hub's space.");
+                const why = clean(reason, 120);
+                return this.end(
+                    /^blocked by /.test(why)
+                        ? `You were ${why}.`
+                        : "You are no longer in the hub's space."
+                );
             }
             return this.retry();
         });
@@ -423,6 +530,10 @@ class HubChat extends EventEmitter {
         this.ws = null;
         this.timer = null;
         this.labels = new Map();
+        //  who is in the room, as the hub last said, and whom this member
+        //  muted (by DID): their messages aren't shown
+        this.here = [];
+        this.muted = new Set();
         //  messages waiting for their sender's name, in order
         this.queue = [];
         this.lookup = null;
@@ -529,12 +640,14 @@ class HubChat extends EventEmitter {
         });
         this.ws = ws;
         ws.on('unexpected-response', (req, res) => {
-            req.destroy();
             this.ws = null;
-            if ([401, 403, 404].includes(res.statusCode)) {
-                return this.end('The hub does not let you chat right now.');
+            if (![401, 403, 404].includes(res.statusCode)) {
+                req.destroy();
+                return this.retry();
             }
-            return this.retry();
+            return refusal(req, res, why =>
+                this.end(why || 'The hub does not let you chat right now.')
+            );
         });
         ws.on('open', () => {
             this.raw('CAP LS 302');
@@ -628,6 +741,9 @@ class HubChat extends EventEmitter {
 
     //  Each message waits for its sender's name, so they stay in order
     received(did, text, time) {
+        if (did && this.muted.has(did)) {
+            return;
+        }
         this.queue.push({ did, text: clean(text, 1000), time });
         if (did && !this.labels.has(did)) {
             this.lookupSoon();
@@ -642,6 +758,9 @@ class HubChat extends EventEmitter {
                 return;
             }
             this.queue.shift();
+            if (next.did && this.muted.has(next.did)) {
+                continue;
+            }
             this.emit('message', {
                 label: next.did ? this.labels.get(next.did) : 'someone',
                 text: next.text,
@@ -702,6 +821,16 @@ class HubChat extends EventEmitter {
                     for (const did of Object.keys(labels)) {
                         this.labels.set(did, clean(labels[did], 80));
                     }
+                    if (body && Array.isArray(body.muted)) {
+                        this.muted = new Set(
+                            body.muted.filter(d => 'string' === typeof d)
+                        );
+                    }
+                    if (body && Array.isArray(body.here)) {
+                        this.here = body.here
+                            .filter(h => h && 'string' === typeof h.did)
+                            .map(h => ({ did: h.did, label: clean(h.label, 80) }));
+                    }
                     const here = Array.isArray(body && body.here)
                         ? body.here.map(h => {
                               this.labels.set(h.did, clean(h.label, 80));
@@ -712,6 +841,14 @@ class HubChat extends EventEmitter {
                 },
                 () => cb(null)
             );
+    }
+
+    //  Who is in the room but the member: [{ id, label }], as the model names them
+    inRoom() {
+        const mine = this.ticket ? this.ticket.did : null;
+        return this.here
+            .filter(h => h.did !== mine)
+            .map(h => ({ id: `person:${h.did}`, label: h.label }));
     }
 
     //  What the member typed; false if it can't be sent

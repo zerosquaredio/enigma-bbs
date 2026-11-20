@@ -342,6 +342,8 @@ With presence on the hub set up, members can open the hub's common space from in
 * **The hub's chat room,** shared with people on other boards and on the hub's web page. Only members who confirmed this board at the hub can talk: the hub never lets a board speak as someone's Bluesky account on the board's word alone. Others can watch who is around.
 * **Who can open it:** members the board reports to the hub, so being shown has to be on (Hub Presence), and the hub has to let them into its space. A member who can't is told why.
 * **How:** the board connects to the hub for the member, with its token, and names the member as presence reports do. Names and messages from elsewhere are shown as plain text: color and control codes in them are not used.
+* **Commands**, typed where members talk: `/mute name` hides someone from them (here and on the hub's pages; the other person isn't told), `/unmute name` and `/mutes` undo and list that, and `/report name what happened` sends a report to the hub's admin with what was said in the room in the last few minutes. `/help` lists them. Muting needs a member who confirmed this board at the hub; anyone in the space can report.
+* **Blocks** are the hub admin's: a member the hub blocked is told so, by whom, and why, when they open it or while they are in it.
 * **Idle logoff** is off while a member is in it, as in MRC chat, unless the menu's `idleLogoutSeconds` is set (60 or more).
 
 ## Routes

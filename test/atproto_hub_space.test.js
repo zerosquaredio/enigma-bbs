@@ -298,10 +298,12 @@ describe('The hub space door', () => {
         let upgrades;
         let onConnection;
         let refuseWith;
+        let refuseBody;
 
         beforeEach(async () => {
             upgrades = [];
             refuseWith = null;
+            refuseBody = '';
             onConnection = () => {};
             wss = new WebSocket.Server({ noServer: true });
             server = http.createServer((req, res) => res.end());
@@ -312,7 +314,11 @@ describe('The hub space door', () => {
                     origin: req.headers.origin,
                 });
                 if (refuseWith) {
-                    socket.end(`HTTP/1.1 ${refuseWith} No\r\nContent-Length: 0\r\n\r\n`);
+                    socket.end(
+                        `HTTP/1.1 ${refuseWith} No\r\nContent-Length: ${Buffer.byteLength(
+                            refuseBody
+                        )}\r\n\r\n${refuseBody}`
+                    );
                     return;
                 }
                 wss.handleUpgrade(req, socket, head, ws => onConnection(ws, req));
@@ -380,6 +386,43 @@ describe('The hub space door', () => {
             await until(() => ended.length, 'the refusal');
             await wait(100);
             assert.equal(upgrades.length, 1);
+            assert.equal(ended[0], 'The hub does not let you into its space right now.');
+        });
+
+        it('says who blocked the member, as the hub tells it', async () => {
+            refuseWith = 403;
+            refuseBody = JSON.stringify({
+                error: 'The admin of hub.test has blocked you from its common space: |14spam\x1b[2J.',
+            });
+            const live = new HubSpace.HubLive(settings(), query());
+            const ended = [];
+            live.on('ended', t => ended.push(t));
+            live.start();
+            await until(() => ended.length, 'the refusal');
+            assert.equal(
+                ended[0],
+                'The admin of hub.test has blocked you from its common space: |14spam[2J.'
+            );
+
+            //  and when it closes the stream for that reason
+            refuseWith = null;
+            onConnection = ws => {
+                ws.send(JSON.stringify(snapshot()));
+                setTimeout(
+                    () =>
+                        ws.close(
+                            HubSpace.AccessEnded,
+                            'blocked by the admin of hub.test'
+                        ),
+                    20
+                );
+            };
+            const again = new HubSpace.HubLive(settings(), query());
+            const why = [];
+            again.on('ended', t => why.push(t));
+            again.start();
+            await until(() => why.length, 'the close');
+            assert.equal(why[0], 'You were blocked by the admin of hub.test.');
         });
 
         it('talks in the room as the member, naming others as the hub does', async () => {
@@ -472,6 +515,93 @@ describe('The hub space door', () => {
             chat.stop();
         });
 
+        it('hides what someone the member muted says', async () => {
+            HubSpace._setFetch(async url => {
+                if (String(url).includes('/api/bbs/chat/token')) {
+                    return new Response(
+                        JSON.stringify({
+                            token: 'tok',
+                            did: Alice,
+                            nick: 'alice-1234',
+                            label: '@alice.example',
+                            room: '#space',
+                            path: '/api/bbs/chat',
+                        }),
+                        { status: 200 }
+                    );
+                }
+                return new Response(
+                    JSON.stringify({
+                        here: [{ did: Alice, label: '@alice.example' }],
+                        labels: { [Bob]: '@bob.example', 'did:plc:c': '@carol.example' },
+                        muted: [Bob],
+                    }),
+                    { status: 200 }
+                );
+            });
+            let peer;
+            onConnection = ws => {
+                peer = ws;
+                ws.on('message', data => {
+                    for (const line of String(data).split('\r\n').filter(Boolean)) {
+                        if (line.startsWith('CAP REQ')) {
+                            ws.send(':freeq CAP * ACK :sasl\r\n');
+                        } else if ('AUTHENTICATE ATPROTO-CHALLENGE' === line) {
+                            ws.send('AUTHENTICATE challenge\r\n');
+                        } else if (line.startsWith('AUTHENTICATE ')) {
+                            ws.send(':freeq 903 alice-1234 :ok\r\n');
+                        } else if ('CAP END' === line) {
+                            ws.send(':freeq 001 alice-1234 :welcome\r\n');
+                        } else if (line.startsWith('JOIN')) {
+                            ws.send(':alice-1234!u@h JOIN #space\r\n');
+                        }
+                    }
+                });
+            };
+            const chat = new HubSpace.HubChat(settings(), query());
+            const messages = [];
+            chat.on('message', m => messages.push(m.label));
+            chat.start();
+            await until(() => chat.muted.has(Bob), 'who Alice muted');
+            assert.deepEqual(chat.inRoom(), [], 'not herself');
+            peer.send(`@account=${Bob} :b!u@h PRIVMSG #space :you can't see me\r\n`);
+            peer.send(`@account=did:plc:c :c!u@h PRIVMSG #space :hello\r\n`);
+            await until(() => messages.length, 'a message');
+            await wait(50);
+            assert.deepEqual(messages, ['@carol.example']);
+            chat.stop();
+        });
+
+        it('mutes and reports for the member, with the board token', async () => {
+            const asked = [];
+            HubSpace._setFetch(async (url, options) => {
+                asked.push({
+                    url: String(url),
+                    method: options.method,
+                    auth: options.headers.Authorization,
+                    body: options.body,
+                });
+                return new Response(JSON.stringify({ error: 'No.' }), { status: 403 });
+            });
+            const reply = await HubSpace.hubCall(
+                settings(),
+                query(),
+                'POST',
+                HubSpace.MutePath,
+                {
+                    person: `person:${Bob}`,
+                    mute: true,
+                }
+            );
+            assert.deepEqual(reply, { status: 403, body: { error: 'No.' } });
+            assert.deepEqual(asked[0], {
+                url: `${origin}/api/bbs/mute?bbs=coolbbs&did=${encodeURIComponent(Alice)}`,
+                method: 'POST',
+                auth: 'Bearer hub_secret',
+                body: JSON.stringify({ person: `person:${Bob}`, mute: true }),
+            });
+        });
+
         it('only watches when the hub will not let the member talk', async () => {
             HubSpace._setFetch(
                 async () =>
@@ -490,6 +620,30 @@ describe('The hub space door', () => {
             assert.match(ended[0], /confirmed this BBS/);
             assert.equal(upgrades.length, 0);
         });
+    });
+
+    it('finds whom a member means by the name shown', () => {
+        const people = [
+            { id: 'person:a', label: '@bob.example' },
+            { id: 'person:b', label: 'bob via coolbbs' },
+            { id: 'person:c', label: 'bob' },
+        ];
+        assert.deepEqual(HubSpace.findPerson(people, 'Bob via CoolBBS was rude'), {
+            person: people[1],
+            rest: 'was rude',
+        });
+        assert.deepEqual(HubSpace.findPerson(people, 'bob.example spam'), {
+            person: people[0],
+            rest: 'spam',
+        });
+        assert.equal(HubSpace.findPerson(people, 'bob').person.id, 'person:c');
+        assert.equal(HubSpace.findPerson(people, 'bobby'), null);
+        assert.equal(HubSpace.findPerson(people, ''), null);
+        const model = new HubSpace.SpaceModel();
+        model.apply(snapshot());
+        assert.deepEqual(model.people(), [
+            { id: 'person:via:coolbbs:1', label: 'bob via coolbbs' },
+        ]);
     });
 
     it('reads IRC lines, with their tags', () => {

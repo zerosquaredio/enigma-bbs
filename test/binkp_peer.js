@@ -54,6 +54,10 @@ class ScriptedPeer {
     //    secure     : boolean   — M_OK argument
     //    dupeNames  : string[]  — answer M_FILE for these with M_GOT (binkd inb_test)
     //    skipNames  : string[]  — answer M_FILE for these with M_SKIP
+    //    alsoGot    : (name) => string[] — M_GOT arguments ('name size ts') to
+    //                             send the moment |name| is offered, before it
+    //                             is answered: a receiver acknowledging a file
+    //                             the sender has queued but not yet offered
     //    getOffset  : (name, size) => number — offset to answer an M_FILE "-1" with
     //    onComplete : (peer, file) => 'got'|'get'|'skip'|'none'
     //                             — what to answer a fully received file with
@@ -63,6 +67,10 @@ class ScriptedPeer {
     //    pipeline   : boolean   — offer every file back to back without
     //                             waiting for M_GOT, the way binkd does
     //                             whenever ND mode is not in play
+    //    eobWithoutGots: boolean — send M_EOB once the queue is empty, without
+    //                             waiting for the files to be acknowledged,
+    //                             the way an ENiGMA sender does (issue #1043).
+    //                             The batch still only closes once they are.
     constructor(socket, opts = {}) {
         this.opts = opts;
         this.socket = socket;
@@ -211,6 +219,10 @@ class ScriptedPeer {
         const offset = parseInt(offsetStr, 10);
         const gz = parts.slice(4).includes('GZ');
 
+        for (const got of this.opts.alsoGot ? this.opts.alsoGot(name) : []) {
+            this._send(Commands.M_GOT, got);
+        }
+
         if ((this.opts.dupeNames || []).includes(name)) {
             //  binkd's inb_test path: acknowledge without ever receiving.
             this.inFile = null;
@@ -331,6 +343,11 @@ class ScriptedPeer {
             return;
         }
         if (!this.eobSent || !this.remoteEOB || this.currentSend || this.inFile) {
+            return;
+        }
+        //  binkd's batch end also wants sent_fls at zero (protocol.c:3265).
+        //  Only |eobWithoutGots| can get here with files still unanswered.
+        if (this.awaitingGot > 0) {
             return;
         }
         this.batchClosed = true;
@@ -468,6 +485,7 @@ class ScriptedPeer {
         }
         this.currentSend = null;
         this._sendNext();
+        this._endOfBatch();
     }
 
     //  FTS-1026 non-destructive skip: the receiver is postponing the file,
@@ -484,14 +502,16 @@ class ScriptedPeer {
             this.currentSend = null;
         }
         this._sendNext();
+        this._endOfBatch();
     }
 
     _maybeEob() {
         if (this.eobSent || this.currentSend || this.sendQueue.length) {
             return;
         }
-        //  Nothing may be outstanding either -- see |awaitingGot|.
-        if (this.awaitingGot > 0) {
+        //  Nothing may be outstanding either -- see |awaitingGot| -- unless
+        //  this peer is modelling a sender that does not wait for that.
+        if (this.awaitingGot > 0 && !this.opts.eobWithoutGots) {
             return;
         }
         //  The answering side holds its M_EOB until the caller's arrives;

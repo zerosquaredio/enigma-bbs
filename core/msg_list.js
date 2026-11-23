@@ -37,6 +37,11 @@ const FormIds = {
     delPrompt: 1,
 };
 
+//  module -> its list's 'index update' listener (see
+//  enableMessageListIndexUpdates()). Kept here, not on the module, so no
+//  name is taken from a subclass.
+const indexUpdateListeners = new WeakMap();
+
 const MciViewIds = {
     allViews: {
         msgList: 1, //  VM1 - see above
@@ -68,6 +73,22 @@ function focusedMessageIndex(formData) {
 
     return _.get(formData, 'value.messageIndex', formData.value.message);
 }
+
+//
+//  Which row a freshly entered list focuses when nothing in it is new:
+//  'first' (the default, and what any other value means) or 'last', the
+//  final row as displayed. Area lists are built oldest first, so that is the
+//  newest message. A list supplied through |messageList| counts every message
+//  as new for focus, so it always opens on its first row.
+//  Returns undefined when the list should keep its default focus (the first
+//  row, with |initialFocusIndex| left unset exactly as before this option
+//  existed): setting 'first', an invalid setting or an empty list.
+//
+function pickNoneNewFocusIndex(setting, itemCount) {
+    return 'last' === setting && itemCount > 0 ? itemCount - 1 : undefined;
+}
+
+exports.pickNoneNewFocusIndex = pickNoneNewFocusIndex;
 
 exports.getModule = class MessageListModule extends (
     MessageAreaConfTempSwitcher(MenuModule)
@@ -415,6 +436,29 @@ exports.getModule = class MessageListModule extends (
 
                             listItem.text = `${listItem.msgNum} - ${listItem.subject} from ${listItem.fromUserName}`; //  default text
                         });
+
+                        //
+                        //  Nothing new and not returning from a message: focus per
+                        //  |focusWhenNoneNew| (menu config or extraArgs). A restored
+                        //  state has already set |initialFocusIndex|.
+                        //
+                        const setting = self.config.focusWhenNoneNew;
+                        if (
+                            undefined !== setting &&
+                            'first' !== setting &&
+                            'last' !== setting
+                        ) {
+                            self.client.log.warn(
+                                { focusWhenNoneNew: setting },
+                                'Invalid focusWhenNoneNew; expected "first" or "last"'
+                            );
+                        }
+                        if (self.initialFocusIndex === undefined) {
+                            self.initialFocusIndex = pickNoneNewFocusIndex(
+                                setting,
+                                self.config.messageList.length
+                            );
+                        }
                         return callback(null);
                     },
                     function populateAndDrawViews(callback) {
@@ -460,8 +504,17 @@ exports.getModule = class MessageListModule extends (
         return this.menuResult;
     }
 
+    //  Removes, then adds: the list keeps its listener under the delete
+    //  prompt (promptForInput() covers the list's form), so adding again
+    //  would fire it twice
     enableMessageListIndexUpdates(msgListView) {
-        msgListView.on('index update', idx => this.populateCustomLabelsForSelected(idx));
+        let onIndexUpdate = indexUpdateListeners.get(this);
+        if (!onIndexUpdate) {
+            onIndexUpdate = idx => this.populateCustomLabelsForSelected(idx);
+            indexUpdateListeners.set(this, onIndexUpdate);
+        }
+        msgListView.removeListener('index update', onIndexUpdate);
+        msgListView.on('index update', onIndexUpdate);
     }
 
     markAllMessagesAsRead(cb) {

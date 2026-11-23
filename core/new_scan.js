@@ -7,6 +7,7 @@ const MenuModule = require('./menu_module.js').MenuModule;
 const ViewController = require('./view_controller.js').ViewController;
 const stringFormat = require('./string_format.js');
 const FileEntry = require('./file_entry.js');
+const { visibleFilesFilter } = require('./file_base_visibility.js');
 const FileBaseFilters = require('./file_base_filter.js');
 const Errors = require('./enig_error.js').Errors;
 const { getAvailableFileAreaTags } = require('./file_base_area.js');
@@ -64,6 +65,12 @@ exports.getModule = class NewScanModule extends MenuModule {
         //  skipFileBase: scan the message base only; the file base step (and
         //  newScanFileBaseList) is never entered. Off unless set to true.
         this.skipFileBase = true === config.skipFileBase;
+
+        //  skipMessageBase: the mirror of skipFileBase; the message base step
+        //  is never entered and the scan goes straight to the file base. Off
+        //  unless set to true. With both options true there is nothing to
+        //  scan: the module finishes at once, like a scan that found nothing.
+        this.skipMessageBase = true === config.skipMessageBase;
     }
 
     updateScanStatus(statusText) {
@@ -300,27 +307,31 @@ exports.getModule = class NewScanModule extends MenuModule {
             order: 'ascending', //  oldest first
         };
 
-        FileEntry.findFiles(filterCriteria, (err, fileIds) => {
-            if (err || 0 === fileIds.length) {
-                return cb(err ? err : Errors.DoesNotExist('No more new files'));
+        //  infected entries hidden from this user are not new to them (#291)
+        FileEntry.findFiles(
+            visibleFilesFilter(this.client, filterCriteria),
+            (err, fileIds) => {
+                if (err || 0 === fileIds.length) {
+                    return cb(err ? err : Errors.DoesNotExist('No more new files'));
+                }
+
+                FileBaseFilters.setFileBaseLastViewedFileIdForUser(
+                    this.client.user,
+                    fileIds[fileIds.length - 1]
+                );
+
+                const menuOpts = {
+                    extraArgs: {
+                        fileList: fileIds,
+                    },
+                };
+
+                return this.gotoMenu(
+                    this.menuConfig.config.newScanFileBaseList || 'newScanFileBaseList',
+                    menuOpts
+                );
             }
-
-            FileBaseFilters.setFileBaseLastViewedFileIdForUser(
-                this.client.user,
-                fileIds[fileIds.length - 1]
-            );
-
-            const menuOpts = {
-                extraArgs: {
-                    fileList: fileIds,
-                },
-            };
-
-            return this.gotoMenu(
-                this.menuConfig.config.newScanFileBaseList || 'newScanFileBaseList',
-                menuOpts
-            );
-        });
+        );
     }
 
     getSaveState() {
@@ -338,6 +349,15 @@ exports.getModule = class NewScanModule extends MenuModule {
     performScanCurrentStep(cb) {
         switch (this.currentStep) {
             case Steps.MessageConfs:
+                //  also reached with skipMessageBase through a state saved
+                //  before the option applied; the message base stays out
+                if (this.skipMessageBase) {
+                    this.currentStep = this.skipFileBase
+                        ? Steps.Finished
+                        : Steps.FileBase;
+                    return this.performScanCurrentStep(cb);
+                }
+
                 this.newScanMessageConference(() => {
                     this.currentStep = this.skipFileBase
                         ? Steps.Finished
@@ -355,6 +375,11 @@ exports.getModule = class NewScanModule extends MenuModule {
                 }
 
                 this.newScanFileBase(() => {
+                    //  a files-only scan has no message base step to end on
+                    //  scanCompleteMsg, so it closes with it here
+                    if (this.skipMessageBase) {
+                        this.updateScanStatus(this.scanCompleteMsg);
+                    }
                     this.currentStep = Steps.Finished;
                     return this.performScanCurrentStep(cb);
                 });

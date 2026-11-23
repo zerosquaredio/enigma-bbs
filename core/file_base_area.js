@@ -17,6 +17,7 @@ const StatLog = require('./stat_log.js');
 const SysProps = require('./system_property.js');
 const SAUCE = require('./sauce.js');
 const { wildcardMatch } = require('./string_util');
+const FileScanner = require('./file_scanner.js');
 
 //  deps
 const _ = require('lodash');
@@ -393,31 +394,41 @@ function cleanupExtractTempSession(temptmp) {
     });
 }
 
+//  A pattern list from config; anything that is not an array (null, unset)
+//  is no patterns at all, never a RegExp of undefined, which matches anything
+const patternList = patterns => (Array.isArray(patterns) ? patterns : []);
+
+//  The first archive entry whose full path matches one of |patterns|
+function findEntryByPatterns(entries, patterns) {
+    //  :TODO: would be nice if these RegExp's were cached
+    const list = patternList(patterns);
+    return entries.find(e => list.some(pat => new RegExp(pat, 'i').test(e.fileName)));
+}
+
+//  Whether |entry| is one of the description files fileBase.fileNamePatterns name
+function isDescFileEntry(entry) {
+    const { desc, descLong } = _.get(Config(), 'fileBase.fileNamePatterns', {});
+    return Boolean(
+        findEntryByPatterns([entry], patternList(desc).concat(patternList(descLong)))
+    );
+}
+
 function extractAndProcessDescFiles(fileEntry, filePath, archiveEntries, cb) {
     const temptmp = createExtractTempSession();
     async.waterfall(
         [
             function extractDescFiles(callback) {
-                //  :TODO: would be nice if these RegExp's were cached
-                //  :TODO: this is long winded...
                 const config = Config();
                 const extractList = [];
 
-                const shortDescFile = archiveEntries.find(e => {
-                    return config.fileBase.fileNamePatterns.desc.find(pat =>
-                        new RegExp(pat, 'i').test(e.fileName)
-                    );
-                });
+                const { desc, descLong } = config.fileBase.fileNamePatterns;
 
+                const shortDescFile = findEntryByPatterns(archiveEntries, desc);
                 if (shortDescFile) {
                     extractList.push(shortDescFile.fileName);
                 }
 
-                const longDescFile = archiveEntries.find(e => {
-                    return config.fileBase.fileNamePatterns.descLong.find(pat =>
-                        new RegExp(pat, 'i').test(e.fileName)
-                    );
-                });
+                const longDescFile = findEntryByPatterns(archiveEntries, descLong);
 
                 if (longDescFile) {
                     extractList.push(longDescFile.fileName);
@@ -451,7 +462,19 @@ function extractAndProcessDescFiles(fileEntry, filePath, archiveEntries, cb) {
                                 ArchiveUtil.findExtractedFile(
                                     tempDir,
                                     entry.fileName,
-                                    (err, path) => next(null, err ? null : path)
+                                    (err, path) => {
+                                        if (err) {
+                                            logDebug(
+                                                {
+                                                    entry: entry.fileName,
+                                                    error: err.message,
+                                                },
+                                                'Description file not found after extraction'
+                                            );
+                                            return next(null, null);
+                                        }
+                                        return next(null, path);
+                                    }
                                 );
                             };
 
@@ -476,6 +499,10 @@ function extractAndProcessDescFiles(fileEntry, filePath, archiveEntries, cb) {
 
                         fs.stat(path, (err, stats) => {
                             if (err) {
+                                logDebug(
+                                    { path, error: err.message },
+                                    `Cannot stat "${descType}" file`
+                                );
                                 return next(null);
                             }
 
@@ -499,6 +526,13 @@ function extractAndProcessDescFiles(fileEntry, filePath, archiveEntries, cb) {
 
                             fs.readFile(path, (err, data) => {
                                 if (err || !data) {
+                                    logDebug(
+                                        {
+                                            path,
+                                            error: err ? err.message : 'No data',
+                                        },
+                                        `Cannot read "${descType}" file`
+                                    );
                                     return next(null);
                                 }
 
@@ -569,7 +603,18 @@ function extractAndProcessSingleArchiveEntry(fileEntry, filePath, archiveEntries
                             return ArchiveUtil.findExtractedFile(
                                 tempDir,
                                 extractList[0],
-                                callback
+                                (err, extractedFile) => {
+                                    if (err) {
+                                        logDebug(
+                                            {
+                                                entry: extractList[0],
+                                                error: err.message,
+                                            },
+                                            'Archive entry not found after extraction'
+                                        );
+                                    }
+                                    return callback(err, extractedFile);
+                                }
                             );
                         }
                     );
@@ -638,8 +683,47 @@ function populateFileEntryWithArchive(fileEntry, filePath, stepInfo, iterator, c
                 //  work for things like zipped up .pdf files.
                 //
                 //  Otherwise, try to find particular desc files such as FILE_ID.DIZ
-                //  and README.1ST
+                //  and README.1ST -- including when one is the only entry, as in
+                //  a ZIP that holds nothing but its FILE_ID.DIZ.
                 //
+                if (1 === entries.length && isDescFileEntry(entries[0])) {
+                    return extractAndProcessDescFiles(
+                        fileEntry,
+                        filePath,
+                        entries,
+                        err => {
+                            if (err) {
+                                return callback(err);
+                            }
+                            const hasText = s => _.isString(s) && s.trim().length > 0;
+                            if (hasText(fileEntry.desc) || hasText(fileEntry.descLong)) {
+                                //  A lone README or .NFO gives only the long
+                                //  description. Not every caller fills in the
+                                //  short one (REST upload, TIC hatch), and this
+                                //  archive got one from its file name before.
+                                if (!hasText(fileEntry.desc)) {
+                                    fileEntry.desc = getDescFromFileName(filePath);
+                                    fileEntry.descSrc = 'fileName';
+                                }
+                                return callback(null);
+                            }
+                            //  Nothing usable (not found after extraction,
+                            //  outside the temp directory, empty or blank): go
+                            //  on as for any other lone entry, which ends in a
+                            //  description made from the file name.
+                            ['desc', 'descSrc', 'descLong', 'descLongSrc'].forEach(k => {
+                                delete fileEntry[k];
+                            });
+                            return extractAndProcessSingleArchiveEntry(
+                                fileEntry,
+                                filePath,
+                                entries,
+                                err => callback(err)
+                            );
+                        }
+                    );
+                }
+
                 const archDescHandler =
                     1 === entries.length
                         ? extractAndProcessSingleArchiveEntry
@@ -774,6 +858,20 @@ function populateFileEntryNonArchive(fileEntry, filePath, stepInfo, iterator, cb
 
 const HASH_NAMES = ['sha1', 'sha256', 'md5', 'crc32'];
 
+//
+//  options (all optional): areaTag, meta, hashTags, storageTag, relPath,
+//  sha256 (when already known), and for file scanning (#291):
+//
+//    scanSource:   a file_scanner ScanSources value. When set, the file goes
+//                  through file_scanner.scanFile() after hashing and before
+//                  anything looks inside it, and a rejection calls back
+//                  Errors.FileRejected (with |verdict| and |scanContext|).
+//                  The iterator sees 'virus_scan_start' and
+//                  'virus_scan_finish' (stepInfo.scanResult) when scanning is
+//                  enabled.
+//    scanContext:  extra scan ctx: user, ticInfo, fileName (the real name
+//                  when |filePath| is a temp name), ...
+//
 function scanFile(filePath, options, iterator, cb) {
     if (3 === arguments.length && _.isFunction(iterator)) {
         cb = iterator;
@@ -955,6 +1053,77 @@ function scanFile(filePath, options, iterator, cb) {
                     };
 
                     nextChunk();
+                });
+            },
+            function scanForThreats(callback) {
+                //
+                //  File scanning (#291) gates everything below: archive
+                //  extraction, description files and info extract tools all
+                //  look inside the file, so they wait for a verdict. Only the
+                //  hashing above, which just reads bytes, comes first.
+                //
+                //  Callers opt in with |scanSource|; without one this step
+                //  does nothing at all.
+                //
+                if (!options.scanSource) {
+                    return callback(null);
+                }
+
+                //  what the entry would have had, for a quarantine sidecar
+                const scanCtx = Object.assign(
+                    {
+                        fileName: stepInfo.fileName,
+                        areaTag: options.areaTag,
+                        storageTag: options.storageTag,
+                        hashTags: fileEntry.hashTags,
+                        entryMeta: options.meta,
+                        desc: options.desc,
+                    },
+                    options.scanContext,
+                    {
+                        source: options.scanSource,
+                        sha256: fileEntry.fileSha256,
+                        byteSize: fileEntry.meta.byte_size,
+                    }
+                );
+
+                const scanning = FileScanner.isEnabled();
+                const runScan = () => {
+                    FileScanner.scanFile(filePath, scanCtx, (err, verdict) => {
+                        if (
+                            verdict &&
+                            FileScanner.Verdicts.NotScanned !== verdict.result
+                        ) {
+                            fileEntry.meta.scan_result = verdict.result;
+                            fileEntry.meta.scanned_at = new Date().toISOString();
+                            fileEntry.meta.scanner = _.uniq(
+                                verdict.results.map(r => r.scanner)
+                            ).join(',');
+                        }
+
+                        if (!scanning) {
+                            return callback(err);
+                        }
+
+                        stepInfo.step = 'virus_scan_finish';
+                        stepInfo.scanResult = verdict ? verdict.result : 'error';
+                        stepInfo.scanVerdict = verdict;
+                        callIter(iterErr => {
+                            return callback(err || iterErr);
+                        });
+                    });
+                };
+
+                if (!scanning) {
+                    return runScan();
+                }
+
+                stepInfo.step = 'virus_scan_start';
+                callIter(err => {
+                    if (err) {
+                        return callback(err);
+                    }
+                    return runScan();
                 });
             },
             function processPhysicalFileByType(callback) {

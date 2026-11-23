@@ -17,6 +17,13 @@ const BINKP_VER = '1.1';
 const SEND_CHUNK_SIZE = 4096;
 const SESSION_TIMEOUT_MS = 300_000; // 5 min
 
+//  How long an aborted session waits for the peer to close after our M_BSY
+//  before the socket is destroyed.
+const ABORT_CLOSE_GRACE_MS = 1000;
+
+//  Every session whose socket has not closed yet. See abortAll().
+const liveSessions = new Set();
+
 //  Runaway guard only, not part of the protocol. A batch carrying nothing but
 //  the two M_EOBs always ends the session, so this can only be reached by a
 //  peer that keeps talking; better to hang up than to loop forever.
@@ -121,7 +128,19 @@ async function truncateSentFile(filePath, checkTarget) {
 //                                                        this session may carry mail for
 //    'incoming-file'  (name, size, timestamp)          — inbound transfer started (M_FILE received)
 //    'file-received'  (name, size, timestamp, tempPath) — inbound file ready
+//    'file-abandoned' (name, size, timestamp)          — inbound file over without
+//                                                        being handed on: postponed
+//                                                        (M_SKIP), asked for again
+//                                                        in the clear (NZ), or the
+//                                                        session was torn down.
+//                                                        Every 'incoming-file' is
+//                                                        followed by exactly one
+//                                                        'file-received' or
+//                                                        'file-abandoned'.
 //    'file-sent'      (name, size, timestamp)          — outbound file acknowledged
+//                                                        (M_GOT; also when the remote
+//                                                        M_GOTs a file before we have
+//                                                        finished sending it)
 //    'file-skipped'   (name, size, timestamp)          — remote sent M_SKIP
 //    'busy'           (reason: string)                 — remote sent M_BSY
 //    'session-end'    ()                               — clean finish
@@ -135,11 +154,13 @@ async function truncateSentFile(filePath, checkTarget) {
 //  API:
 //    queueFile(filePath, name, size, timestamp, disposition, guard)
 //      disposition: 'delete' | 'truncate' | 'keep'
-//      guard: { allowed, checkTarget } as decided by BsoSpool. A delete or
-//        truncate happens only with allowed === true; without a guard the
-//        file is sent and left as it is.
+//      guard: { allowed, checkTarget, stillLocked } as decided by BsoSpool.
+//        A delete or truncate happens only with allowed === true; without a
+//        guard the file is sent and left as it is.
 //        checkTarget(): re-classifies the file just before it is deleted or
 //        truncated; see core/bso_flow_paths.js.
+//        stillLocked(): false once the .bsy covering the file is no longer
+//        held; the file is then left in place.
 //    start()
 //
 class BinkpSession extends EventEmitter {
@@ -192,6 +213,18 @@ class BinkpSession extends EventEmitter {
         //  time is a partial that the peer dropped on us.
         this._inboundTempPaths = new Set();
 
+        //  Every receive that has not yet answered for itself: added when it
+        //  begins, removed when it is acknowledged (M_GOT), postponed or
+        //  given up on (M_SKIP, an NZ request) -- the same places that set
+        //  its |_settled| flag. |_currentRecv| is only the newest of them: a
+        //  compressed file is still being flushed when the next M_FILE
+        //  replaces it there, and a batch must not close, nor the next one
+        //  open, while that older file's M_GOT is still to come (#1043).
+        //  The current receive, when there is one, is always in here too.
+        this._unsettledRecvs = new Set();
+        //  Set once _destroy has run; nothing inbound is handed on after it.
+        this._destroyed = false;
+
         this._localEOBSent = false;
         this._localEOB = false;
         this._remoteEOB = false;
@@ -217,8 +250,72 @@ class BinkpSession extends EventEmitter {
         socket.pause();
         socket.on('data', chunk => this._parser.push(chunk));
         socket.on('error', err => this._onSocketError(err));
-        socket.on('close', () => this._onSocketClose());
+        socket.on('close', () => {
+            liveSessions.delete(this);
+            this._onSocketClose();
+        });
         this._parser.on('frame', frame => this._onFrame(frame));
+        if (!socket.destroyed) {
+            liveSessions.add(this);
+        }
+    }
+
+    //
+    //  End the session now because this system is stopping: M_BSY |reason|
+    //  ("try again later", which is what a restart is; binkd counts M_ERR
+    //  against the node instead), then close. The close goes the usual way --
+    //  'disconnect', or 'session-end' if nothing was outstanding -- so whatever
+    //  is attached releases the session's locks as on any other drop. A peer
+    //  that does not close its side is cut off after ABORT_CLOSE_GRACE_MS.
+    //
+    abort(reason) {
+        if (this._aborted || this._socket.destroyed) {
+            return;
+        }
+        this._aborted = true;
+        //  Whatever goes wrong from here on is part of closing, not news to
+        //  whoever was listening.
+        this.on('error', () => {});
+        //  A socket that never connected, or has lost its connection, has
+        //  nothing to say goodbye on.
+        const readyState = this._socket.readyState;
+        const connected =
+            this._socket.writable &&
+            (undefined === readyState ||
+                'open' === readyState ||
+                'writeOnly' === readyState);
+        if (!connected) {
+            this._destroy(false);
+            return;
+        }
+        if (this._state !== 'done') {
+            Log.info({ reason }, '[BinkP] Ending session: sending M_BSY');
+            try {
+                this._sendCmd(Commands.M_BSY, reason);
+            } catch (err) {
+                //  closing anyway
+            }
+        }
+        this._destroy(true);
+        const timer = setTimeout(() => {
+            if (!this._socket.destroyed) {
+                this._socket.destroy();
+            }
+        }, ABORT_CLOSE_GRACE_MS);
+        timer.unref();
+        this._socket.once('close', () => clearTimeout(timer));
+    }
+
+    //  abort() every live session. Returns how many there were.
+    static abortAll(reason) {
+        const sessions = Array.from(liveSessions);
+        sessions.forEach(session => session.abort(reason));
+        return sessions.length;
+    }
+
+    //  Sessions whose socket has not closed yet.
+    static liveCount() {
+        return liveSessions.size;
     }
 
     queueFile(filePath, name, size, timestamp, disposition, guard = null) {
@@ -248,6 +345,9 @@ class BinkpSession extends EventEmitter {
     }
 
     start() {
+        if (this._aborted) {
+            return; //  ended (abort()) before it started
+        }
         this._socket.resume();
         this._resetTimeout();
         if (this._opts.role === 'answering') {
@@ -1038,8 +1138,8 @@ class BinkpSession extends EventEmitter {
         );
         if (queueIdx >= 0) {
             const [skipped] = this._sendQueue.splice(queueIdx, 1);
-            this._applyDisposition(skipped);
             Log.debug({ name }, '[BinkP] Destructive skip via M_GOT (queued file)');
+            this._finishSkipped(skipped);
             this._checkDone();
             return;
         }
@@ -1049,12 +1149,29 @@ class BinkpSession extends EventEmitter {
             this._currentSend.name === name &&
             String(this._currentSend.size) === sizeStr
         ) {
+            const skipped = this._currentSend;
             Log.debug({ name }, '[BinkP] Destructive skip via M_GOT (active send)');
-            this._teardownSendStreams(this._currentSend);
-            this._applyDisposition(this._currentSend);
+            this._teardownSendStreams(skipped);
             this._currentSend = null;
+            this._finishSkipped(skipped);
             setImmediate(() => this._sendNext());
         }
+    }
+
+    //
+    //  A destructive skip is an acknowledgement: the remote says it holds the
+    //  file, so we are done with it exactly as after a full send. That means
+    //  the disposition and 'file-sent' both, or the flow file line is never
+    //  marked and the file is offered again next session -- or, for a '^'
+    //  line, deleted with its line left pointing at nothing.
+    //
+    //  The event carries the file as we queued it, not the M_GOT arguments:
+    //  the active-send match above does not compare timestamps, and listeners
+    //  key on name, size and timestamp together.
+    //
+    _finishSkipped(file) {
+        this._applyDisposition(file);
+        this.emit('file-sent', file.name, file.size, file.timestamp);
     }
 
     _applyDisposition(file) {
@@ -1070,6 +1187,18 @@ class BinkpSession extends EventEmitter {
             Log.debug(
                 { path: file.path, disposition: file.disposition },
                 '[BinkP] Leaving sent file in place'
+            );
+            return;
+        }
+
+        //  The .bsy covering it was lost (removed, or reaped and taken by
+        //  another holder) while the session ran: someone else may be sending
+        //  this file, and its flow file line cannot be marked. Keep it; it is
+        //  sent again next session.
+        if ('function' === typeof guard.stillLocked && !guard.stillLocked()) {
+            Log.warn(
+                { path: file.path, disposition: file.disposition },
+                '[BinkP] Lock covering the sent file is no longer held; leaving the file in place'
             );
             return;
         }
@@ -1252,6 +1381,7 @@ class BinkpSession extends EventEmitter {
             // GZ: collect raw compressed wire-bytes; decompress all at once on EOF
             compressedChunks: useGZ ? [] : null,
         };
+        this._unsettledRecvs.add(this._currentRecv);
 
         //  Notify listeners that an inbound transfer is starting. The FREQ
         //  handler uses this to call holdEOB() before the async file write
@@ -1290,8 +1420,16 @@ class BinkpSession extends EventEmitter {
     //  another session and lets this batch finish -- and is what
     //  _onInflateError already does when it gives up on a file.
     //
-    _postponeReceive(cr, why) {
-        Log.warn({ name: cr.name, got: cr.bytesReceived, want: cr.size }, why);
+    _postponeReceive(cr, why, err) {
+        Log.warn(
+            {
+                name: cr.name,
+                got: cr.bytesReceived,
+                want: cr.size,
+                ...(err ? { error: err.message } : {}),
+            },
+            why
+        );
         this._abandonReceive(cr);
         this._sendCmd(Commands.M_SKIP, `${cr.wireName} ${cr.size} ${cr.timestamp}`);
         this._checkDone();
@@ -1343,16 +1481,25 @@ class BinkpSession extends EventEmitter {
 
         if (!cr.writeStream) {
             cr.writeStream = fs.createWriteStream(cr.tempPath);
-            //  We're going to destroy this stream from _destroy() on
-            //  abnormal session end, which can race with in-flight writes
-            //  and surface as an async ERR_STREAM_DESTROYED. The unlink
-            //  in _destroy supersedes any half-written data anyway, so
-            //  swallow the error here rather than letting it bubble to
-            //  uncaughtException.
+            //  A write error (a full disk, say) means the file is not stored.
+            //  Postpone it: M_GOT would let the sender apply its disposition
+            //  to a file we do not have, and a compressed file waits on a
+            //  'finish' that never comes after an error (#1090).
+            //
+            //  Once the session is torn down or the receive settled, there is
+            //  nothing left to answer: _destroy and _abandonReceive destroy
+            //  this stream, which can surface as an async
+            //  ERR_STREAM_DESTROYED. The listener stays so that it never
+            //  bubbles to uncaughtException.
+            //
             cr.writeStream.on('error', err => {
-                Log.warn(
-                    { name: cr.name, error: err.message },
-                    '[BinkP] Inbound write error'
+                if (this._destroyed || cr._settled) {
+                    return;
+                }
+                this._postponeReceive(
+                    cr,
+                    '[BinkP] Could not write inbound file; leaving it with the sender',
+                    err
                 );
             });
 
@@ -1456,6 +1603,7 @@ class BinkpSession extends EventEmitter {
     //  Drop a partial receive and everything holding on to it.
     _abandonReceive(cr) {
         cr._settled = true;
+        this._unsettledRecvs.delete(cr);
         for (const key of ['inflate', 'writeStream']) {
             const stream = cr[key];
             if (!stream) continue;
@@ -1479,6 +1627,21 @@ class BinkpSession extends EventEmitter {
                 );
             }
         });
+        this._emitAbandoned(cr);
+    }
+
+    //
+    //  Tell listeners an inbound file is over without having been handed on.
+    //  Each 'incoming-file' is answered by exactly one 'file-received' or
+    //  'file-abandoned', so a listener that took something on the first (the
+    //  FREQ handler's M_EOB hold) can always give it back (#1090).
+    //
+    _emitAbandoned(cr) {
+        if (cr._ended) {
+            return;
+        }
+        cr._ended = true;
+        this.emit('file-abandoned', cr.name, cr.size, cr.timestamp);
     }
 
     _finalizeReceive(cr = this._currentRecv) {
@@ -1495,14 +1658,39 @@ class BinkpSession extends EventEmitter {
         //  tracking entry so _destroy() doesn't unlink it from under
         //  the consumer.
         const handOff = () => {
+            //  Torn down by _destroy while the flush or the truncate was in
+            //  flight: the session is over and the temp file already gone.
+            //  Settled: a write error postponed it meanwhile, and one file
+            //  gets one answer.
+            if (this._destroyed || cr._settled) {
+                return;
+            }
             cr._settled = true;
+            cr._ended = true;
+            this._unsettledRecvs.delete(cr);
             this._inboundTempPaths.delete(cr.tempPath);
             this._sendCmd(Commands.M_GOT, `${cr.wireName} ${cr.size} ${cr.timestamp}`);
             this.emit('file-received', cr.name, cr.size, cr.timestamp, cr.tempPath);
             this._checkDone();
         };
 
-        const finish = () => {
+        const finish = err => {
+            //  Destroying a write stream still calls the callback given to
+            //  its end(), with ERR_STREAM_DESTROYED, so a clear file being
+            //  flushed when the session is torn down lands here anyway.
+            //  Settled: the write stream's 'error' handler has already
+            //  postponed it, and end() calls back with that same error.
+            if (this._destroyed || cr._settled) {
+                return;
+            }
+            //  The flush failed: the file is not stored (#1090).
+            if (err) {
+                return this._postponeReceive(
+                    cr,
+                    '[BinkP] Could not write inbound file; leaving it with the sender',
+                    err
+                );
+            }
             if (this._currentRecv === cr) {
                 this._currentRecv = null;
             }
@@ -1529,19 +1717,25 @@ class BinkpSession extends EventEmitter {
                     { name: cr.name, got: cr.bytesReceived, want: cr.size },
                     '[BinkP] Inbound file longer than announced; truncating'
                 );
-                return fsp
-                    .truncate(cr.tempPath, cr.size)
-                    .then(handOff)
-                    .catch(err => {
+                //  Only the truncate's own failure postpones the file: once
+                //  handOff() has sent M_GOT the file is the consumer's, and
+                //  postponing it then would unlink it and send M_SKIP too.
+                return fsp.truncate(cr.tempPath, cr.size).then(
+                    () => handOff(),
+                    err => {
                         Log.warn(
                             { name: cr.name, error: err.message },
                             '[BinkP] Could not truncate oversized inbound file'
                         );
+                        if (this._destroyed || cr._settled) {
+                            return;
+                        }
                         this._postponeReceive(
                             cr,
                             '[BinkP] Oversized inbound file left with the sender'
                         );
-                    });
+                    }
+                );
             }
 
             handOff();
@@ -1558,17 +1752,29 @@ class BinkpSession extends EventEmitter {
         } else {
             // Zero-byte file — writeStream was never opened
             this._inboundTempPaths.add(cr.tempPath);
-            fsp.writeFile(cr.tempPath, Buffer.alloc(0))
-                .then(finish)
-                .catch(err => {
-                    this._currentRecv = null;
-                    this._inboundTempPaths.delete(cr.tempPath);
-                    Log.warn(
-                        { name: cr.name, error: err.message },
-                        '[BinkP] Could not write empty inbound file'
+            fsp.writeFile(cr.tempPath, Buffer.alloc(0)).then(
+                () => {
+                    //  _destroy unlinked the temp files while this was in
+                    //  flight, possibly before it created this one (#1090).
+                    if (this._destroyed) {
+                        fsp.unlink(cr.tempPath).catch(() => {});
+                        return;
+                    }
+                    finish();
+                },
+                err => {
+                    if (this._destroyed) {
+                        return;
+                    }
+                    //  Not stored, so not acknowledged either: postpone it,
+                    //  which also settles it so the batch can close (#1090).
+                    this._postponeReceive(
+                        cr,
+                        '[BinkP] Could not write empty inbound file; leaving it with the sender',
+                        err
                     );
-                    this._checkDone();
-                });
+                }
+            );
         }
     }
 
@@ -1649,7 +1855,8 @@ class BinkpSession extends EventEmitter {
             this._remoteEOB &&
             this._pendingGots.size === 0 &&
             !this._currentSend &&
-            !this._currentRecv
+            !this._currentRecv &&
+            this._unsettledRecvs.size === 0
         ) {
             this._onBatchComplete();
         }
@@ -1792,7 +1999,7 @@ class BinkpSession extends EventEmitter {
     //  M_EOB (or newly queued files) can be processed.
     releaseEOB() {
         this._eobHold = Math.max(0, this._eobHold - 1);
-        if (this._eobHold === 0 && this._state === 'transfer') {
+        if (this._eobHold === 0 && this._state === 'transfer' && !this._destroyed) {
             setImmediate(() => this._sendNext());
         }
     }
@@ -1818,6 +2025,7 @@ class BinkpSession extends EventEmitter {
     }
 
     _destroy(graceful = false) {
+        this._destroyed = true;
         if (this._timeoutHandle) clearTimeout(this._timeoutHandle);
         if (this._currentSend?.deflateStream) {
             this._currentSend.deflateStream.destroy();
@@ -1825,11 +2033,20 @@ class BinkpSession extends EventEmitter {
         if (this._currentSend?.readStream) {
             this._currentSend.readStream.destroy();
         }
-        if (this._currentRecv?.inflate) {
-            this._currentRecv.inflate.destroy();
-        }
-        if (this._currentRecv?.writeStream) {
-            this._currentRecv.writeStream.destroy();
+        //  Every receive still open, not just the current one: an older
+        //  compressed file still being flushed would otherwise go on to
+        //  send M_GOT and emit 'file-received' for a temp file unlinked
+        //  just below. They stay in |_unsettledRecvs| -- none of them was
+        //  answered for -- so _onSocketClose still sees what was in flight.
+        for (const cr of this._unsettledRecvs) {
+            for (const key of ['inflate', 'writeStream']) {
+                const stream = cr[key];
+                if (!stream) continue;
+                stream.removeAllListeners();
+                stream.on('error', () => {});
+                stream.destroy();
+            }
+            this._emitAbandoned(cr);
         }
         //  Unlink any inbound temp files we never finished receiving. The
         //  set is empty in the happy path; entries here mean the peer
@@ -1845,6 +2062,10 @@ class BinkpSession extends EventEmitter {
             });
         }
         this._inboundTempPaths.clear();
+        if (!graceful) {
+            //  Destroyed below, so it is not live, whenever 'close' arrives.
+            liveSessions.delete(this);
+        }
         if (!this._socket.destroyed) {
             if (graceful) {
                 //  Graceful FIN: peer reads all buffered data (including any
@@ -1873,7 +2094,8 @@ class BinkpSession extends EventEmitter {
             //  A receive is "done enough" for a clean end if it's in the
             //  finalizing state: EOF was received and we're just waiting for
             //  the async writeStream flush. The file was fully transferred.
-            const recvDone = !this._currentRecv || this._currentRecv._finalizing;
+            //  Every receive still open counts, not just the current one.
+            const recvDone = Array.from(this._unsettledRecvs).every(cr => cr._finalizing);
             //  A close between batches counts too: the peer decided the
             //  session was over one batch sooner than we did, and with
             //  nothing outstanding there is nothing to report.

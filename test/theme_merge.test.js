@@ -220,6 +220,202 @@ describe('ThemeManager._finalizeTheme() — MCI immutable properties', () => {
     });
 });
 
+// ─── TableView (%TV) deep merge ───────────────────────────────────────────────
+
+describe('ThemeManager._finalizeTheme() — TableView MCI merge', () => {
+    const finalize = (menuMci, themeMci) => {
+        const menuData = {
+            menus: { idx: { form: { 0: { mci: menuMci } } } },
+            prompts: {},
+        };
+        const themeData = {
+            info: { name: 'T', author: 'A', enabled: true },
+            customization: { menus: { idx: { mci: themeMci } } },
+        };
+        const tm = makeThemeManager(menuData);
+        const themeConfig = makeThemeConfig(themeData);
+        tm._finalizeTheme('t', themeConfig);
+        return themeConfig.current.menus.idx.form[0].mci;
+    };
+
+    it('deep-merges columns, so a theme can set one column property alone', () => {
+        const mci = finalize(
+            {
+                TV1: {
+                    columns: {
+                        area: { field: 'areaName', width: 'fill' },
+                        new: { field: 'newCount', width: 5, sgr: '|08' },
+                    },
+                },
+            },
+            { TV1: { columns: { new: { sgr: '|10' } } } }
+        );
+        assert.deepEqual(mci.TV1.columns, {
+            area: { field: 'areaName', width: 'fill' },
+            new: { field: 'newCount', width: 5, sgr: '|10' },
+        });
+    });
+
+    it('deep-merges stateSGR, sort and group', () => {
+        const mci = finalize(
+            {
+                TV1: {
+                    stateSGR: { new: '|15', personal: '|13' },
+                    sort: { column: 'new', order: 'desc', then: 'area' },
+                    group: { format: '{text}', fillChar: '-' },
+                },
+            },
+            {
+                TV1: {
+                    stateSGR: { personal: '|12' },
+                    sort: { order: 'asc' },
+                    group: { sgr: '|08' },
+                },
+            }
+        );
+        assert.deepEqual(mci.TV1.stateSGR, { new: '|15', personal: '|12' });
+        assert.deepEqual(mci.TV1.sort, { column: 'new', order: 'asc', then: 'area' });
+        assert.deepEqual(mci.TV1.group, { format: '{text}', fillChar: '-', sgr: '|08' });
+    });
+
+    it('replaces arrays inside merged objects and other TV keys', () => {
+        const mci = finalize(
+            {
+                TV1: {
+                    columnOrder: ['a', 'b', 'c'],
+                    sortable: ['a', 'b'],
+                    sort: { column: 'a', then: ['b', 'c'] },
+                    height: 10,
+                },
+            },
+            {
+                TV1: {
+                    columnOrder: ['c'],
+                    sortable: ['c'],
+                    sort: { then: ['c'] },
+                },
+            }
+        );
+        assert.deepEqual(mci.TV1.columnOrder, ['c']);
+        assert.deepEqual(mci.TV1.sortable, ['c']);
+        assert.deepEqual(mci.TV1.sort, { column: 'a', then: ['c'] });
+        assert.equal(mci.TV1.height, 10);
+    });
+
+    it("a theme replaces a column's whole rules list (arrays replace)", () => {
+        const mci = finalize(
+            {
+                TV1: {
+                    columns: {
+                        new: {
+                            width: 5,
+                            sgr: '|08',
+                            rules: [
+                                { when: '> 0', sgr: '|10' },
+                                { when: '= 0', text: '-' },
+                            ],
+                        },
+                    },
+                },
+            },
+            { TV1: { columns: { new: { rules: [{ when: '> 9', sgr: '|12' }] } } } }
+        );
+        assert.deepEqual(mci.TV1.columns.new, {
+            width: 5,
+            sgr: '|08',
+            rules: [{ when: '> 9', sgr: '|12' }],
+        });
+    });
+
+    it('keeps immutable properties on TV entries', () => {
+        const mci = finalize({ TV1: { submit: true } }, { TV1: { submit: false } });
+        assert.equal(mci.TV1.submit, true);
+    });
+
+    it('matches TV entries the way view_controller parses MCI keys', () => {
+        //  view_controller applies "TV1_alt" to view 1 (code TV, id 1)
+        const mci = finalize(
+            { TV1_alt: { columns: { a: { width: 3 }, b: { width: 4 } } } },
+            { TV1_alt: { columns: { b: { sgr: '|10' } } } }
+        );
+        assert.deepEqual(mci.TV1_alt.columns, {
+            a: { width: 3 },
+            b: { width: 4, sgr: '|10' },
+        });
+    });
+
+    it('re-finalising does not mutate the raw theme or menu config, nor alias them', () => {
+        const menuMci = { TV1: { height: 5 }, TV2: { columns: { a: { width: 1 } } } };
+        const themeMci = {
+            TV1: { columns: { a: { sgr: '|10' } }, stateSGR: { new: '|15' } },
+            TV2: { columns: { a: { sgr: '|11' } } },
+            TV3: { group: { sgr: '|08' } }, //  not in the menu at all
+        };
+        const menuData = {
+            menus: { idx: { form: { 0: { mci: menuMci } } } },
+            prompts: {},
+        };
+        const themeData = {
+            info: { name: 'T', author: 'A', enabled: true },
+            customization: { menus: { idx: { mci: themeMci } } },
+        };
+        const menuBefore = structuredClone(menuData);
+        const themeBefore = structuredClone(themeData);
+
+        const tm = makeThemeManager(menuData);
+        const themeConfig = makeThemeConfig(themeData);
+        tm._finalizeTheme('t', themeConfig);
+        const first = themeConfig.current.menus.idx.form[0].mci;
+
+        //  a consumer changing the merged result must not reach the sources
+        first.TV1.columns.a.sgr = '|01';
+        first.TV1.stateSGR.new = '|01';
+        first.TV2.columns.a.sgr = '|01';
+        first.TV3.group.sgr = '|01';
+
+        tm._finalizeTheme('t', themeConfig);
+        const second = themeConfig.current.menus.idx.form[0].mci;
+
+        assert.deepEqual(menuData, menuBefore);
+        assert.deepEqual(themeData, themeBefore);
+        assert.equal(second.TV1.columns.a.sgr, '|10');
+        assert.equal(second.TV3.group.sgr, '|08');
+        assert.notEqual(second.TV1.columns, themeMci.TV1.columns);
+        assert.notEqual(second.TV3, themeMci.TV3);
+    });
+
+    it('still replaces nested values on other views (VM, SB)', () => {
+        const mci = finalize(
+            {
+                VM1: { columns: { a: { x: 1, y: 2 } }, focusTextStyle: 'upper' },
+                SB1: {
+                    panels: [
+                        { name: 'a', width: 5 },
+                        { name: 'b', width: 6 },
+                    ],
+                    sort: { column: 'a', order: 'desc' },
+                },
+            },
+            {
+                VM1: { columns: { a: { x: 9 } } },
+                SB1: { panels: [{ name: 'z' }], sort: { order: 'asc' } },
+            }
+        );
+        assert.deepEqual(mci.VM1.columns, { a: { x: 9 } });
+        assert.equal(mci.VM1.focusTextStyle, 'upper');
+        assert.deepEqual(mci.SB1.panels, [{ name: 'z' }]);
+        assert.deepEqual(mci.SB1.sort, { order: 'asc' });
+    });
+
+    it('a VM key on TV art keeps replace behaviour (the key names the type)', () => {
+        const mci = finalize(
+            { VM1: { stateSGR: { new: '|15', personal: '|13' } } },
+            { VM1: { stateSGR: { personal: '|12' } } }
+        );
+        assert.deepEqual(mci.VM1.stateSGR, { personal: '|12' });
+    });
+});
+
 // ─── theme helpers ────────────────────────────────────────────────────────────
 
 describe('ThemeManager._setThemeHelpers() — getTimeWarningText', () => {
@@ -293,5 +489,130 @@ describe('ThemeManager._setThemeHelpers() — getTimeWarningText', () => {
         ['getPasswordChar', 'getDateFormat', 'getTimeWarningText'].forEach(name =>
             assert.equal(typeof helpers[name], 'function', name)
         );
+    });
+});
+
+//
+//  F4: a theme alone can add a view placed by config (`position`, no marker
+//  in the art) to a stock menu, or move an art marker. mergeMciProperties()
+//  copies an `mci` key the menu does not have; a menu with no form gets
+//  form 0 for it.
+//
+describe('ThemeManager._finalizeTheme() — views placed by a theme (F4)', () => {
+    const events = require('events');
+    const { ViewController } = require('../core/view_controller.js');
+
+    function loadForm(menuConfig, mciMap) {
+        const client = new events.EventEmitter();
+        client.log = { warnings: [] };
+        ['trace', 'debug', 'info', 'error', 'fatal'].forEach(level => {
+            client.log[level] = () => {};
+        });
+        client.log.warn = (obj, msg) => client.log.warnings.push({ obj, msg });
+        const term = { termWidth: 80, termHeight: 25, outputEncoding: 'cp437' };
+        ['write', 'rawWrite', 'beginWrite', 'commitWrite'].forEach(fn => {
+            term[fn] = () => {};
+        });
+        client.term = term;
+        client.currentMenuModule = { menuName: 'stock', menuConfig, menuMethods: {} };
+        const vc = new ViewController({ client });
+        vc.loadFromMenuConfig({ mciMap }, err => assert.ifError(err));
+        return { vc, client };
+    }
+
+    const marker = (code, id, row, col) => ({
+        code,
+        id,
+        position: [row, col],
+        args: [],
+        SGR: '\x1b[0m',
+    });
+
+    it('adds a config-placed %TL to a stock menu form, and moves a marker', () => {
+        const menuData = {
+            menus: {
+                stock: {
+                    art: 'STOCK',
+                    form: {
+                        0: {
+                            mci: {
+                                ET1: { argName: 'name', focus: true },
+                                TL2: { text: 'label' },
+                            },
+                        },
+                    },
+                },
+            },
+            prompts: {},
+        };
+        const themeData = {
+            info: { name: 'T', author: 'A', enabled: true },
+            customization: {
+                menus: {
+                    stock: {
+                        mci: {
+                            TL50: { position: { row: 20, col: 5 }, text: 'theme' },
+                            TL2: { position: { row: 3, col: 40 } },
+                        },
+                    },
+                },
+            },
+        };
+        const tm = makeThemeManager(menuData);
+        const themeConfig = makeThemeConfig(themeData);
+        tm._finalizeTheme('t', themeConfig);
+
+        const menu = themeConfig.current.menus.stock;
+        assert.deepEqual(menu.form[0].mci.TL50.position, { row: 20, col: 5 });
+
+        const { vc, client } = loadForm(menu, {
+            ET1: marker('ET', 1, 1, 1),
+            TL2: marker('TL', 2, 2, 1),
+        });
+        assert.deepEqual(vc.getView(50).position, { row: 20, col: 5 });
+        assert.equal(vc.getView(50).getData(), 'theme');
+        assert.deepEqual(vc.getView(2).position, { row: 3, col: 40 });
+        assert.equal(vc.getView(2).getData(), 'label');
+        //  implicit submit: the highest art ID (TL2), as before, not TL50
+        assert.equal(vc.getView(2).submit, true);
+        assert.notEqual(vc.getView(50).submit, true);
+        assert.equal(client.log.warnings.length, 0);
+        vc.destroy();
+    });
+
+    it('a menu with no form: the theme mci goes to form 0 and is placed', () => {
+        const menuData = {
+            menus: { artOnly: { art: 'ARTONLY', next: 'elsewhere' } },
+            prompts: {},
+        };
+        const themeData = {
+            info: { name: 'T', author: 'A', enabled: true },
+            customization: {
+                menus: {
+                    artOnly: {
+                        mci: {
+                            TK60: {
+                                position: { row: 24, col: 1 },
+                                width: 30,
+                                text: 'news',
+                            },
+                        },
+                    },
+                },
+            },
+        };
+        const tm = makeThemeManager(menuData);
+        const themeConfig = makeThemeConfig(themeData);
+        tm._finalizeTheme('t', themeConfig);
+
+        const menu = themeConfig.current.menus.artOnly;
+        assert.ok(menu.form[0].mci.TK60);
+        //  still moves on by itself, as an art-only menu does
+        assert.equal(menu.runtime.autoNext, true);
+
+        const { vc } = loadForm(menu, {});
+        assert.equal(vc.getView(60).mciCode, 'TK');
+        assert.deepEqual(vc.getView(60).position, { row: 24, col: 1 });
+        vc.destroy();
     });
 });

@@ -3,7 +3,8 @@
 
 //  ENiGMA½
 const { MenuModule } = require('./menu_module.js');
-const { ViewController } = require('./view_controller.js');
+const { ViewController, FormLifecycle } = require('./view_controller.js');
+const { View } = require('./view.js');
 const ansi = require('./ansi_term.js');
 const theme = require('./theme.js');
 const Message = require('./message.js');
@@ -46,6 +47,11 @@ const { ErrorReasons } = require('./enig_error.js');
 const { pathWithTerminatingSeparator } = require('./file_util.js');
 const temptmp = require('temptmp').createTrackedSession('fse');
 const iconv = require('iconv-lite');
+
+//  editor -> Set of end() functions of art batches still open: see
+//  _beginArtBatch(). Kept here, not on the module, so no name is taken
+//  from a subclass.
+const openArtBatches = new WeakMap();
 
 exports.moduleInfo = {
     name: 'Full Screen Editor (FSE)',
@@ -101,6 +107,9 @@ const FormIds = {
     help: 50,
 };
 
+//  The forms that take turns in the footer rows (see getFooterName())
+const FooterFormNames = ['footerEditor', 'footerEditorMenu', 'footerView', 'footerFind'];
+
 /*
     Custom formatting:
     header
@@ -118,6 +127,12 @@ const FormIds = {
         msgTotal (in area)
         messageId
 */
+
+//  Prefixed to the subject of a message whose body is ANSI art
+const ANSI_SUBJECT_TAG = '[ANSI] ';
+//  A subject that already carries the tag, also after a reply's "RE: " (any
+//  case, as initHeaderReplyEditMode() matches it)
+const ANSI_SUBJECT_TAG_RE = /^(?:[Rr][Ee]:\s+)?\[ANSI\] /;
 
 exports.MciViewIds = MciViewIds;
 exports.FormIds = FormIds;
@@ -215,7 +230,7 @@ exports.FullScreenEditorModule =
                 //  (headerSubmit → switchToBody); Escape cancels (headerEscapePressed).
                 editModeChangeSubject: (_formData, _extraArgs, cb) => {
                     this._changingSubject = true;
-                    this.viewControllers.body.setFocus(false);
+                    FormLifecycle.deactivate(this.viewControllers.body);
                     this.viewControllers.header.switchFocus(MciViewIds.header.subject);
                     return cb(null);
                 },
@@ -226,7 +241,9 @@ exports.FullScreenEditorModule =
 
                 //  ── Quote Builder ────────────────────────────────────────────────────
                 editModeMenuQuote: (_formData, _extraArgs, cb) => {
-                    this.viewControllers.footerEditorMenu.setFocus(false);
+                    //  the quote builder is drawn over the body and the footer
+                    FormLifecycle.cover(this.viewControllers.footerEditorMenu);
+                    FormLifecycle.cover(this.viewControllers.body);
                     this.displayQuoteBuilder();
                     return cb(null);
                 },
@@ -239,7 +256,7 @@ exports.FullScreenEditorModule =
 
                 //  ── Editor Menu ──────────────────────────────────────────────────────
                 editModeMenuHelp: (_formData, _extraArgs, cb) => {
-                    this.viewControllers.footerEditorMenu.setFocus(false);
+                    FormLifecycle.cover(this.viewControllers.footerEditorMenu);
                     return this.displayHelp(cb);
                 },
                 //  Ctrl-S quick save: delegates to whichever subclass defined editModeMenuSave.
@@ -256,7 +273,7 @@ exports.FullScreenEditorModule =
 
                 //  ── Find / Search ────────────────────────────────────────────────────
                 editModeFind: (_formData, _extraArgs, cb) => {
-                    this.viewControllers.body.setFocus(false);
+                    FormLifecycle.deactivate(this.viewControllers.body);
                     return this.openFindPrompt(err => {
                         if (err) {
                             //  If the prompt fails to open (e.g. missing art),
@@ -276,7 +293,7 @@ exports.FullScreenEditorModule =
                 },
                 viewModeFind: (_formData, _extraArgs, cb) => {
                     if (this.viewControllers.footerView) {
-                        this.viewControllers.footerView.setFocus(false);
+                        FormLifecycle.deactivate(this.viewControllers.footerView);
                     }
                     return this.openFindPrompt(cb);
                 },
@@ -297,11 +314,11 @@ exports.FullScreenEditorModule =
 
                 //  ── View Mode ───────────────────────────────────────────────────────
                 viewModeMenuHelp: (_formData, _extraArgs, cb) => {
-                    this.viewControllers.footerView.setFocus(false);
+                    FormLifecycle.cover(this.viewControllers.footerView);
                     return this.displayHelp(cb);
                 },
                 addToDownloadQueue: (_formData, _extraArgs, cb) => {
-                    this.viewControllers.footerView.setFocus(false);
+                    FormLifecycle.cover(this.viewControllers.footerView);
                     return this.addToDownloadQueue(cb);
                 },
             };
@@ -366,15 +383,17 @@ exports.FullScreenEditorModule =
 
                 switch (this.footerMode) {
                     case 'editor':
+                        //  (switchFooter() covered it already; kept, as it is
+                        //  shown again on the next Escape)
                         if (this.viewControllers.footerEditorMenu !== undefined) {
-                            this.viewControllers.footerEditorMenu.detachClientEvents();
+                            FormLifecycle.cover(this.viewControllers.footerEditorMenu);
                         }
                         this.viewControllers.body.switchFocus(1);
                         this.observeEditorEvents();
                         break;
 
                     case 'editorMenu':
-                        this.viewControllers.body.setFocus(false);
+                        FormLifecycle.deactivate(this.viewControllers.body);
                         this.viewControllers.footerEditorMenu.switchFocus(1);
                         break;
 
@@ -439,13 +458,18 @@ exports.FullScreenEditorModule =
         //  path in _pendingTempUploadDir for getSaveState(), then transitions to
         //  the transfer module with returnToCaller so we come back here on exit.
         _startBodyUpload(cb) {
-            this.viewControllers.footerEditorMenu.setFocus(false);
+            const menu = this.viewControllers.footerEditorMenu;
+            FormLifecycle.cover(menu);
             temptmp.mkdir({ prefix: 'enigfseul-' }, (err, tempDir) => {
                 if (err) {
                     this.client.log.warn(
                         { err },
                         'FSE: failed to create upload temp dir'
                     );
+                    //  still on the menu: give it the keys back
+                    if (!this.hasLeftMenu()) {
+                        FormLifecycle.activate(menu);
+                    }
                     return cb(err);
                 }
                 //  Store dir so getSaveState() can include it for cleanup on re-entry.
@@ -477,6 +501,7 @@ exports.FullScreenEditorModule =
                 headerFrom: hdr.from ?? '',
                 headerTo: hdr.to ?? '',
                 headerSubject: hdr.subject ?? '',
+                ansiTagAdded: !!this._ansiTagAdded,
                 tempUploadDir: this._pendingTempUploadDir || null,
             };
         }
@@ -488,18 +513,37 @@ exports.FullScreenEditorModule =
 
         //  Add or remove the '[ANSI] ' prefix on the subject field to reflect
         //  whether the message body is (or will be) rendered as ANSI art.
+        //
+        //  The tag is a hint for readers; the subject is the user's text. So
+        //  the tag is added only when the whole subject still fits the field,
+        //  and only a tag added here is taken off again (nothing was cut, so
+        //  that restores the subject exactly). A subject already carrying the
+        //  tag, including after a leading "RE: ", is left as it is.
         _syncAnsiSubjectTag(isAnsi) {
             const subjView = this.viewControllers.header?.getView(
                 MciViewIds.header.subject
             );
             if (!subjView) return;
-            const ANSI_TAG = '[ANSI] ';
             const current = subjView.getData() || '';
-            const hasTag = current.startsWith(ANSI_TAG);
-            if (isAnsi && !hasTag) {
-                subjView.setText(ANSI_TAG + current);
-            } else if (!isAnsi && hasTag) {
-                subjView.setText(current.slice(ANSI_TAG.length));
+            if (isAnsi) {
+                if (ANSI_SUBJECT_TAG_RE.test(current)) {
+                    return;
+                }
+                const tagged = ANSI_SUBJECT_TAG + current;
+                if (subjView.maxLength > 0 && tagged.length > subjView.maxLength) {
+                    this.client.log.debug(
+                        { subjectLength: current.length, maxLength: subjView.maxLength },
+                        'FSE: subject too long for the [ANSI] tag; left untagged'
+                    );
+                    return;
+                }
+                subjView.setText(tagged);
+                this._ansiTagAdded = true;
+            } else if (this._ansiTagAdded) {
+                this._ansiTagAdded = false;
+                if (current.startsWith(ANSI_SUBJECT_TAG)) {
+                    subjView.setText(current.slice(ANSI_SUBJECT_TAG.length));
+                }
             }
         }
 
@@ -533,15 +577,15 @@ exports.FullScreenEditorModule =
         //  after returning from any overlay (quote builder, find prompt, help, etc.).
         _returnFocusToBody() {
             this.client.term.beginWrite();
-            //  Detach any other input-accepting section (in particular the
+            //  Deactivate any other input-accepting section (in particular the
             //  header) so the body is the only ViewController attached to the
             //  client 'key press' event. Otherwise a still-attached header would
-            //  receive the same keystrokes as the body (#712). setFocus(false)
-            //  is a no-op when the ViewController isn't attached, so this is safe
-            //  on the overlay-return paths (find/quote/help) where the header was
-            //  never attached to begin with.
+            //  receive the same keystrokes as the body (#712). The header stays
+            //  on screen, so it is deactivated, not torn down: its views and
+            //  their timers live on. Safe on the overlay-return paths
+            //  (find/quote/help) where the header was inactive already.
             if (this.viewControllers.header) {
-                this.viewControllers.header.setFocus(false);
+                FormLifecycle.deactivate(this.viewControllers.header);
             }
             this.viewControllers.body.switchFocus(1);
             const bodyView = this._bodyView;
@@ -564,8 +608,9 @@ exports.FullScreenEditorModule =
         //  the cursor there without setting _findState, so no highlight overlay
         //  is painted and no ESC sequences can bleed into the editing session.
         _closeFindPrompt(query, cb) {
+            //  kept for the next find: covered, not torn down
             if (this.viewControllers.footerFind) {
-                this.viewControllers.footerFind.detachClientEvents();
+                FormLifecycle.cover(this.viewControllers.footerFind);
             }
             this.footerMode = this._prevFooterMode;
             this.switchFooter(err => {
@@ -1003,6 +1048,50 @@ exports.FullScreenEditorModule =
             );
         }
 
+        //
+        //  Begin a write batch for an erase + art + form sequence that waits
+        //  on the art (read from disk), so the caller sees it in one socket
+        //  write, with background drawing (a ticker or status bar in the
+        //  header) suspended for its span. A tick inside the open batch used
+        //  to be held in it and sent between the erase and the art, which
+        //  then drew from wherever the tick left the cursor. Returns end(),
+        //  which commits the batch and resumes background drawing (a view
+        //  that missed a tick is redrawn once); only the first call does
+        //  anything. leave() ends any batch still open.
+        //
+        _beginArtBatch() {
+            const client = this.client;
+            let batches = openArtBatches.get(this);
+            if (!batches) {
+                batches = new Set();
+                openArtBatches.set(this, batches);
+            }
+
+            const token = View.suspendBackgroundDraw(client);
+            client.term.beginWrite();
+
+            const end = ({ redrawMissed = true } = {}) => {
+                if (!batches.delete(end)) {
+                    return;
+                }
+                try {
+                    client.term.commitWrite();
+                } finally {
+                    View.resumeBackgroundDraw(client, token, { redrawMissed });
+                }
+            };
+            batches.add(end);
+            return end;
+        }
+
+        //  the menu is gone: send what they hold, redraw nothing
+        _endArtBatches() {
+            const batches = openArtBatches.get(this);
+            if (batches) {
+                [...batches].forEach(end => end({ redrawMissed: false }));
+            }
+        }
+
         switchFooter(cb) {
             const footerName = this.getFooterName();
             const formId = FormIds[footerName];
@@ -1011,20 +1100,62 @@ exports.FullScreenEditorModule =
             //  Buffer the entire erase → art display → view redraw sequence so the
             //  client receives it as one atomic socket write — no visible blank-row
             //  flash between clearing the old footer and drawing the new one.
-            this.client.term.beginWrite();
-            this.client.term.rawWrite(ansi.goto(startRow, 1) + ansi.eraseLine(2));
-            this.prepViewControllerWithArt(
-                footerName,
-                formId,
-                { startRow },
-                (err, vc, created) => {
-                    if (!created) {
-                        vc.redrawAll();
+            const endBatch = this._beginArtBatch();
+            try {
+                //  Cover the outgoing footer first: blurring its focused view
+                //  may draw it (a menu redraws its items), which the erase
+                //  and the new art then paint over, not the other way round.
+                const covered = this.hasLeftMenu()
+                    ? []
+                    : this._coverOtherFooters(footerName);
+                this.client.term.rawWrite(ansi.goto(startRow, 1) + ansi.eraseLine(2));
+                this.prepViewControllerWithArt(
+                    footerName,
+                    formId,
+                    { startRow },
+                    (err, vc, created) => {
+                        try {
+                            //  (a left menu's form is torn down: not drawn)
+                            if (!err && !this.hasLeftMenu()) {
+                                if (!created) {
+                                    vc.redrawAll();
+                                }
+                            } else if (err && !this.hasLeftMenu()) {
+                                //  no new footer: give the keys back to the
+                                //  one that had them, as before
+                                covered.forEach(f => FormLifecycle.activate(f));
+                            }
+                        } finally {
+                            endBatch();
+                        }
+                        return cb(err);
                     }
-                    this.client.term.commitWrite();
-                    return cb(err);
+                );
+            } catch (e) {
+                endBatch();
+                throw e;
+            }
+        }
+
+        //
+        //  The footers share the rows below the body, and only |footerName|
+        //  is shown: every other footer form is covered (no keys, no
+        //  background drawing) until it is shown again. They are kept, not
+        //  torn down, as each is shown again later (prepViewController()
+        //  activates an existing form). Returns the footers that had the keys.
+        //
+        _coverOtherFooters(footerName) {
+            const hadKeys = [];
+            for (const name of FooterFormNames) {
+                const vc = this.viewControllers[name];
+                if (name !== footerName && vc instanceof ViewController) {
+                    if (vc.attached) {
+                        hadKeys.push(vc);
+                    }
+                    FormLifecycle.cover(vc);
                 }
-            );
+            }
+            return hadKeys;
         }
 
         initSequence() {
@@ -1265,6 +1396,7 @@ exports.FullScreenEditorModule =
             if (subjView && saved.headerSubject) subjView.setText(saved.headerSubject);
 
             this.replyIsAnsi = saved.replyIsAnsi;
+            this._ansiTagAdded = !!saved.ansiTagAdded;
 
             const bodyView = this._bodyView;
 
@@ -1507,19 +1639,46 @@ exports.FullScreenEditorModule =
             );
         }
 
+        //  Help is shown over the editor, whose forms stay attached: as a
+        //  cover, so the key that dismisses it is not typed into the message
+        //  (#1137) and nothing in the editor draws over it
         displayHelp(cb) {
-            this.client.term.rawWrite(ansi.resetScreen());
+            this.coverScreen(
+                { restore: done => this.redrawScreen(done) },
+                done => {
+                    this.client.term.rawWrite(ansi.resetScreen());
 
-            theme.displayThemeArt(
-                { name: this.menuConfig.config.art.help, client: this.client },
-                () => {
-                    this.client.waitForKeyPress(() => {
-                        this.redrawScreen(err => {
-                            if (err) return cb(err);
-                            this.viewControllers[this.getFooterName()].setFocus(true);
-                            return cb(null);
-                        });
+                    theme.displayThemeArt(
+                        { name: this.menuConfig.config.art.help, client: this.client },
+                        () => {
+                            this.client.waitForKeyPress(() => done(null));
+                        }
+                    );
+                },
+                err => {
+                    if (err) return cb(err);
+                    this.viewControllers[this.getFooterName()].setFocus(true);
+                    return cb(null);
+                }
+            );
+        }
+
+        //  "Added to your download queue", shown over the attached message
+        //  view: a cover, as help is
+        displayExportedToDownloadQueue(cb) {
+            const artSpec =
+                this.menuConfig.config.art.expToDlQueue ||
+                Buffer.from('Exported message has been added to your download queue!');
+            this.coverScreen(
+                { restore: done => this.redrawScreen(() => done(null)) },
+                done => {
+                    this.displayAsset(artSpec, { clearScreen: true }, () => {
+                        this.client.waitForKeyPress(() => done(null));
                     });
+                },
+                () => {
+                    this.viewControllers[this.getFooterName()].setFocus(true);
+                    return cb(null);
                 }
             );
         }
@@ -1604,21 +1763,7 @@ exports.FullScreenEditorModule =
                         });
                     },
                     callback => {
-                        const artSpec =
-                            this.menuConfig.config.art.expToDlQueue ||
-                            Buffer.from(
-                                'Exported message has been added to your download queue!'
-                            );
-                        this.displayAsset(artSpec, { clearScreen: true }, () => {
-                            this.client.waitForKeyPress(() => {
-                                this.redrawScreen(() => {
-                                    this.viewControllers[this.getFooterName()].setFocus(
-                                        true
-                                    );
-                                    return callback(null);
-                                });
-                            });
-                        });
+                        return this.displayExportedToDownloadQueue(callback);
                     },
                 ],
                 err => {
@@ -1648,21 +1793,27 @@ exports.FullScreenEditorModule =
                         //  eraseData(0) = erase from cursor to end of display; works on all
                         //  major BBS terminals (unlike deleteLine which scrolls content up and
                         //  is unsupported on NetRunner).
-                        self.client.term.beginWrite();
-                        self.client.term.rawWrite(
-                            ansi.goto(self.header.height + 1, 1) + ansi.eraseData(0)
-                        );
+                        //  Background drawing waits too: see _beginArtBatch().
+                        const endBatch = self._beginArtBatch();
+                        try {
+                            self.client.term.rawWrite(
+                                ansi.goto(self.header.height + 1, 1) + ansi.eraseData(0)
+                            );
 
-                        theme.displayThemeArt(
-                            {
-                                name: self.menuConfig.config.art.quote,
-                                client: self.client,
-                            },
-                            function displayed(err, artData) {
-                                self.client.term.commitWrite();
-                                callback(err, artData);
-                            }
-                        );
+                            theme.displayThemeArt(
+                                {
+                                    name: self.menuConfig.config.art.quote,
+                                    client: self.client,
+                                },
+                                function displayed(err, artData) {
+                                    endBatch();
+                                    callback(err, artData);
+                                }
+                            );
+                        } catch (e) {
+                            endBatch();
+                            throw e;
+                        }
                     },
                     function createViewsIfNecessary(artData, callback) {
                         const formId = FormIds.quoteBuilder;
@@ -1785,7 +1936,7 @@ exports.FullScreenEditorModule =
         }
 
         switchToHeader() {
-            this.viewControllers.body.setFocus(false);
+            FormLifecycle.deactivate(this.viewControllers.body);
             this.viewControllers.header.switchFocus(2); //  to
         }
 
@@ -1804,21 +1955,22 @@ exports.FullScreenEditorModule =
                 this.initBodyReplyEditMode();
             }
 
-            this.viewControllers.header.setFocus(false);
+            FormLifecycle.deactivate(this.viewControllers.header);
             this.viewControllers.body.switchFocus(1);
 
             this.observeEditorEvents();
         }
 
         switchToFooter() {
-            this.viewControllers.header.setFocus(false);
-            this.viewControllers.body.setFocus(false);
+            FormLifecycle.deactivate(this.viewControllers.header);
+            FormLifecycle.deactivate(this.viewControllers.body);
 
             this.viewControllers[this.getFooterName()].switchFocus(1); //  HM1
         }
 
         switchFromQuoteBuilderToBody() {
-            this.viewControllers.quoteBuilder.setFocus(false);
+            //  kept for the next quote: covered, not torn down
+            FormLifecycle.cover(this.viewControllers.quoteBuilder);
             this.client.term.beginWrite();
             this._bodyView.redraw();
             this._returnFocusToBody(); //  has its own nested beginWrite/commitWrite
@@ -1918,6 +2070,7 @@ exports.FullScreenEditorModule =
         leave() {
             this.tempMessageConfAndAreaRestore();
             super.leave();
+            this._endArtBatches();
         }
 
         mciReady(mciData, cb) {

@@ -27,6 +27,18 @@
 					VM1: {
 						itemFormat:			"|03{text}"
 						focusItemFormat:	"|11{text!styleFirstLower}"
+						//	The focused item can be animated: formats played
+						//	in turn, each used as focusItemFormat is, which
+						//	stays the look when it is not animated. This one
+						//	rests lit and glints every 1.5 s. See "Animated
+						//	Focused Item" in the Views docs.
+						//	focusItemFrames: [
+						//		"|11{text!styleFirstLower}"
+						//		"|15{text!styleFirstLower}"
+						//		"|11{text!styleFirstLower}"
+						//		"|03{text!styleFirstLower}"
+						//	]
+						//	focusItemFrameDurations: [ 1500, 80, 80, 80 ]
 					}
 				}
 			}
@@ -142,10 +154,10 @@
 				mci: {
 					UN1: { width: 15 }
 					UR2: { width: 15 }
-					LO3: { width: 15 }
+					MS3: { width: 15 }
 					UF4: { width: 15 }
 					UG5: { width: 15 }
-					UT6: { width: 15 }
+					ND6: { width: 15 }
 					UC7: { width: 15 }
 					ST8: { width: 15 }
 				}
@@ -569,7 +581,7 @@
 						TL1: { width: 19, textOverflow: "..." }
 						ET2: { width: 19, textOverflow: "..." }
 						ET3: { width: 19, textOverflow: "..." }
-						ET4: { width: 21, textOverflow: "..." }
+						TL4: { width: 21, textOverflow: "..." }
 					}
 				}
 				1: {
@@ -667,7 +679,7 @@
 						ET5: { width: 32 }
 						ET6: { width: 32 }
 						ET7: { width: 32 }
-						ET8: { width: 32 }
+						TL8: { width: 32 }
 
 						TM17: {
 							focusTextStyle: first lower
@@ -940,7 +952,7 @@
 						TL1: { width: 19, textOverflow: "..." }
 						ET2: { width: 19, textOverflow: "..." }
 						ET3: { width: 19, textOverflow: "..." }
-						ET4: { width: 21, textOverflow: "..." }
+						TL4: { width: 21, textOverflow: "..." }
 						//TL4: { width: 25 }
 					}
 				}
@@ -999,12 +1011,40 @@
 
 			fullLoginSequenceUserStats: {
 				mci: {
+					//	A theme can add a view with no %code in the art:
+					//	`position` places it (row/col from the art's top-left).
+					//	Use high IDs. See "Placing Views from Configuration".
+					//	TK50: {
+					//		position: { row: 24, col: 2 }
+					//		width: 76
+					//		text: "Thanks for calling!"
+					//	}
+					//
+					//	An animation (%AV) is added the same way. Its frames
+					//	can come from art in this theme's folder: here a sheet
+					//	of 8x5 frames stacked down the file. Do not name frame
+					//	art after the menu's art plus a number (STATUS1.ANS):
+					//	that is taken as a random variant of the menu art.
+					//	See "Animation View" in the docs.
+					//	AV51: {
+					//		position: {
+					//			row: 2
+					//			col: 70
+					//		}
+					//		width: 8
+					//		height: 5
+					//		frames: {
+					//			art: STATSFX
+					//		}
+					//		mode: loop
+					//		frameInterval: 120
+					//	}
 					UN1: { width: 15 }
 					UR2: { width: 15 }
-					LO3: { width: 15 }
+					MS3: { width: 15 }
 					UF4: { width: 15 }
 					UG5: { width: 15 }
-					UT6: { width: 15 }
+					ND6: { width: 15 }
 					UC7: { width: 15 }
 					ST8: { width: 15 }
 				}
@@ -1019,8 +1059,8 @@
 					ET5: { width: 27 }
 					ET6: { width: 27 }
 					ET7: { width: 27 }
-					ET8: { width: 27 }
-					ET9: { width: 27 }
+					ME8: { width: 27 }
+					SM9: { width: 27 }
 					ET10: { width: 18 }
 					ET11: { width: 18 }
 					TL20: { width: 71 }
@@ -1053,7 +1093,7 @@
 			fileBaseListEntries: {
 				config: {
 					hashTagsSep: "|08, |07"
-					browseInfoFormat10: "|00|10{fileName:<.44} |08- |03{byteSize!sizeWithoutAbbr} |11{byteSize!sizeAbbr} |08- |03uploaded |11{uploadTimestamp}"
+					browseInfoFormat10: "{infectedIndicator}|00|10{fileName:<.44} |08- |03{byteSize!sizeWithoutAbbr} |11{byteSize!sizeAbbr} |08- |03uploaded |11{uploadTimestamp}"
 					browseInfoFormat11: "|00|15{areaName}"
 					browseInfoFormat12: "|00|07{hashTags}"
 					browseInfoFormat13: "|00|07{estReleaseYear}"
@@ -1068,6 +1108,8 @@
 					isQueuedIndicator: "|00|10YES"
 					isNotQueuedIndicator: "|00|07no"
 					noDownloadAccessIndicator: "|00|08n/a"
+					//	shown only to those who still see entries a rescan marked infected
+					infectedIndicator: "|00|12INFECTED |08- "
 
 					userRatingTicked: "|00|15*"
 					userRatingUnticked: "|00|07-"
@@ -1154,7 +1196,7 @@
 			newScanFileBaseList: {
 				config: {
 					hashTagsSep: "|08, |07"
-					browseInfoFormat10: "|00|10{fileName:<44} |08- |03{byteSize!sizeWithoutAbbr} |11{byteSize!sizeAbbr} |08- |03uploaded |11{uploadTimestamp}"
+					browseInfoFormat10: "{infectedIndicator}|00|10{fileName:<44} |08- |03{byteSize!sizeWithoutAbbr} |11{byteSize!sizeAbbr} |08- |03uploaded |11{uploadTimestamp}"
 					browseInfoFormat11: "|00|15{areaName}"
 					browseInfoFormat12: "|00|07{hashTags}"
 					browseInfoFormat13: "|00|07{estReleaseYear}"
@@ -1169,6 +1211,8 @@
 					isQueuedIndicator: "|00|10YES"
 					isNotQueuedIndicator: "|00|07no"
 					noDownloadAccessIndicator: "|00|08n/a"
+					//	shown only to those who still see entries a rescan marked infected
+					infectedIndicator: "|00|12INFECTED |08- "
 
 					userRatingTicked: "|00|15*"
 					userRatingUnticked: "|00|07-"
@@ -1418,6 +1462,14 @@
 
 					//	dupes
 					dupeInfoFormat: "|00|11{fileName:<53.52}|03{areaName}"
+
+					//	file (virus) scanning
+					virusScanStartFormat: "Scanning for viruses"
+					virusScanFinishFormat: "Virus scan finished"
+					virusScanRejectedFormat: "|00|12{fileName} |04failed the upload check"
+
+					//	rejected
+					rejectedInfoFormat: "|00|11{fileName:<53.52}|04{reason}"
 				}
 
 				//	options
@@ -1450,6 +1502,7 @@
 						TL1: { width: 48 }
 						TL2: { width: 48 }
 						TL3: { width: 48 }
+						TL5: { width: 48 }
 						MT4: {
 							height: 6
 							width: 68
@@ -1484,6 +1537,16 @@
 
 				//	dupes
 				3: {
+					mci: {
+						VM1: {
+							height: 17
+							width: 75
+						}
+					}
+				}
+
+				//	rejected (file scanning)
+				4: {
 					mci: {
 						VM1: {
 							height: 17
@@ -1550,11 +1613,11 @@
 				}
 				1: {
 					mci: {
-						ML1: {
+						MT1: {
 							height: 4
 							width: 70
 						}
-						ML2: {
+						MT2: {
 							height: 4
 							width: 70
 						}
@@ -1772,7 +1835,7 @@
 							TL1: { width: 19, textOverflow: "..." }
 							ET2: { width: 19, textOverflow: "..." }
 							ET3: { width: 19, textOverflow: "..." }
-							ET4: { width: 21, textOverflow: "..." }
+							TL4: { width: 21, textOverflow: "..." }
 						}
 					}
 					1: {
@@ -1798,16 +1861,16 @@
 							width: 78
 							height: 17
 						}
-						ET10: {
+						TL10: {
 							width: 20
 						}
-						ET11: {
+						TL11: {
 							width: 40
 						}
-						ET12: {
+						TL12: {
 							width: 40
 						}
-						ET13: {
+						TL13: {
 							width: 13
 						}
 					}
@@ -1855,6 +1918,10 @@
 
 			// Sysop chat (break-into-chat) — adjust width/height to match SYSOPCHAT.ANS art
 			sysopChat: {
+				config: {
+					chatInfoFormat10: "|11{partnerName}"
+					chatInfoFormat11: "|11{duration}"
+				}
 				0: {
 					mci: {
 						MT1: {
@@ -1875,11 +1942,9 @@
 						}
 						TL10: {
 							width: 35
-							itemFormat: "|11{partnerName}"
 						}
-						TL10: {
+						TL11: {
 							width: 25
-							itemFormat: "|11{duration}"
 						}
 					}
 				}

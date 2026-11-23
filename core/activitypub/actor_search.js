@@ -1,4 +1,5 @@
-const { MenuModule } = require('../menu_module');
+const { MenuModule, MenuLeftStop } = require('../menu_module');
+const { FormLifecycle } = require('../view_controller');
 const { Errors } = require('../enig_error');
 const Actor = require('../activitypub/actor');
 const moment = require('moment');
@@ -41,6 +42,18 @@ const MciViewIds = {
         customRangeStart: 10,
     },
 };
+
+//  Ends a page's steps early: the menu was left (see hasLeftMenu())
+
+//
+//  The pages take turns: the one not shown is covered (no keys, no
+//  background drawing), not torn down, as it is shown again (the prep
+//  helper activates it). It is covered before the other page's art is
+//  drawn, as blurring its focused view draws that view.
+//
+function coverForm(menu, name) {
+    FormLifecycle.coverAny(menu.viewControllers[name]);
+}
 
 exports.getModule = class ActivityPubActorSearch extends MenuModule {
     constructor(options) {
@@ -118,16 +131,16 @@ exports.getModule = class ActivityPubActorSearch extends MenuModule {
         async.series(
             [
                 callback => {
-                    if (this.viewControllers.main) {
-                        this.viewControllers.main.setFocus(false);
-                    }
+                    coverForm(this, 'main');
 
+                    //  built by the call below, or already there (shown before)
+                    const wasCreated = !this.viewControllers.view;
                     return this.displayArtAndPrepViewController(
                         'view',
                         FormIds.view,
                         { clearScreen: true },
-                        (err, artInfo, wasCreated) => {
-                            if (!err && !wasCreated) {
+                        err => {
+                            if (!err && !wasCreated && !this.hasLeftMenu()) {
                                 this.viewControllers.view.setFocus(true);
                             }
                             return callback(err);
@@ -152,6 +165,12 @@ exports.getModule = class ActivityPubActorSearch extends MenuModule {
                     });
                 },
                 callback => {
+                    //  the counts are fetched remotely: the screen may be
+                    //  another menu's by now
+                    if (this.hasLeftMenu()) {
+                        return callback(MenuLeftStop);
+                    }
+
                     const v = id => this.getView('view', id);
 
                     const nameView = v(MciViewIds.view.userName);
@@ -199,7 +218,7 @@ exports.getModule = class ActivityPubActorSearch extends MenuModule {
                 },
             ],
             err => {
-                return cb(err);
+                return cb(MenuLeftStop === err ? null : err);
             }
         );
     }
@@ -310,9 +329,7 @@ exports.getModule = class ActivityPubActorSearch extends MenuModule {
         async.series(
             [
                 callback => {
-                    if (this.viewControllers.view) {
-                        this.viewControllers.view.setFocus(false);
-                    }
+                    coverForm(this, 'view');
                     return this.displayArtAndPrepViewController(
                         'main',
                         FormIds.main,

@@ -4,7 +4,7 @@ const { Client } = require('../../client');
 const Config = require('../../config').get;
 const { log: Log } = require('../../logger');
 const { Errors } = require('../../enig_error');
-const { listenServer } = require('../../server_listen');
+const { listenServer, closeServer } = require('../../server_listen');
 
 //  deps
 const net = require('net');
@@ -220,11 +220,70 @@ class TelnetClient {
     }
 
     disconnect() {
+        //
+        //  End the TelnetSocket, not the socket under it. It sends a write
+        //  only once the one before has gone out, so it may still hold the
+        //  last few (a goodbye message written just before the end); ending
+        //  it lets those go first, then it ends the socket under it (see
+        //  telnet-socket's _final()). Ending the raw socket directly lost
+        //  them, as "write after end" (#1017). A TelnetSocket that has failed
+        //  will never get there, so its socket is ended directly.
+        //
+        this._closeAfterEnd();
+
         try {
-            return this.socket.rawSocket.end();
+            if (this.socket.destroyed || this.socket.errored) {
+                return this.socket.rawSocket.end();
+            }
+            return this.socket.end();
         } catch (e) {
             //  ignored
         }
+    }
+
+    //
+    //  Once this side has ended the connection and its last output has gone
+    //  out, the socket waits for the caller to close its side too. A caller
+    //  that never does would keep the socket open (#1080), so it is closed
+    //  outright after TelnetClient.EndCloseGraceMs. By then everything
+    //  written is with the operating system, which still delivers it.
+    //
+    //  Closing it does not reset the connection for unread input (which can
+    //  throw away output the caller has not read yet): TelnetSocket reads
+    //  the socket for as long as it is open, so nothing is left unread.
+    //
+    //  Only for a TCP socket: under a WebSocket the WebSocket close has a
+    //  timeout of its own.
+    //
+    _closeAfterEnd() {
+        const rawSocket = this.socket.rawSocket;
+        if (
+            this.closeAfterEndArmed ||
+            !(rawSocket instanceof net.Socket) ||
+            rawSocket.destroyed
+        ) {
+            return;
+        }
+        this.closeAfterEndArmed = true;
+
+        const armGraceTimer = () => {
+            if (rawSocket.destroyed) {
+                return;
+            }
+            const graceTimer = setTimeout(() => {
+                if (!rawSocket.destroyed) {
+                    this._logDebug({}, 'Caller did not close after the end; closing');
+                    rawSocket.destroy();
+                }
+            }, TelnetClient.EndCloseGraceMs);
+            graceTimer.unref();
+            rawSocket.once('close', () => clearTimeout(graceTimer));
+        };
+
+        if (rawSocket.writableFinished) {
+            return armGraceTimer();
+        }
+        rawSocket.once('finish', armGraceTimer);
     }
 
     banner() {
@@ -267,6 +326,10 @@ class TelnetClient {
 }
 
 inherits(TelnetClient, Client);
+
+//  How long a caller has to close its side after this side has ended the
+//  connection; the same as the WebSocket close timeout (ws closeTimeout)
+TelnetClient.EndCloseGraceMs = 30000;
 
 //
 //  The 'ready' payload. The main listener's is exactly what it has always
@@ -398,35 +461,6 @@ function resolveListeners(telnetConfig) {
     });
 
     return result;
-}
-
-//
-//  close() stops a server accepting at once; its callback waits for open
-//  connections, so a server no longer listening counts as stopped. Mirrors
-//  closeServer() in core/listening_server.js.
-//
-function closeServer(server, cb) {
-    let called = false;
-    const done = () => {
-        if (!called) {
-            called = true;
-            return cb();
-        }
-    };
-
-    try {
-        server.close(() => done());
-    } catch (err) {
-        Log.warn(
-            { err, server: ModuleInfo.name },
-            'Failed to stop listening; continuing'
-        );
-        return done();
-    }
-
-    if (false === server.listening) {
-        return done();
-    }
 }
 
 exports.getModule = class TelnetServerModule extends LoginServerModule {
@@ -567,7 +601,7 @@ exports.getModule = class TelnetServerModule extends LoginServerModule {
         }
 
         servers.forEach(server =>
-            closeServer(server, () => {
+            closeServer(server, Log, ModuleInfo.name, () => {
                 if (0 === --left) {
                     return cb(null);
                 }

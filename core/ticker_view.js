@@ -3,7 +3,12 @@
 //  ENiGMA½
 const { View } = require('./view.js');
 const { pipeToAnsi } = require('./color_codes.js');
-const { pad: padStr, stylizeString, stripAllLineFeeds } = require('./string_util.js');
+const PipeCodes = require('./pipe_codes.js');
+const {
+    pad: padStr,
+    stylizePlainTextPieces,
+    stripAllLineFeeds,
+} = require('./string_util.js');
 const stringFormat = require('./string_format');
 const { getPredefinedMCIFormatObject } = require('./predefined_mci');
 
@@ -26,26 +31,38 @@ const RAINBOW_SGR = [91, 93, 92, 96, 94, 95];
 //  Visually interesting CP437 chars used for scramble/glitch noise
 const NOISE_CHARS = '!#$@%&?<>^~`\xb0\xb1\xb2\xdb\xdc\xde\xdf\xfe\xf9';
 
-//  Text-style effects handled by stylizeString (baked into _plainText at setText time).
-//  All other effect values are dynamic per-tick effects applied in _applyEffect().
-const TEXT_STYLE_EFFECTS = new Set([
-    'normal',
-    'upper',
-    'lower',
-    'title',
-    'firstLower',
-    'smallVowels',
-    'bigVowels',
-    'smallI',
-    'mixed',
-    'l33t',
+//  Text-style effects, baked into _plainText at setText time, and the
+//  stylizeString() style each one is. The ticker's own names are camelCase;
+//  stylizeString() spells four of them with a space, and those spellings
+//  (what every other view's textStyle takes) work here too. All other effect
+//  values are dynamic per-tick effects applied in _applyEffect().
+const TEXT_STYLE_EFFECTS = new Map([
+    ['normal', 'normal'],
+    ['upper', 'upper'],
+    ['lower', 'lower'],
+    ['title', 'title'],
+    ['firstLower', 'first lower'],
+    ['smallVowels', 'small vowels'],
+    ['bigVowels', 'big vowels'],
+    ['smallI', 'small i'],
+    ['mixed', 'mixed'],
+    ['l33t', 'l33t'],
+    ['first lower', 'first lower'],
+    ['small vowels', 'small vowels'],
+    ['big vowels', 'big vowels'],
+    ['small i', 'small i'],
 ]);
 
 //  ── Helpers ──────────────────────────────────────────────────────────────────
 
-function stripAnsiCodes(s) {
-    return s.replace(/\x1b\[[0-9;]*m/g, '');
-}
+//  Text the ticker draws has already been rendered: only ESC sequences are
+//  codes, and an SGR is ESC [ digits and ';' m.
+const ANSI_ONLY = { dialect: 'ansi' };
+const SGR_RE = /^\x1b\[[0-9;]*m$/; //  eslint-disable-line no-control-regex
+
+//  The most spaces one cursor forward becomes: as many as |CF99 moves. A
+//  raw ESC[9999C (an MCI value, say) cannot blow the text up.
+const MAX_CURSOR_FORWARD = 99;
 
 function randomNoise() {
     return NOISE_CHARS[Math.floor(Math.random() * NOISE_CHARS.length)];
@@ -82,6 +99,8 @@ class TickerView extends View {
         this._finalPos = []; //  fall: target x-position of each character
         this._timer = null;
         this._lastRendered = null; //  redraw cache: skip write when output is unchanged
+        //  covers seen (View.coverMark()): the frame on screen may be gone
+        this._coverMark = View.coverMark(this.client);
 
         this.setText(options.text || '');
         this._startTicker();
@@ -104,55 +123,87 @@ class TickerView extends View {
         }
 
         this._rawText = text;
-
-        const ansi = pipeToAnsi(stripAllLineFeeds(text), this.client);
-
-        //  Build a per-character color map so pipe codes survive scrolling.
-        //  Only populated when the text actually contains color sequences;
-        //  empty array means "use view SGR" (no change to existing behavior).
-        this._charColors = this._buildCharColorMap(ansi);
-
-        //  Strip all ANSI / pipe markup to get raw visible characters, then
-        //  apply any stylizeString text-style effect (l33t, upper, mixed, …).
-        //  Dynamic effects (rainbow, scramble, glitch) operate on this plain
-        //  text every tick rather than pre-processing it here.
-        const stripped = stripAnsiCodes(ansi);
-        this._plainText = TEXT_STYLE_EFFECTS.has(this.effect)
-            ? stylizeString(stripped, this.effect)
-            : stripped;
-
+        this._bakeText();
         this._resetMotion();
     }
 
-    //  Parse ANSI escape sequences in |ansiText| and return an array whose
-    //  i-th element is the SGR string that applies to the i-th visible character.
-    //  Returns an empty array when no color codes are present (fast path).
-    _buildCharColorMap(ansiText) {
-        const sgrRe = /\x1b\[([0-9;]*)m/g; //  eslint-disable-line no-control-regex
+    //
+    //  _plainText and _charColors from _rawText and the current effect.
+    //
+    //  One pass over the rendered text gives the raw visible characters
+    //  and, so pipe codes survive scrolling, the SGR that applies to each.
+    //  An empty colour map means "use the view SGR". Any text-style effect
+    //  (l33t, upper, mixed, …) is then applied to the plain text, as
+    //  plain text: a '|' left in it (from '||') is a character, not the
+    //  start of a code. Dynamic effects (rainbow, scramble, glitch)
+    //  operate on it every tick instead.
+    //
+    //  A text style can change the text's length ('upper' makes 'ß' 'SS'),
+    //  so it is applied a character at a time and each character's colour
+    //  is repeated for every character it becomes (#1063).
+    //
+    _bakeText() {
+        const { plain, colors } = this._parseRendered(this._renderText(this._rawText));
+
+        const style = TEXT_STYLE_EFFECTS.get(this.effect);
+        if (!style) {
+            this._plainText = plain;
+            this._charColors = colors;
+            return;
+        }
+
+        const pieces = stylizePlainTextPieces(plain, style);
+        this._plainText = pieces.join('');
+        this._charColors = [];
+        if (colors.length > 0) {
+            pieces.forEach((piece, i) => {
+                for (let n = 0; n < piece.length; ++n) {
+                    this._charColors.push(colors[i]);
+                }
+            });
+        }
+    }
+
+    _renderText(text) {
+        return pipeToAnsi(stripAllLineFeeds(text), this.client);
+    }
+
+    //  |ansiText| split into its visible characters (plain) and the SGR that
+    //  applies to each of them (colors[i] for plain[i]; '' before the first
+    //  SGR). colors is empty when there is no SGR at all.
+    //
+    //  Other escapes cannot scroll one character at a time: a cursor forward
+    //  (ESC[nC, from |CF##) becomes n spaces, as export stripping does, and
+    //  the rest (|CB##, |CU##, |CD##, an ESC in an MCI value) are dropped.
+    _parseRendered(ansiText) {
+        let plain = '';
         const colors = [];
         let currentColor = '';
-        let lastEnd = 0;
-        let match;
+        let colored = false; //  an SGR was seen
 
-        while ((match = sgrRe.exec(ansiText)) !== null) {
-            //  Visible characters between the previous escape and this one.
-            for (let i = lastEnd; i < match.index; i++) {
+        const addText = text => {
+            plain += text;
+            for (let i = 0; i < text.length; ++i) {
                 colors.push(currentColor);
             }
-            currentColor = match[0]; //  full ESC[…m sequence
-            lastEnd = match.index + match[0].length;
-        }
+        };
 
-        if (colors.length === 0) {
-            return []; //  no escapes found — fast path, plain text
-        }
+        PipeCodes.walk(ansiText, ANSI_ONLY, (type, start, end, value) => {
+            const raw = ansiText.slice(start, end);
+            if (PipeCodes.T.ANSI !== type) {
+                return addText(raw);
+            }
+            if ('m' === value.cmd && SGR_RE.test(raw)) {
+                currentColor = raw;
+                colored = true;
+            } else if ('C' === value.cmd && '[' === raw[1]) {
+                //  ESC[C and ESC[;C move one column, ESC[0C none
+                const n = undefined === value.args ? 1 : parseInt(value.args, 10);
+                addText(' '.repeat(Math.min(n, MAX_CURSOR_FORWARD)));
+            }
+        });
 
-        //  Remaining visible characters after the last escape.
-        for (let i = lastEnd; i < ansiText.length; i++) {
-            colors.push(currentColor);
-        }
-
-        return colors;
+        return { plain, colors: colored ? colors : [] };
     }
 
     //  ── Motion state ─────────────────────────────────────────────────────────
@@ -454,10 +505,22 @@ class TickerView extends View {
                 const source = plain + gap;
                 const srcLen = source.length;
                 const off = ((this._scrollOffset % srcLen) + srcLen) % srcLen;
-                return {
-                    plain: (source + source).slice(off, off + width).padEnd(width, fill),
-                    offset: off < len ? off : 0,
-                };
+                const visible = (source + source)
+                    .slice(off, off + width)
+                    .padEnd(width, fill);
+                if (0 === this._charColors.length) {
+                    return { plain: visible, offset: off < len ? off : 0 };
+                }
+                //  The window can show the gap and the wrapped copy, so each
+                //  column's colour comes from its own source index: the text's
+                //  index modulo text plus gap, -1 in the gap and the padding.
+                const colorIndices = new Array(width);
+                for (let i = 0; i < width; ++i) {
+                    const p = off + i;
+                    const k = p % srcLen;
+                    colorIndices[i] = p < 2 * srcLen && k < len ? k : -1;
+                }
+                return { plain: visible, offset: 0, colorIndices };
             }
         }
     }
@@ -488,7 +551,8 @@ class TickerView extends View {
 
     //  Emit each visible character with its original pipe-derived color,
     //  collapsing consecutive same-color runs to minimise escape output.
-    //  colorIndices, when provided (fall motions), maps display position → source index.
+    //  colorIndices, when provided (fall motions, left/right scroll), maps
+    //  display position → source index.
     _coloredEffect(plain, visibleOffset, colorIndices = null) {
         const colors = this._charColors;
         let out = '';
@@ -593,31 +657,89 @@ class TickerView extends View {
 
     //  ── Rendering ─────────────────────────────────────────────────────────────
 
+    //  Started by the constructor, as it always has been: a ticker built
+    //  outside a form ticks too. destroy() stops it (View's background
+    //  interval). |_timer| is the timer handle, null when stopped.
     _startTicker() {
         if (this._timer) {
             return;
         }
-        this._timer = setInterval(() => {
+        //  _tick() draws (through drawInBackground()), as it always has, so
+        //  a subclass that overrides it still runs each tick
+        this._timer = this.setBackgroundInterval(() => {
             this._advanceMotion();
-            this.redraw();
+            this._tick();
         }, this.tickInterval);
     }
 
+    _stopTicker() {
+        if (this._timer) {
+            this.clearBackgroundInterval(this._timer);
+            this._timer = null;
+        }
+    }
+
+    //  A tick draws while the user may be typing into a field elsewhere on
+    //  the screen: drawInBackground() puts the cursor and SGR back there.
+    _tick() {
+        const drawFn = this._tickDraw();
+        if (drawFn) {
+            this.drawInBackground(drawFn);
+        }
+    }
+
+    //  The next frame, and a function that draws it (null if nothing
+    //  changed). While covered (a background draw suspend) nothing a tick
+    //  draws reaches the screen, so it does not count as drawn: see
+    //  _nextFrame().
+    _tickDraw() {
+        const rendered = this._nextFrame({ drawn: !this.isBackgroundDrawSuspended() });
+        if (null !== rendered) {
+            return () => this._drawFrame(rendered);
+        }
+        return null;
+    }
+
     redraw() {
+        const rendered = this._nextFrame();
+        if (null !== rendered) {
+            this._drawFrame(rendered);
+        }
+    }
+
+    //  What this tick draws, or null when it is what the last one drew.
+    //  |drawn| false: the frame will not reach the screen (a tick under a
+    //  cover), so it is not recorded as the last one drawn, and the cover
+    //  mark is left for the first real draw after the cover.
+    //
+    //  Skipping the write (and cursor movement from super.redraw) when the
+    //  terminal output hasn't changed since the last tick matters for bounce
+    //  when text fits the window, reveal/typewriter hold phases, and any other
+    //  static period — it prevents the cursor from bouncing around (but not
+    //  after a cover: see View.coverMark()). Dynamic
+    //  effects (rainbow, scramble, glitch) produce different output every tick
+    //  so they are unaffected.
+    _nextFrame({ drawn = true } = {}) {
         const { plain, offset, colorIndices } = this._getVisiblePlain();
         const rendered = this._applyEffect(plain, offset, colorIndices);
 
-        //  Skip the write (and cursor movement from super.redraw) when the
-        //  terminal output hasn't changed since the last tick.  This matters for
-        //  bounce when text fits the window, reveal/typewriter hold phases, and
-        //  any other static period — it prevents the cursor from bouncing around.
-        //  Dynamic effects (rainbow, scramble, glitch) produce different output
-        //  every tick so they are unaffected.
-        if (rendered === this._lastRendered) {
-            return;
-        }
-        this._lastRendered = rendered;
+        //  Something has covered the screen since the last frame (an
+        //  interrupt, a help page): that frame may have been drawn over, so
+        //  this one is drawn even if it is the same
+        const coverMark = View.coverMark(this.client);
+        const covered = coverMark !== this._coverMark;
 
+        if (rendered === this._lastRendered && !covered) {
+            return null;
+        }
+        if (drawn) {
+            this._coverMark = coverMark;
+            this._lastRendered = rendered;
+        }
+        return rendered;
+    }
+
+    _drawFrame(rendered) {
         super.redraw();
         this.client.term.write(
             padStr(
@@ -633,11 +755,15 @@ class TickerView extends View {
         );
     }
 
+    //  The frame on screen may have been drawn over (a background draw
+    //  suspend): draw the next one even if it equals the last
+    forceNextRedraw() {
+        this._lastRendered = null;
+    }
+
     destroy() {
-        if (this._timer) {
-            clearInterval(this._timer);
-            this._timer = null;
-        }
+        this._stopTicker();
+        super.destroy();
     }
 
     //  ── Properties ───────────────────────────────────────────────────────────
@@ -658,19 +784,15 @@ class TickerView extends View {
             case 'effect':
             case 'textStyle': //  textStyle treated as alias for effect
                 this.effect = value;
-                //  Re-bake plain text if switching to a stylizeString style
-                if (TEXT_STYLE_EFFECTS.has(value) && this._rawText) {
-                    const stripped = stripAnsiCodes(
-                        pipeToAnsi(stripAllLineFeeds(this._rawText), this.client)
-                    );
-                    this._plainText = stylizeString(stripped, value);
-                }
+                //  The text and its colours, styled (or not) as this effect
+                //  says; a style can change the length, so motion restarts
+                this._bakeText();
+                this._resetMotion();
                 break;
             case 'tickInterval':
                 this.tickInterval = parseInt(value, 10) || 100;
                 if (this._timer) {
-                    clearInterval(this._timer);
-                    this._timer = null;
+                    this._stopTicker();
                     this._startTicker();
                 }
                 break;

@@ -2,7 +2,8 @@
 'use strict';
 
 //  ENiGMA½
-const { MenuModule, MenuFlags } = require('./menu_module.js');
+const { MenuModule, MenuLeftStop, MenuFlags } = require('./menu_module.js');
+const { FormLifecycle } = require('./view_controller.js');
 const ansi = require('./ansi_term.js');
 const FileEntry = require('./file_entry.js');
 const stringFormat = require('./string_format.js');
@@ -12,6 +13,12 @@ const ErrNotEnabled = require('./enig_error.js').ErrorReasons.NotEnabled;
 const ArchiveUtil = require('./archive_util.js');
 const Config = require('./config.js').get;
 const DownloadQueue = require('./download_queue.js');
+const {
+    visibleFilesFilter,
+    filterHidden,
+    hidesInfected,
+    isEntryInfected,
+} = require('./file_base_visibility.js');
 const FileAreaWeb = require('./file_area_web.js');
 const FileBaseFilters = require('./file_base_filter.js');
 const { resolveMimeType, findFileTypeByExtension } = require('./mime_util.js');
@@ -67,12 +74,32 @@ const MciViewIds = {
     },
 };
 
+//  Ends a page's steps early: the menu was left (see hasLeftMenu())
+
+//  module -> its details nav menu's 'index update' listener (see
+//  displayDetailsPage()). Kept here, not on the module, so no name is
+//  taken from a subclass.
+const detailsNavListeners = new WeakMap();
+
+//
+//  The browse page, the details page and the details sections take turns
+//  on screen. A form not shown is covered (no keys, no background drawing),
+//  not torn down, as each is shown again (the prep helper activates it).
+//  It is covered before what replaces it is drawn, as blurring its focused
+//  view draws that view.
+//
+function coverForm(vc) {
+    FormLifecycle.coverAny(vc);
+}
+
 exports.getModule = class FileAreaList extends MenuModule {
     constructor(options) {
         super(options);
 
         this.filterCriteria = _.get(options, 'extraArgs.filterCriteria');
-        this.fileList = _.get(options, 'extraArgs.fileList');
+        //  a list handed in (new scan, say) was made by someone else's rules;
+        //  infected entries are hidden here too (#291)
+        this.fileList = filterHidden(this.client, _.get(options, 'extraArgs.fileList'));
         this.lastFileNextExit = _.get(options, 'extraArgs.lastFileNextExit', true);
 
         if (this.fileList) {
@@ -118,16 +145,14 @@ exports.getModule = class FileAreaList extends MenuModule {
                 return cb(null);
             },
             viewDetails: (formData, extraArgs, cb) => {
-                this.viewControllers.browse.setFocus(false);
+                coverForm(this.viewControllers.browse);
                 return this.displayDetailsPage(cb);
             },
             detailsQuit: (formData, extraArgs, cb) => {
-                ['detailsNfo', 'detailsFileList', 'details'].forEach(n => {
-                    const vc = this.viewControllers[n];
-                    if (vc) {
-                        vc.detachClientEvents();
-                    }
-                });
+                //  the details page and every section under it
+                ['detailsGeneral', 'detailsNfo', 'detailsFileList', 'details'].forEach(
+                    n => coverForm(this.viewControllers[n])
+                );
 
                 return this.displayBrowsePage(true, cb); //  true=clearScreen
             },
@@ -211,7 +236,9 @@ exports.getModule = class FileAreaList extends MenuModule {
                 },
                 function display(callback) {
                     return self.displayBrowsePage(false, err => {
-                        if (err) {
+                        //  no results, or the load failed: unless the
+                        //  caller has gone elsewhere meanwhile
+                        if (err && !self.hasLeftMenu()) {
                             //  Remove fileBaseListEntries from history so that
                             //  dismissing the no-results screen returns to the
                             //  file menu, not back into this (empty) list.
@@ -249,6 +276,14 @@ exports.getModule = class FileAreaList extends MenuModule {
         const isNotQueuedIndicator = config.isNotQueuedIndicator || 'N';
         const noDownloadAccessIndicator = config.noDownloadAccessIndicator || '-';
 
+        //  Flags an infected entry (#291) for those who still see them. Anyone
+        //  else only meets one flagged after their list was made, and is not
+        //  told why it cannot be queued.
+        const infectedIndicator =
+            isEntryInfected(currEntry) && !hidesInfected(this.client)
+                ? config.infectedIndicator || 'INFECTED '
+                : config.notInfectedIndicator || '';
+
         const entryInfo = (currEntry.entryInfo = {
             fileId: currEntry.fileId,
             areaTag: currEntry.areaTag,
@@ -271,6 +306,7 @@ exports.getModule = class FileAreaList extends MenuModule {
             ),
             webDlLink: '', //  :TODO: fetch web any existing web d/l link
             webDlExpire: '', //  :TODO: fetch web d/l link expire time
+            infectedIndicator,
         });
 
         //
@@ -397,6 +433,10 @@ exports.getModule = class FileAreaList extends MenuModule {
                     return callback(null);
                 },
                 function prepArtAndViewController(callback) {
+                    //  left while the file list was loading
+                    if (self.hasLeftMenu()) {
+                        return callback(MenuLeftStop);
+                    }
                     return self.displayArtAndPrepViewController(
                         'browse',
                         FormIds.browse,
@@ -408,6 +448,10 @@ exports.getModule = class FileAreaList extends MenuModule {
                     );
                 },
                 function validateMci(callback) {
+                    //  the screen is another menu's now
+                    if (self.hasLeftMenu()) {
+                        return callback(MenuLeftStop);
+                    }
                     return self.validateMCIByViewIds(
                         'browse',
                         [MciViewIds.browse.navMenu],
@@ -422,6 +466,9 @@ exports.getModule = class FileAreaList extends MenuModule {
                         err => {
                             if (err) {
                                 return callback(err);
+                            }
+                            if (self.hasLeftMenu()) {
+                                return callback(MenuLeftStop);
                             }
 
                             return self.populateCurrentEntryInfo(callback);
@@ -481,6 +528,9 @@ exports.getModule = class FileAreaList extends MenuModule {
                     }
                 },
                 function populateAdditionalViews(callback) {
+                    if (self.hasLeftMenu()) {
+                        return callback(MenuLeftStop);
+                    }
                     self.updateQueueIndicator();
                     self.populateCustomLabels(
                         'browse',
@@ -491,7 +541,7 @@ exports.getModule = class FileAreaList extends MenuModule {
             ],
             err => {
                 if (cb) {
-                    return cb(err);
+                    return cb(MenuLeftStop === err ? null : err);
                 }
             }
         );
@@ -514,6 +564,10 @@ exports.getModule = class FileAreaList extends MenuModule {
                     );
                 },
                 function validateMci(callback) {
+                    //  the screen is another menu's now
+                    if (self.hasLeftMenu()) {
+                        return callback(MenuLeftStop);
+                    }
                     return self.validateMCIByViewIds(
                         'details',
                         [MciViewIds.details.navMenu],
@@ -531,38 +585,61 @@ exports.getModule = class FileAreaList extends MenuModule {
                     return self.displayDetailsSection('general', false, callback);
                 },
                 function listenNavChanges(callback) {
+                    //  left while the general section was loading
+                    if (self.hasLeftMenu()) {
+                        return callback(MenuLeftStop);
+                    }
                     const navMenu = self.viewControllers.details.getView(
                         MciViewIds.details.navMenu
                     );
                     navMenu.setFocusItemIndex(0);
 
-                    navMenu.on('index update', index => {
-                        const sectionName = {
-                            0: 'general',
-                            1: 'nfo',
-                            2: 'fileList',
-                        }[index];
+                    //  Removed, then added: the nav menu keeps its listeners
+                    //  while the browse page covers it, so adding again on
+                    //  each show would draw each section once more per visit
+                    let onNavUpdate = detailsNavListeners.get(self);
+                    if (!onNavUpdate) {
+                        onNavUpdate = index => {
+                            const sectionName = {
+                                0: 'general',
+                                1: 'nfo',
+                                2: 'fileList',
+                            }[index];
 
-                        if (sectionName) {
-                            self.displayDetailsSection(sectionName, true);
-                        }
-                    });
+                            if (sectionName) {
+                                self.displayDetailsSection(sectionName, true);
+                            }
+                        };
+                        detailsNavListeners.set(self, onNavUpdate);
+                    }
+                    navMenu.removeListener('index update', onNavUpdate);
+                    navMenu.on('index update', onNavUpdate);
 
                     return callback(null);
                 },
             ],
             err => {
-                return cb(err);
+                return cb(MenuLeftStop === err ? null : err);
             }
         );
     }
 
+    //  Shown over the browse form, which stays attached: a cover, so the
+    //  dismissing key does not reach the form and nothing draws over it
     displayHelpPage(cb) {
-        this.displayAsset(this.menuConfig.config.art.help, { clearScreen: true }, () => {
-            this.client.waitForKeyPress(() => {
-                return this.displayBrowsePage(true, cb);
-            });
-        });
+        this.coverScreen(
+            { restore: done => this.displayBrowsePage(true, done) },
+            done => {
+                this.displayAsset(
+                    this.menuConfig.config.art.help,
+                    { clearScreen: true },
+                    () => {
+                        this.client.waitForKeyPress(() => done(null));
+                    }
+                );
+            },
+            cb
+        );
     }
 
     _handleMovementKeyPress(keyName, cb) {
@@ -755,10 +832,9 @@ exports.getModule = class FileAreaList extends MenuModule {
 
         async.series(
             [
-                function detachPrevious(callback) {
-                    if (self.lastDetailsViewController) {
-                        self.lastDetailsViewController.detachClientEvents();
-                    }
+                function coverPrevious(callback) {
+                    //  the section shown before; it is shown again later
+                    coverForm(self.lastDetailsViewController);
                     return callback(null);
                 },
                 function prepArtAndViewController(callback) {
@@ -800,6 +876,10 @@ exports.getModule = class FileAreaList extends MenuModule {
                 },
                 function populateViews(callback) {
                     self.lastDetailsViewController = self.viewControllers[name];
+                    //  the screen is another menu's now
+                    if (self.hasLeftMenu()) {
+                        return callback(MenuLeftStop);
+                    }
 
                     switch (sectionName) {
                         case 'nfo':
@@ -846,7 +926,7 @@ exports.getModule = class FileAreaList extends MenuModule {
             ],
             err => {
                 if (cb) {
-                    return cb(err);
+                    return cb(MenuLeftStop === err ? null : err);
                 }
             }
         );
@@ -861,10 +941,13 @@ exports.getModule = class FileAreaList extends MenuModule {
                 filterCriteria.areaTag = FileArea.getAvailableFileAreaTags(this.client);
             }
 
-            FileEntry.findFiles(filterCriteria, (err, fileIds) => {
-                this.fileList = fileIds || [];
-                return cb(err);
-            });
+            FileEntry.findFiles(
+                visibleFilesFilter(this.client, filterCriteria),
+                (err, fileIds) => {
+                    this.fileList = fileIds || [];
+                    return cb(err);
+                }
+            );
         }
     }
 };

@@ -1500,6 +1500,66 @@
             }
         }
 
+        //
+        //  Letting users choose between alternatives (e.g. this stock new
+        //  scan or an index reader mod): route the "!" action above on a
+        //  user preference with PV, keeping this entry last as the board
+        //  default, and offer the choice with a user_pref_select menu.
+        //  Not wired up in stock. See the User Preference Select docs page
+        //  (website/src/content/docs/modules/user-pref-select.md). Example:
+        //
+        //  In mainMenu's submit:
+        //      {
+        //          value: { command: "!" }
+        //          action: [
+        //              {
+        //                  acs: "PV[pref__msg_reader,lampboard]"
+        //                  action: @menu:lampboardMain
+        //              }
+        //              {
+        //                  action: @menu:mainMenuGlobalNewScan
+        //              }
+        //          ]
+        //      }
+        //
+        //  The menu offering the choice (art is yours; needs %VM1 or %TV1):
+        //      mainMenuReaderPref: {
+        //          desc: Choosing a Reader
+        //          module: user_pref_select
+        //          art: READRPREF
+        //          config: {
+        //              pref: pref__msg_reader
+        //              choices: [
+        //                  {
+        //                      value: lampboard
+        //                      text: Index reader
+        //                      desc: A table of areas with new mail
+        //                      acs: "TE[ansi]"
+        //                  }
+        //              ]
+        //          }
+        //          form: {
+        //              0: {
+        //                  mci: {
+        //                      VM1: {
+        //                          focus: true
+        //                      }
+        //                      TL2: { }
+        //                  }
+        //                  actionKeys: [
+        //                      {
+        //                          keys: [ "return", "space" ]
+        //                          action: @method:select
+        //                      }
+        //                      {
+        //                          keys: [ "q", "shift + q", "escape" ]
+        //                          action: @method:done
+        //                      }
+        //                  ]
+        //              }
+        //          }
+        //      }
+        //
         mainMenuGlobalNewScan: {
             desc: New Scan
             module: new_scan
@@ -1993,6 +2053,42 @@
                     textStyle: upper
                     focus: true
                 }
+
+                //
+                //  A view needs no %code in the art: `position` places it,
+                //  counted from the art's top-left corner (here, the prompt's),
+                //  as if the art held the code there. A theme can add one the
+                //  same way. Use high IDs (50-99). See "Placing Views from
+                //  Configuration" in the MCI Codes docs.
+                //
+                //  TK50: {
+                //      position: { row: 2, col: 1 }
+                //      width: 79
+                //      text: "Type a command, or ? for help"
+                //  }
+
+                //
+                //  An animation (%AV) is placed the same way. This one is a
+                //  3x1 pulse from inline, pipe coded frames; frames can also
+                //  come from art (a frame sheet, or one file per frame). It
+                //  never takes focus or keys. See "Animation View" in the
+                //  docs.
+                //
+                //  AV51: {
+                //      position: {
+                //          row: 1
+                //          col: 76
+                //      }
+                //      width: 3
+                //      height: 1
+                //      mode: pingpong
+                //      frameInterval: 150
+                //      frames: [
+                //          "|15■|08■■"
+                //          "|08■|15■|08■"
+                //          "|08■■|15■"
+                //      ]
+                //  }
             }
         }
 
@@ -2067,7 +2163,9 @@
                 // Use any MCI codes you wish!
                 TK1: {
                     text: "|03smash a key to continue |08[|11C|08] |03continuous  |08[|11Q|08] |03quit"
-                    width: 60
+                    //  bounce only moves text wider than the window: the text
+                    //  is 48 columns, and 34 fits between the art's >>> and <<<
+                    width: 34
                     motion: bounce
                     tickInterval: 70
                 }

@@ -22,6 +22,7 @@ exports.loadModuleEx = loadModuleEx;
 exports.loadModule = loadModule;
 exports.loadModulesForCategory = loadModulesForCategory;
 exports.getModulePaths = getModulePaths;
+exports.getModArtPath = getModArtPath;
 exports.initializeModules = initializeModules;
 
 exports.moduleCategories = {
@@ -88,7 +89,37 @@ function loadModuleEx(options, cb) {
         );
     }
 
-    return cb(null, mod);
+    //  |modPath|: the file that was loaded (see getModArtPath())
+    return cb(null, mod, modPath);
+}
+
+//
+//  The art folder of a folder mod: <path>/<name>/art, when loadModuleEx() with
+//  |options| loaded |modPath| from <path>/<name>/<name>.js. Undefined for a
+//  single file mod (<path>/<name>.js), which has no folder of its own: it
+//  shares <path> with every other mod. Nothing is read from disk; a missing
+//  folder is found out by the art lookup itself, which then moves on.
+//
+function getModArtPath(options, modPath) {
+    if (!_.isString(modPath) || !_.isString(options.name) || !_.isString(options.path)) {
+        return undefined;
+    }
+    //  a name that is not a plain file name (`../x`, `a/b`) never yields a
+    //  folder, so the art folder is always directly under |options.path|
+    if (
+        0 === options.name.length ||
+        /[\\/]/.test(options.name) ||
+        '.' === options.name ||
+        '..' === options.name ||
+        paths.basename(options.name) !== options.name
+    ) {
+        return undefined;
+    }
+    const folder = paths.join(options.path, options.name);
+    if (modPath !== paths.join(folder, `${options.name}.js`)) {
+        return undefined;
+    }
+    return paths.join(folder, 'art');
 }
 
 function loadModule(name, category, cb) {
@@ -158,8 +189,20 @@ function getModulePaths() {
     ];
 }
 
+//
+//  Requires every module and calls, for each that exports them:
+//
+//    registerFileScanners(registry, cb?)   file scanners; see core/file_scanner.js
+//    moduleInitialize(initInfo, cb)
+//
+//  in that order, so a mod's scanners are registered before anything else it
+//  does. For mods under paths.mods that has already happened, earlier in
+//  startup (bbs.js, file_scanner.js loadModFileScanners(), the way oputil
+//  does it), and registerModFileScanners() skips them here.
+//
 function initializeModules(cb) {
     const Events = require('./events.js');
+    const FileScanner = require('./file_scanner.js');
 
     const modulePaths = getModulePaths().concat(__dirname);
 
@@ -178,10 +221,23 @@ function initializeModules(cb) {
                                 return nextModule(null);
                             }
 
+                            let mod;
                             try {
-                                const mod = require(fullModulePath);
+                                mod = require(fullModulePath);
+                            } catch (e) {
+                                logger.log.warn(
+                                    { error: e.message, fullModulePath },
+                                    'Exception during "moduleInitialize"'
+                                );
+                                return nextModule(null);
+                            }
 
-                                if (_.isFunction(mod.moduleInitialize)) {
+                            const initialize = () => {
+                                if (!_.isFunction(mod.moduleInitialize)) {
+                                    return nextModule(null);
+                                }
+
+                                try {
                                     const initInfo = {
                                         events: Events,
                                     };
@@ -198,16 +254,21 @@ function initializeModules(cb) {
                                         }
                                         return nextModule(null);
                                     });
-                                } else {
+                                } catch (e) {
+                                    logger.log.warn(
+                                        { error: e.message, fullModulePath },
+                                        'Exception during "moduleInitialize"'
+                                    );
                                     return nextModule(null);
                                 }
-                            } catch (e) {
-                                logger.log.warn(
-                                    { error: e.message, fullModulePath },
-                                    'Exception during "moduleInitialize"'
-                                );
-                                return nextModule(null);
-                            }
+                            };
+
+                            //  never fails: a mod that throws is logged
+                            return FileScanner.registerModFileScanners(
+                                mod,
+                                fullModulePath,
+                                initialize
+                            );
                         },
                         err => {
                             return nextPath(err);

@@ -30,11 +30,31 @@ Both also update additional MCIs as the user moves through the list:
 
 * MCI 2 (`%TL2`) receives the description of the selected entry.
 * MCI 10+ (`%TL10` and up) are custom ranges carrying the same fields as
-  `itemFormat` above. The area list formats these with `areaListItemFormat##`.
+  `itemFormat` above. The area list formats these with `areaListInfoFormat##`.
 
 See **Entry Formatting** in [MCI Codes](../art/mci.md) for the format syntax, and
 [Themes](../art/themes.md#custom-range-info-formatting) for where custom range
 formats are declared.
+
+## Message List
+
+The `msg_list` module lists the messages in an area. When the caller enters it, the first new message is focused. When nothing is new, the first message is focused by default. Set `focusWhenNoneNew` to change that:
+
+| Value | Focus when nothing is new |
+|-------|---------------------------|
+| `first` | The first message (default; also used for any other value, which is logged) |
+| `last` | The last message. Area lists run oldest to newest, so that is the most recent message. |
+
+It goes in the menu's `config` block, or in `extraArgs` from a module or menu action that opens the list (`extraArgs` wins over `config`). It only applies when the list is entered; coming back from reading a message returns to the message that was read. It applies to area lists only: a list another module hands over as `messageList` (such as My Messages or search results) always opens on its first message.
+
+```hjson
+messageBaseMessageList: {
+    module: msg_list
+    config: {
+        focusWhenNoneNew: last
+    }
+}
+```
 
 ## See Also
 

@@ -104,7 +104,10 @@ class FreqResolver {
         const upperName = name.toUpperCase();
         for (const [magic, pattern] of Object.entries(this._magic)) {
             if (magic.toUpperCase() === upperName) {
-                return this._resolveGlobPattern(pattern);
+                const found = await this._resolveGlobPattern(pattern);
+                return found && !(await this._isHiddenPath(found.filePath))
+                    ? found
+                    : null;
             }
         }
 
@@ -117,10 +120,73 @@ class FreqResolver {
         // 3. Directory search
         for (const dir of this._dirs) {
             const found = await this._findInDir(dir, name);
-            if (found) return found;
+            if (found && !(await this._isHiddenPath(found.filePath))) return found;
         }
 
         return null;
+    }
+
+    //
+    //  Magic names and search directories serve files by path, and either
+    //  may point into file base storage: a file there whose entry a rescan
+    //  marked infected is not served (#291), as the area search would not
+    //  serve it. If that cannot be told, it is not served either.
+    //
+    async _isHiddenPath(filePath) {
+        let FileEntry;
+        try {
+            const Visibility = require('../file_base_visibility.js');
+            if (!Visibility.hideInfectedEnabled()) {
+                return false;
+            }
+            FileEntry = require('../file_entry.js');
+        } catch (err) {
+            Log.warn(
+                { filePath, error: err.message },
+                '[BinkP/FREQ] Could not check whether a file is marked infected; not serving it'
+            );
+            return true;
+        }
+
+        const real = async p => {
+            try {
+                return await fsp.realpath(p);
+            } catch (_) {
+                return path.resolve(p);
+            }
+        };
+
+        try {
+            const entries = FileEntry.getInfectedEntriesByFileName(
+                path.basename(filePath)
+            );
+            if (0 === entries.length) {
+                return false;
+            }
+            const target = await real(filePath);
+            for (const entry of entries) {
+                let entryPath;
+                try {
+                    entryPath = entry.filePath;
+                } catch (_) {
+                    continue;
+                }
+                if (entryPath && (await real(entryPath)) === target) {
+                    Log.info(
+                        { filePath, fileId: entry.fileId },
+                        '[BinkP/FREQ] Not serving a file whose entry is marked infected'
+                    );
+                    return true;
+                }
+            }
+            return false;
+        } catch (err) {
+            Log.warn(
+                { filePath, error: err.message },
+                '[BinkP/FREQ] Could not check whether a file is marked infected; not serving it'
+            );
+            return true;
+        }
     }
 
     // Resolve a path that may contain glob wildcards.  When the pattern has no
@@ -181,13 +247,17 @@ class FreqResolver {
 
         const lowerName = name.toLowerCase();
 
+        //  A remote node is no one in particular: entries a rescan marked
+        //  infected are not served to it (#291).
+        const { visibleFilesFilter } = require('../file_base_visibility.js');
+
         return new Promise(resolve => {
             FileEntry.findFiles(
-                {
+                visibleFilesFilter(null, {
                     areaTag,
                     sort: 'upload_timestamp',
                     order: 'descending',
-                },
+                }),
                 (err, fileIds) => {
                     if (err || !fileIds || fileIds.length === 0) {
                         return resolve(null);
@@ -345,11 +415,18 @@ function _splitReqContent(text) {
 //
 //  attachFreqToSession — wire FREQ handling onto an answering BinkpSession.
 //
-//  Uses two events:
-//    'incoming-file' — fires when M_FILE is received; calls holdEOB() for .req
-//                      files so M_EOB is blocked while resolution is in-flight.
-//    'file-received' — fires when the file is written; reads content, resolves
-//                      names, queues responses, then calls releaseEOB().
+//  Uses three events:
+//    'incoming-file'  — fires when M_FILE is received; calls holdEOB() for .req
+//                       files so M_EOB is blocked while resolution is in-flight.
+//    'file-received'  — fires when the file is written; reads content, resolves
+//                       names, queues responses, then calls releaseEOB().
+//    'file-abandoned' — fires when the receive ends without the file being
+//                       handed on (postponed, asked for again in the clear,
+//                       or the session torn down); calls releaseEOB() at once.
+//
+//  The session answers each 'incoming-file' with exactly one of the other
+//  two, so every hold taken here is given back. Holds are counted per file
+//  (name, size, timestamp), and only a hold this handler took is released.
 //
 //  Must be called BEFORE other 'file-received' listeners so readReqFileSync
 //  runs while the temp file is still in place.
@@ -359,17 +436,50 @@ function _splitReqContent(text) {
 //    isSecure  : () => boolean — checked when incoming-file fires
 //
 function attachFreqToSession(session, resolver, opts = {}) {
-    session.on('incoming-file', name => {
+    //  Holds taken and not yet given back, by file. A count rather than a
+    //  flag: nothing stops a sender offering the same file twice.
+    const holds = new Map();
+    const keyOf = (name, size, ts) => `${name}\0${size}\0${ts}`;
+
+    //  Drop one hold's bookkeeping for this file; true if there was one.
+    const takeHold = (name, size, ts) => {
+        const key = keyOf(name, size, ts);
+        const count = holds.get(key) || 0;
+        if (0 === count) {
+            return false;
+        }
+        if (1 === count) {
+            holds.delete(key);
+        } else {
+            holds.set(key, count - 1);
+        }
+        return true;
+    };
+
+    session.on('incoming-file', (name, size, ts) => {
         if (!REQ_FILE_RE.test(name)) return;
         if (opts.requirePwd && !opts.isSecure()) return;
+        const key = keyOf(name, size, ts);
+        holds.set(key, (holds.get(key) || 0) + 1);
         session.holdEOB();
+    });
+
+    //  Postponed, abandoned or asked for again: there is nothing to resolve,
+    //  so give the hold back now. A file asked for again is announced again,
+    //  and that announcement takes a hold of its own.
+    session.on('file-abandoned', (name, size, ts) => {
+        if (!REQ_FILE_RE.test(name)) return;
+        if (takeHold(name, size, ts)) {
+            session.releaseEOB();
+        }
     });
 
     session.on('file-received', (name, size, ts, tempPath) => {
         if (!REQ_FILE_RE.test(name)) return;
 
-        if (opts.requirePwd && !opts.isSecure()) {
-            session.releaseEOB();
+        //  The hold passes to the resolution below, which releases it.
+        if (!takeHold(name, size, ts)) {
+            //  Not ours: a non-secure session with requirePwd set.
             return;
         }
 

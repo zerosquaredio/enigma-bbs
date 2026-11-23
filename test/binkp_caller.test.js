@@ -593,4 +593,256 @@ describe('BinkP caller', function () {
                 .catch(done);
         });
     });
+
+    //  #1047: a zero-length flow file is a poll request (FTS-5005.003 §3.4).
+    describe('pollNodes: poll requests', () => {
+        beforeEach(cleanOutbound);
+
+        const exists = p =>
+            fsp.access(p).then(
+                () => true,
+                () => false
+            );
+
+        //  1:218/704 -> 00da02c0, configured with pull: false so that only
+        //  the poll file can be the reason it is dialled.
+        const NODE = '1:218/704';
+        const BASE = '00da02c0';
+
+        async function pollWith(files, { port } = {}) {
+            for (const f of files) {
+                await fsp.writeFile(path.join(outboundDir, f), '');
+            }
+            const prev = configModule._pushTestConfig(
+                makeConfig({ [NODE]: { host: '127.0.0.1', port, pull: false } })
+            );
+            try {
+                await new Promise((resolve, reject) =>
+                    pollNodes([], err => (err ? reject(err) : resolve()))
+                );
+            } finally {
+                configModule._popTestConfig(prev);
+            }
+        }
+
+        it('dials a node whose only outbound is an empty flow file, then removes it', async () => {
+            let sessions = 0;
+            const { port, stop } = await startAnsweringServer({
+                addresses: [`${NODE}@testnet`],
+                onSession: () => sessions++,
+            });
+            try {
+                await pollWith([`${BASE}.clo`], { port });
+            } finally {
+                await stop();
+            }
+            assert.equal(sessions, 1);
+            assert.equal(await exists(path.join(outboundDir, `${BASE}.clo`)), false);
+        });
+
+        it('does not dial for an empty hold file, and leaves it', async () => {
+            let sessions = 0;
+            const { port, stop } = await startAnsweringServer({
+                addresses: [`${NODE}@testnet`],
+                onSession: () => sessions++,
+            });
+            try {
+                await pollWith([`${BASE}.hlo`, `${BASE}.hut`], { port });
+            } finally {
+                await stop();
+            }
+            assert.equal(sessions, 0);
+            assert.equal(await exists(path.join(outboundDir, `${BASE}.hlo`)), true);
+            assert.equal(await exists(path.join(outboundDir, `${BASE}.hut`)), true);
+        });
+
+        it('keeps the poll file when the call fails', async () => {
+            await pollWith([`${BASE}.dlo`], { port: 1 }); //  connection refused
+            assert.equal(await exists(path.join(outboundDir, `${BASE}.dlo`)), true);
+        });
+
+        it('keeps the poll file when the node is busy (M_BSY)', async () => {
+            const { buildCommandFrame } = require('../core/binkp/frame.js');
+            const { Commands } = require('../core/binkp/commands.js');
+            const server = net.createServer(sock => {
+                sock.on('error', () => {});
+                sock.resume();
+                sock.write(buildCommandFrame(Commands.M_BSY, 'Too busy'));
+                sock.end();
+            });
+            const port = await new Promise(r =>
+                server.listen(0, '127.0.0.1', () => r(server.address().port))
+            );
+            try {
+                await pollWith([`${BASE}.clo`], { port });
+            } finally {
+                await new Promise(r => server.close(r));
+            }
+            assert.equal(await exists(path.join(outboundDir, `${BASE}.clo`)), true);
+        });
+    });
+
+    //  #1052: a shutdown ends a call in progress and dials nothing more.
+    describe('stopping', () => {
+        const { setStopping } = require('../core/binkp/caller.js');
+        const { FrameParser } = require('../core/binkp/frame.js');
+        const { Commands } = require('../core/binkp/commands.js');
+
+        beforeEach(cleanOutbound);
+        afterEach(() => setStopping(false));
+
+        //  A remote that accepts and then says nothing, recording the
+        //  commands it is sent.
+        async function startSilentServer({ allowHalfOpen = false } = {}) {
+            const received = [];
+            const sockets = new Set();
+            let connections = 0;
+            const server = net.createServer({ allowHalfOpen }, socket => {
+                connections++;
+                sockets.add(socket);
+                const parser = new FrameParser();
+                parser.on('frame', f => 'command' === f.type && received.push(f.cmd));
+                socket.on('data', chunk => parser.push(chunk));
+                socket.on('error', () => {});
+                socket.on('close', () => sockets.delete(socket));
+            });
+            const port = await new Promise(resolve =>
+                server.listen(0, '127.0.0.1', () => resolve(server.address().port))
+            );
+            return {
+                port,
+                received,
+                connections: () => connections,
+                stop: () =>
+                    new Promise(resolve => {
+                        sockets.forEach(s => s.destroy());
+                        server.close(() => resolve());
+                    }),
+            };
+        }
+
+        it('pollNodes dials nothing once stopping', async () => {
+            const remote = await startSilentServer();
+            const refFile = path.join(tmpDir, 'stopping.pkt');
+            await fsp.writeFile(refFile, 'DATA');
+            await fsp.writeFile(path.join(outboundDir, '00da02bc.flo'), `^${refFile}\n`);
+            const prev = configModule._pushTestConfig(
+                makeConfig({ '1:218/700': { host: '127.0.0.1', port: remote.port } })
+            );
+            try {
+                setStopping(true);
+                await new Promise((resolve, reject) =>
+                    pollNodes([], err => (err ? reject(err) : resolve()))
+                );
+                assert.equal(remote.connections(), 0, 'no call made');
+            } finally {
+                configModule._popTestConfig(prev);
+                await remote.stop();
+            }
+        });
+
+        it('a call ended for shutdown sends M_BSY and releases its locks', async () => {
+            const remote = await startSilentServer();
+            const addr = Address.fromString('1:218/700');
+            const spool = makeSpool();
+            try {
+                const call = callNode(
+                    addr,
+                    { host: '127.0.0.1', port: remote.port },
+                    spool
+                ).then(
+                    () => null,
+                    err => err
+                );
+                const [bsyPath] = await spool.lockPathsForNode(addr, {
+                    createDirs: true,
+                });
+                const until = Date.now() + 3000;
+                while (!(remote.connections() > 0 && (await exists(bsyPath)))) {
+                    assert.ok(Date.now() < until, 'call under way');
+                    await new Promise(r => setTimeout(r, 10));
+                }
+
+                assert.ok(BinkpSession.abortAll('Shutting down') >= 1);
+                await call;
+
+                assert.ok(!(await exists(bsyPath)), 'lock released');
+                const until2 = Date.now() + 2000;
+                while (!remote.received.includes(Commands.M_BSY) && Date.now() < until2) {
+                    await new Promise(r => setTimeout(r, 10));
+                }
+                assert.ok(remote.received.includes(Commands.M_BSY), 'remote told M_BSY');
+            } finally {
+                await remote.stop();
+            }
+        });
+
+        it('a call still connecting when shutdown starts hangs up without a session', async () => {
+            const callerModule = require('../core/binkp/caller.js');
+            const remote = await startSilentServer();
+            const addr = Address.fromString('1:218/700');
+            const spool = makeSpool();
+            const realConnect = callerModule._connect;
+            //  Shutdown begins while the connect is under way.
+            callerModule._connect = async (...args) => {
+                setStopping(true);
+                return realConnect(...args);
+            };
+            try {
+                const before = BinkpSession.liveCount();
+                await callNode(addr, { host: '127.0.0.1', port: remote.port }, spool);
+                assert.equal(BinkpSession.liveCount(), before, 'no session started');
+                const [bsyPath] = await spool.lockPathsForNode(addr);
+                assert.ok(!(await exists(bsyPath)), 'lock released');
+                await new Promise(r => setTimeout(r, 100));
+                assert.deepEqual(remote.received, [], 'nothing sent');
+            } finally {
+                callerModule._connect = realConnect;
+                await remote.stop();
+            }
+        });
+
+        it('a remote that never closes its side is cut off, and the locks still go', async () => {
+            const remote = await startSilentServer({ allowHalfOpen: true });
+            const addr = Address.fromString('1:218/700');
+            const spool = makeSpool();
+            try {
+                const call = callNode(
+                    addr,
+                    { host: '127.0.0.1', port: remote.port },
+                    spool
+                ).then(
+                    () => null,
+                    err => err
+                );
+                const [bsyPath] = await spool.lockPathsForNode(addr, {
+                    createDirs: true,
+                });
+                const until = Date.now() + 3000;
+                while (!(remote.connections() > 0 && (await exists(bsyPath)))) {
+                    assert.ok(Date.now() < until, 'call under way');
+                    await new Promise(r => setTimeout(r, 10));
+                }
+
+                const started = Date.now();
+                BinkpSession.abortAll('Shutting down');
+                await call;
+                const tookMs = Date.now() - started;
+                assert.ok(
+                    tookMs >= 900 && tookMs < 3000,
+                    `cut off after the grace (${tookMs} ms)`
+                );
+                assert.ok(!(await exists(bsyPath)), 'lock released');
+            } finally {
+                await remote.stop();
+            }
+        });
+
+        async function exists(p) {
+            return fsp.access(p).then(
+                () => true,
+                () => false
+            );
+        }
+    });
 }); // describe('BinkP caller')

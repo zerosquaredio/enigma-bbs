@@ -1,0 +1,579 @@
+---
+title: File Scanning
+description: "Scan uploads and TIC imports for viruses before ENiGMA½ looks inside them, with any command-line scanner or one from a mod."
+sidebar:
+    order: 4
+---
+ENiGMA½ can run every untrusted file through one or more **scanners** before it does anything else with it: before it opens an archive, reads a `FILE_ID.DIZ`, or runs an info tool on it. A file a scanner rejects never reaches the file base. It is quarantined (or deleted, if you prefer), and the operators get a private message about it.
+
+Files are scanned when they come in:
+
+| Source | When | `sources` name |
+|--------|------|----------------|
+| Telnet/SSH uploads | After the transfer, before the file details page | `upload` |
+| [REST API](../servers/contentservers/rest-api.md) uploads | Before the file is moved into the area's storage | `web` |
+| [TIC](tic-support.md) imports | Before the file is stored, **and** for passthrough echoes before it is relayed to downlinks | `tic` |
+| `oputil fb scan` | Only with `--virus-scan` | `oputil` |
+| [Rescan](#rescanning-the-file-base) of files already in the file base (report only) | When you run it, or on a schedule | `rescan` |
+
+Files the sysop or the system makes (a TIC hatch, exports, offline mail packets) are not scanned.
+
+Scanning is off until you turn it on. ENiGMA½ ships one scanner, `command`, which runs a program per file and looks at its exit code, the way BBS upload testers always have. Other scanners, such as a ClamAV daemon client, come from [mods](#writing-a-scanner). A first-party mod with ClamAV (`clamd`) and VirusTotal hash lookup scanners exists, and will be listed here once it is published.
+
+## Configuration
+File scanning lives under `fileBase.scanning` in `config.hjson`:
+
+```hjson
+fileBase: {
+    scanning: {
+        enabled: true
+
+        //  quarantine | delete
+        failAction: quarantine
+
+        //  relative paths are relative to fileBase.areaStoragePrefix
+        quarantinePath: .quarantine
+
+        //  who gets the private mail about a rejected file
+        notifyUserIds: [ 1 ]
+
+        scanners: [
+            {
+                scanner: command
+                cmd: clamscan
+                args: [
+                    "--no-summary"
+                    "--alert-exceeds-max=yes"
+                    //  rejects every password-protected archive; see
+                    //  "Encrypted archives"
+                    "--alert-encrypted-archive=yes"
+                    "{filePath}"
+                ]
+                signatureRegex: "^.*: (.+) FOUND$"
+            }
+        ]
+    }
+}
+```
+
+| Item | Default | Description |
+|------|---------|-------------|
+| `enabled` | `false` | Turns file scanning on |
+| `failAction` | `quarantine` | What happens to a file a scanner finds something in: `quarantine` or `delete`. A [held](#when-a-scanner-fails) file is always quarantined |
+| `quarantinePath` | `.quarantine` | Where quarantined files go. Relative to `fileBase.areaStoragePrefix`. The default is a dot directory, which `oputil fb scan` never picks up, even for a `/*` storage tag over the whole prefix |
+| `notifyUserIds` | `[ 1 ]` | User IDs that get a private message for each batch of rejected files |
+| `defangExtensions` | `exe`, `com`, `bat`, `cmd`, `scr`, `pif`, `ps1`, `vbs`, `js`, `sh` | Extensions renamed in quarantine, DOS style: `FOO.EXE` becomes `FOO.EX_` |
+| `scanners` | `[]` | The scanners to run, in order; see below |
+| `maxConcurrent` | `2` | Most scanners running at once, across every source. The rest wait their turn, first come first served. A scanner's `timeout` starts when it starts, not while it waits |
+| `maxQueueWaitMs` | `600000` | Longest a file waits for a free scanner (10 minutes). Past that, it is a scanner failure, which the entry's `onError` decides. `0` waits as long as it takes |
+| `hideInfected` | `true` | Hide entries a rescan marked infected from users; see [Hidden infected entries](#hidden-infected-entries). Applies whether or not `enabled` is set |
+| `infectedVisibleAcs` | `GM[sysops]\|ID1` | [ACS](../configuration/acs.md) of users who still see hidden infected entries, flagged, and can download them |
+
+`maxConcurrent` is what stops one REST user firing uploads in parallel from starting a scanner process per file. `clamscan` in particular loads its whole signature database each time, which adds up to a lot of memory quickly.
+
+### Scanner entries
+Each entry in `scanners` names a registered scanner and says when it runs. The entries that match a file run in order:
+
+* The first scanner that finds something rejects the file, and no later scanner runs.
+* A scanner that fails or times out holds the file, unless its entry says `onError: accept`.
+* Otherwise the file is accepted. **That includes a file every scanner `skipped`**: a hash lookup that has never seen the file, say, or a scanner that does not handle its type or size. `skipped` means "no opinion", not "clean", but it does not stop the file. If you rely on such a scanner alone, unknown files get in.
+
+Some configurations look as if they scan but let everything through. ENiGMA½ warns about these in the log at startup, and `oputil fb scan --virus-scan` prints the same warnings:
+
+* scanning enabled with an empty `scanners` list;
+* an entry with an empty `fileTypes` list (`[]`) or no known `sources`, which never runs;
+* an entry naming a scanner that no mod registered, which holds every file it sees (or, with `onError: accept`, accepts them).
+
+| Item | Default | Description |
+|------|---------|-------------|
+| `scanner` | (required) | The scanner's registered name: `command`, or one a mod provides |
+| `enabled` | `true` | Set to `false` to switch an entry off without removing it |
+| `sources` | all | Which of `upload`, `web`, `tic`, `oputil` and `rescan` this entry scans |
+| `fileTypes` | `"*"` | `"*"`, or a list of extensions, e.g. `[ "zip", "exe" ]`, matched against the file's real name. Trailing dots and spaces are ignored, so `FOO.EXE.` counts as `exe`, as Windows would run it, and so is anything after a `:` (`FOO.EXE:x` is a stream of `FOO.EXE` on Windows). An empty list matches nothing |
+| `timeout` | `60000` | Milliseconds before the scanner is given up on, which counts as a failure |
+| `onError` | `hold` | `hold` (quarantine the file) or `accept` (log a warning and carry on) |
+
+Anything else in the entry is the scanner's own configuration, such as `cmd` and `args` for `command`.
+
+:::caution
+`fileTypes` saves time; it is not a security control. It goes by the file's *name*, which the uploader or the TIC's sender chooses, so a file of any content can be named to slip past a list. (For a passthrough TIC the name matched is its `Lfile`, while downlinks are sent its `File`.) Leave it at `"*"` for a scanner you rely on.
+:::
+
+### When a scanner fails
+**File scanning fails closed.** If a scanner fails, for example ClamAV's signature database is missing, a daemon is down, or the scanner runs past its `timeout`, the file is **held**: it is quarantined as if it were infected, and the operator notice says it was held rather than found infected. Nothing silently passes because a scanner was broken.
+
+A held file may well be clean. Fix the scanner, then release the file with `oputil fb quarantine release`, which scans it first (see [Releasing a quarantined file](#releasing-a-quarantined-file)), or have it uploaded again.
+
+TIC imports are the exception: a held TIC payload is not quarantined straight away but kept in the inbound and tried again on later passes, since a sender will not send it again. See [TIC imports](#tic-imports-and-passthrough-echoes).
+
+For a scanner that is not a security control, or one that runs out of quota (a hash lookup service, say), set `onError: accept` on its entry so that a failure lets the file through with a warning in the log.
+
+:::danger
+Under `onError: accept`, an uploader or TIC sender can choose to make the scanner fail. A file built to run the scanner past its `timeout` (an archive bomb, say), to make it print more than the output limit, or a flood of uploads that keeps files waiting past `maxQueueWaitMs`, all count as failures, and with `accept` the file goes through unscanned. Do not use `accept` on a scanner you rely on to keep files out.
+:::
+
+While the BBS starts, a configured scanner that is not registered yet is always a hold, whatever `onError` says: its mod may simply not have registered it yet. Mods register their scanners before message networks start, so a TIC already waiting in an inbound is never imported ahead of them.
+
+## The command scanner
+`command` runs a program once per file, never through a shell, and maps its exit code to a result.
+
+| Item | Default | Description |
+|------|---------|-------------|
+| `cmd` | (required) | The program to run. Give a full path if it is not on the `PATH` |
+| `args` | `[ "{filePath}" ]` | Its arguments. `{filePath}` (always absolute), `{fileName}`, `{areaTag}`, `{source}` and `{sha256}` are substituted |
+| `exitCodes` | `{ clean: [ 0 ], infected: [ 1 ] }` | Exit codes for clean and infected. **Any other exit code is an error**, as is a crash, a signal or a failure to start |
+| `signatureRegex` | (none) | Applied to the program's output when the file is infected; the first capture group is the signature name shown in the notice |
+| `infectedRegex` | (none) | For a program whose exit code cannot tell "found something" from "failed". If it matches the output, the file is infected whatever the exit code |
+
+Regular expressions are strings, applied with the `m` flag, so `^` and `$` match at each line.
+
+When a scanner runs past its `timeout`, ENiGMA½ kills the program **and everything it started**: on Linux and other POSIX systems the program runs in a process group of its own, and the whole group is killed; on Windows the process tree is ended with `taskkill /T /F`. A wrapper script that starts the real scanner is covered, but should still `exec` it (`exec clamscan "$@"`), so the scanner is the process ENiGMA½ waits on. Output is limited to 4 MB on each of standard output and error; a program that prints more is killed and the result is an error.
+
+:::caution[Windows: no batch files]
+Node.js refuses to run a `.bat` or `.cmd` file without a shell, so `cmd: scan.cmd` fails to start and every file is held. Do not work around it with `cmd: cmd.exe` and `args: [ "/c", ... ]`: `cmd.exe` interprets `&`, `|`, `%` and `^` in its arguments, and `{fileName}` (or a file name inside `{filePath}`) comes from the uploader, who can then run commands. Use a real executable, or a script run by its interpreter, given explicitly: `cmd: node` with `args: [ "C:\\scanners\\scan.js", "{filePath}" ]`, or `cmd: powershell.exe` with `args: [ "-NoProfile", "-NonInteractive", "-File", "C:\\scanners\\scan.ps1", "{filePath}" ]`.
+:::
+
+:::caution
+`{fileName}` is whatever the uploader called the file, and it may start with `-`. Do not put it where the program would read it as an option. `{filePath}` is always absolute and is the safe choice.
+:::
+
+### ClamAV: clamscan and clamdscan
+`clamscan` exits `0` for clean, `1` for infected and `2` for an error, which matches the defaults:
+
+```hjson
+{
+    scanner: command
+    cmd: clamscan
+    args: [
+        "--no-summary"
+        "--alert-exceeds-max=yes"
+        //  rejects every password-protected archive; see below
+        "--alert-encrypted-archive=yes"
+        "{filePath}"
+    ]
+    signatureRegex: "^.*: (.+) FOUND$"
+}
+```
+
+`--alert-exceeds-max=yes` matters: see [Oversized files](#oversized-files) below. So does `--alert-encrypted-archive=yes`, with a trade-off: see [Encrypted archives](#encrypted-archives).
+
+`clamscan` loads the whole signature database every time it runs, which takes seconds and a lot of memory per file. If `clamd` is running, use `clamdscan` instead, with the same exit codes. Add `--fdpass` so that `clamd`, which usually runs as its own user, can read files in ENiGMA½'s upload directories (see [File permissions](#file-permissions)):
+
+```hjson
+{
+    scanner: command
+    cmd: clamdscan
+    args: [
+        "--no-summary"
+        "--fdpass"
+        "{filePath}"
+    ]
+    signatureRegex: "^.*: (.+) FOUND$"
+}
+```
+
+`clamdscan` has no options for what `clamd` reports: set `AlertExceedsMax yes` and `AlertEncryptedArchive yes` in `clamd.conf` (see the next two sections).
+
+#### Oversized files
+ClamAV stops scanning at its size and depth limits, **and a file it did not finish reports clean**: a file bigger than `MaxFileSize` is not scanned at all, an archive is scanned only up to `MaxScanSize` of extracted data, and nesting deeper than `MaxRecursion` is not looked into. Anyone who knows that can pad a file or nest an archive to get it past.
+
+Make ClamAV report such a file instead, as `Heuristics.Limits.Exceeded`, which counts as infected:
+
+* `clamscan`: add `--alert-exceeds-max=yes` to `args`, as in the examples above;
+* `clamdscan`: set `AlertExceedsMax yes` in `clamd.conf` (`clamdscan` has no option for it; `clamd` decides).
+
+The limits themselves are `--max-filesize`, `--max-scansize` and `--max-recursion` for `clamscan` (the first two default to 100 MB and 400 MB), and `MaxFileSize`, `MaxScanSize` and `MaxRecursion` in `clamd.conf`. Keep `MaxFileSize` at least as large as the biggest upload or TIC file you accept, or every larger file is rejected; and raising them costs memory and time per scan.
+
+`AlertExceedsMax` covers size and depth only. **It does not cover encrypted archives**, which are the next section.
+
+#### Encrypted archives
+ClamAV cannot look inside an archive it has no password for, **and reports it clean**. Checked with ClamAV 1.5.4: the EICAR test file inside a password-protected zip (`zip -P`) and inside an AES-encrypted 7z with encrypted headers (`7z -p -mhe=on`) both scan clean with `clamd`, even with `AlertExceedsMax yes`. Anyone can upload malware that way, with the password in the description.
+
+Make ClamAV report them instead, as `Heuristics.Encrypted.Zip`, `Heuristics.Encrypted.7Zip` and so on, which counts as infected:
+
+| | Archives (zip, 7z, rar) | Documents (pdf) | Both |
+|-|-------------------------|-----------------|------|
+| `clamscan` | `--alert-encrypted-archive=yes` | `--alert-encrypted-doc=yes` | `--alert-encrypted=yes` |
+| `clamd.conf` | `AlertEncryptedArchive yes` | `AlertEncryptedDoc yes` | `AlertEncrypted yes` |
+
+The trade-off: **every legitimately encrypted upload is rejected too**, and with the default `failAction` it goes to quarantine. If your callers share password-protected archives on purpose, you have to choose between scanning them and accepting them.
+
+#### Old archive formats
+ClamAV looks inside ZIP, ARJ and LZH/LHA archives (checked with libclamav 1.5.4), as well as the common modern formats. It has **no support at all for ARC or ZOO**: it does not recognise them as archives, so their bytes are scanned as they are, and anything compressed inside them is never seen. A clean result for an `.arc` or `.zoo` file says very little. If you accept those formats, a second scanner that unpacks them first is the only way to check what is in them.
+
+### File permissions
+Uploads are scanned where they were received, in a temporary directory that only the user ENiGMA½ runs as can open (mode `0700`): one per telnet/SSH upload session and one per REST upload. That is deliberate. These are untrusted files on a shared temporary file system, and the BBS user's group may well be shared with other services.
+
+So a scanner that opens the file **by path as a different user** cannot read uploads, and with the default `onError: hold` every upload is held. This bites, for example, `clamd` given a path to `SCAN` (or `clamdscan` without `--fdpass`), and a `sudo` or `su` wrapper that runs the scanner as another account. Instead, use one of:
+
+* a scanner that runs as the ENiGMA½ user: `clamscan`, or any `command` that does not switch user;
+* `clamdscan --fdpass`, which opens the file itself and hands `clamd` the open file descriptor;
+* a scanner that streams the file's bytes to its daemon (ClamAV's `INSTREAM`, for example), as a mod scanner can.
+
+TIC inbound and file base storage directories have whatever permissions you gave them.
+
+### Hashing and scanning read the file separately
+ENiGMA½ reads the file once to work out its SHA-256 and size, before any scanner runs; a hash-based scanner, such as a VirusTotal lookup, judges the file by that hash alone. A scanner that opens the file **by path** reads it again, and nothing guarantees that it reads the same bytes that were hashed. This includes the `command` scanner, so `clamscan` and `clamdscan` too. Anyone who can write to the file in between could have the hash lookup judge one file and the path-reading scanner another.
+
+For uploads and REST uploads that is not a concern: they sit in a temporary directory that only the ENiGMA½ user can open (see [File permissions](#file-permissions)). **The TIC inbound is different**: the mailer writes there, and so may anything else sharing it. For TIC imports, prefer a scanner that streams the file's bytes to its engine and checks what it streamed against the hash ENiGMA½ worked out, as the first-party ClamAV mod's scanner does, and keep the inbound writable only by the mailer and ENiGMA½.
+
+### Windows Defender
+Defender's command-line scanner, `MpCmdRun.exe`, can scan a single file:
+
+```hjson
+{
+    scanner: command
+    cmd: "C:\\Program Files\\Windows Defender\\MpCmdRun.exe"
+    args: [
+        "-Scan"
+        "-ScanType"
+        "3"
+        "-File"
+        "{filePath}"
+        "-DisableRemediation"
+    ]
+    //  exit code 2 means "found something" OR "failed": let the output decide
+    exitCodes: {
+        clean: [ 0 ]
+        infected: [ ]
+    }
+    infectedRegex: "^Threat\\s+:\\s+(.+)$"
+    timeout: 120000
+}
+```
+
+Some caveats:
+
+* **Exit code 2 is ambiguous.** Defender uses it both for "threats found" and for errors. That is why `infected` above is empty and `infectedRegex` decides: if the output names a threat, the file is infected; if not, exit code 2 is an error and the file is held.
+* **It is not on the `PATH`.** The current copy lives under `C:\ProgramData\Microsoft\Windows Defender\Platform\<version>\MpCmdRun.exe`, and the version changes as Defender updates itself. The copy under `C:\Program Files\Windows Defender\` is older but stays put.
+* **Microsoft documents it as needing an elevated prompt.** If ENiGMA½ does not run elevated and every file comes back held, that is the likely cause.
+* `-DisableRemediation` stops Defender acting on the file itself, so ENiGMA½ decides what happens to it.
+
+### Testing with EICAR
+The [EICAR test file](https://www.eicar.org/download-anti-malware-testfile/) is a harmless string every scanner reports as infected. Upload it, or drop it into a storage directory and run `oputil fb scan AREA --virus-scan`, to check your setup end to end. Some scanners also find it inside a zip.
+
+## What happens to a rejected file
+### Quarantine
+With `failAction: quarantine`, the default, a rejected file is:
+
+1. moved to `quarantinePath`, keeping its name but defanged (`.exe` becomes `.ex_`, see `defangExtensions`, after dropping any trailing dots and spaces; `.json` always becomes `.jso_`, so a quarantined file can never pass for a sidecar), and renamed `FILE(1).EX_` and so on if the name is taken, never replacing a file already there. Characters Windows does not allow in a name (`: < > " | ? *`) become `_`, and a name Windows reserves for a device (`CON`, `NUL`, `COM1.ZIP`, ...) gets a leading `_`. A name with nothing usable left (`..`, `.`, all dots) or too long for the file system is replaced by `unnamed-` and the start of its SHA-256; the sidecar keeps the original;
+2. made readable and writable by the ENiGMA½ user only (mode `0600`, no execute permission). The quarantine directory is created with mode `0700`;
+3. given a JSON sidecar beside it, `FILE.EX_.json` (also `0600`), recording the original name, SHA-256, size, where it came from (source, user, area, TIC details), the scanner, its result and signature, and the time. It also keeps what the file would have had as an entry, so that [releasing it](#releasing-files-and-false-positives) loses nothing: a description the uploader typed (REST), the uploader, hash tags, the storage location, and a TIC's `Desc`, `Ldesc` and `File`. These came from outside, so each is bounded in length and stripped of control characters.
+
+With `failAction: delete`, the file is deleted and there is no sidecar. A held file is always quarantined.
+
+If an infected file cannot be quarantined (the disk is full, or the quarantine directory cannot be created), it is **deleted instead**, so that it is never left where a later import could pick it up. The log and the operator notice say so. A held file that cannot be quarantined is left where it is, since it may be clean, and the notice says where it still is.
+
+### Operator notice
+Each user in `notifyUserIds` gets a private message listing the rejected files: name, where each came from, the scanner and what it found, and where the file went. One message covers a whole upload session, TIC import pass or `oputil` run, so a batch of infected files does not flood the inbox. Rejections are also logged at `warn` level, each one.
+
+A REST client uploads one file per request, so REST rejections are coalesced per uploader: the first sends a notice at once, and any more from the same user within the next 10 minutes are collected into one summary notice when those 10 minutes are up. A summary lists up to 50 files and counts the rest. Summaries still waiting when the BBS shuts down are sent as it does.
+
+File names, scanner output and TIC fields come from outside, so the notice strips pipe and other color codes from them, collapses runs of spaces, and keeps every line within 79 columns: a file name cannot recolor the message or forge a line of it. The sidecar keeps the original values.
+
+### What the uploader sees
+A telnet/SSH caller is shown which of their files were refused, with a general reason, "failed the upload check" or "could not be checked", but not what the scanner found. The rest of the batch carries on as normal. A REST client gets a `422` problem response with the same general reason.
+
+The upload menu (`fileBaseUploadFiles`) has these settings for it, in its `config` block or the theme:
+
+| Item | Default | Description |
+|------|---------|-------------|
+| `art.rejected` | `ULREJECT` | Art for the rejected files page, with a `VM1` list. Optional: without it the list is printed as plain text |
+| `rejectedInfoFormat` | `{fileName}: {reason}` | One line per rejected file. Also has `{scanResult}` (`infected` or `held`) and `{signature}` |
+| `rejectedInfectedReason` | `failed the upload check` | `{reason}` for an infected file |
+| `rejectedHeldReason` | `could not be checked` | `{reason}` for a held file |
+| `virusScanStartFormat` | `Scanning for viruses` | Processing page step text while scanning |
+| `virusScanFinishFormat` | `Virus scan finished` | Step text when the file passes |
+| `virusScanRejectedFormat` | `{fileName} failed the upload check` | Step text, also added to the processing log, when it is rejected |
+
+The processing page can also have a `TL5` indicator for the scan step, like the hash and archive indicators.
+
+## TIC imports and passthrough echoes
+Every TIC payload is scanned, whether the echo is stored in a local area or is a passthrough echo carried only for downlinks. A passthrough file is scanned before it is put in transit, so an infected file is never relayed.
+
+An **infected** payload is rejected at once: it is quarantined or deleted, and its `.tic` goes to the `reject` directory as any other rejected TIC does, without the payload. One operator notice covers each import pass.
+
+A **held** payload, one a scanner could not check because it failed, timed out or is not registered, is treated like a payload that has not arrived yet: the `.tic` and the file stay in the inbound, nothing is imported or relayed, and the next import pass tries again. A held payload is not scanned again on every pass, though: the wait before the next attempt starts at 5 minutes and doubles after each failed one, up to an hour, so a payload that makes the scanner time out does not cost a full timeout every pass for two days. A payload that changes on disk is tried again at once. Each attempt logs a warning. Once the hold has lasted longer than `tic.holdMaxAgeMs` (48 hours by default; see [TIC Support](tic-support.md)), the next attempt that still fails quarantines the payload (at most an hour late), the `.tic` goes to `reject`, and the operators get a notice. So a scanner outage shorter than that loses nothing.
+
+## oputil
+`oputil fb scan` does not scan for viruses unless you ask it to:
+
+```bash
+./oputil.js fb scan uploads --virus-scan
+```
+
+With `--virus-scan`, each new file is scanned before it is imported, by the entries whose `sources` include `oputil` (or that list no `sources`). A rejected file is reported, not imported, and quarantined or deleted per `failAction`. One notice covers the run. It refuses to start if scanning is disabled.
+
+The file is already in the area's storage directory, where a later plain `fb scan` would import it unscanned, so a file that cannot be moved is reported loudly. An infected file that cannot be quarantined is deleted instead; if it cannot be deleted either, oputil says so and exits with an error. A held file that cannot be quarantined is left in place, and oputil says that it is still there, unscanned.
+
+oputil loads the scanners mods provide by calling each mod's [`registerFileScanners`](#writing-a-scanner) export, and nothing else of the mod: no `moduleInitialize`. If an entry that would run for `oputil` still names a scanner nobody registered, `--virus-scan` refuses to start rather than hold every file.
+
+## Rescanning the file base
+New signatures arrive every day, so a file that was clean when it was uploaded may not be today. A rescan runs the files already in the file base through the scanners again, using the entries whose `sources` include `rescan` (or that list no `sources`). Run it by hand with `oputil fb virus-scan`, or with the built-in `rescanFileBase` task from the [WFC task list](../modules/wfc.md#tasks), on demand or [on a schedule](#on-a-schedule-the-event-scheduler).
+
+**A rescan only reports.** It never moves, quarantines or deletes a file and never removes an entry, whatever `failAction` says: a file that has sat in the file base for years may be a false positive, or may be something you want to look at first, so what happens to it is your call. It records what it found in each entry's meta and tells you.
+
+| Verdict | Recorded |
+|---------|----------|
+| clean | `scan_result: clean`, `scanned_at`, `scanner`; an old `scan_signature` is dropped |
+| infected | `scan_result: infected`, `scanned_at`, `scanner`, and `scan_signature` (what was found, cleaned of color codes, at most 128 characters) |
+| skipped | `scan_result: skipped` and `scanned_at`, **unless** the entry was already `clean` or `infected`: "no opinion" does not overturn an earlier verdict, so then only `scanner` changes. An entry already marked infected is still reported as infected |
+| held (the scanner failed or timed out) | nothing but the attempt time (below); `scanned_at` is not updated |
+
+A file that is missing from its storage directory is reported, and nothing else is done. Every outcome, in a run that is not a dry run, also records `rescan_attempted_at`.
+
+### Acting on the results
+An infected file is listed, in oputil's output and in the operator notice, with its file ID, area, name, the scanner and what it found, and the command that removes it:
+
+```bash
+./oputil.js fb rm 123 --phys-file
+```
+
+`fb rm` takes the file ID and removes the entry; `--phys-file` deletes the file from disk as well. Without `--phys-file` only the entry goes and the file stays in the storage directory, where a later `fb scan` would import it again. To keep the file for a closer look, move it out of the storage tree yourself first, then run `fb rm 123` without the flag. An infected entry is reported again on every rescan until you remove it.
+
+If it is a false positive, `./oputil.js fb mark-safe 123` (also listed) puts its SHA-256 on the [allowlist](#the-allowlist) and marks every entry with those bytes clean again.
+
+Until you do either, the entry is [hidden from users](#hidden-infected-entries).
+
+### Hidden infected entries
+An entry a rescan marked `scan_result: infected` stays in the file base until you act on it, but with `hideInfected` (the default) nobody else can find or fetch it in the meantime. For everyone who does not pass `infectedVisibleAcs` it is as though the entry were not there:
+
+| Where | What happens |
+|-------|--------------|
+| Browsing an area, file searches and filters | Not listed |
+| File base new scan | Not listed, and not counted as new |
+| Download queue | Cannot be queued. One queued before the rescan flagged it is taken out of the queue when the user opens the queue manager, and is not sent if they download from anywhere else: the send queue is checked once more just before the transfer starts |
+| Web download links | No link is made. A link made before the rescan flagged the file stops working and answers "not found"; a batch link leaves the file out (and answers "not found" if that leaves nothing) |
+| [REST API](../servers/contentservers/rest-api.md) | Not in area listings; the entry by ID and its download answer `404`, as for an entry that does not exist |
+| File list exports (the user's "download a file list") | Not listed |
+| FREQ (a remote node requesting a file by name) | Not served: not from a FREQ area, and not by a magic name or from a search directory that points at file base storage either |
+| Uploading the same file again | Still refused as a dupe, but the dupes page does not name the hidden entry or its area: it shows the uploaded file's name and "this board" (the menu's `hiddenDupeAreaName`) |
+
+Asked for directly, an entry is never reported as infected: it is simply not found, so nothing tells a caller why. A refused download or link is logged at `info` level.
+
+A list already on a user's screen when the rescan flagged an entry (an area they are browsing, say) can still show it until they leave it, but the entry can no longer be queued, linked or sent from there.
+
+Users who pass `infectedVisibleAcs` (the `sysops` group and user 1, by default) still see and can download infected entries, flagged: the file list's `{infectedIndicator}` format field shows the menu's `infectedIndicator` text (default `INFECTED `) for an infected entry and `notInfectedIndicator` (default empty) for any other, and `{scanResult}` and `{scanSignature}` show the result and what was found. The ACS is checked for the user a link was made for when the link is used, so a sysop's link keeps working.
+
+Not affected:
+
+- Only entries a rescan marked are hidden. A file a scanner rejects on the way in (upload, REST, TIC, `fb scan --virus-scan`) never becomes an entry at all.
+- `oputil` sees every entry, and so does the rescan itself.
+- Dupe checks still see them: uploading the same file again is refused as a dupe (see above), and a TIC import of the same file is a dupe as before.
+- Area file counts and sizes (the area list, the WFC, the `%TF` and `%TB` MCI codes) still include them. They are totals for the whole board, the same for everyone, and say nothing about which file it is.
+- The scheduled `DESCRIPT.ION` export, which lives in the storage directory beside the files themselves.
+- A rescan run with `--dry-run` records nothing, so it hides nothing.
+
+`fb mark-safe` (a false positive) clears the flag and the entry is back at once; `fb rm` removes it for good. Set `hideInfected: false` to show infected entries to everyone, as before.
+
+### What is read, and in what order
+Only files inside their storage directory are read. The storage directory itself may be a symbolic link (to another disk, say), but a path that goes through a link below it, a linked subdirectory or a file that is itself a link, is reported as an error and not read. The file is opened once, without following a link and without blocking (a FIFO is an error, not a hang), it must be a regular file, and its hash is worked out from that open file. A hash lookup scanner therefore sees the hash of the file as it is now, not the one stored in the entry; a file whose hash no longer matches is reported as changed since import. The scanners then read the file by its path, so afterwards the path must still name the same, unchanged file, or the result is not recorded and the file is reported as changed during the scan.
+
+Files are scanned **one at a time**, so a rescan takes at most one of the `maxConcurrent` scanner slots and never holds up uploads or TIC imports. If 5 files in a row could not be checked, the scanner is most likely down, and the run stops there and says so. Entries in the system's internal areas (temporary download batches) are never rescanned, and files that no scanner entry would scan, by its `fileTypes`, are left out (and counted).
+
+The files are taken in order of their last rescan attempt: those no rescan has tried yet first (for these, the scan they had on the way in counts as their last attempt), then the one tried longest ago. Every outcome counts as an attempt, so with `maxFiles` (`--max`) each run moves on to the next files, even past files that could not be checked or are missing, and capped runs work through the whole selection in turn.
+
+Each run logs a summary line (the counts), and the operators in `notifyUserIds` get **one** private message for the run, listing the infected (including those found by earlier runs), unchecked and missing files and any errors, but only if there are any. A run that finds everything clean sends nothing. If a run scanned nothing at all (every file missing or unchecked, say), its summary and the log say so as a warning.
+
+A rescan refuses to start, saying why, if scanning is disabled, if no scanner entry scans the `rescan` source, if an entry it would use names a scanner no mod registered (every file would only be held), or if another rescan is already running in the same process. That check is per process: an `oputil fb virus-scan` run while the BBS task runs is not stopped. Both only record scan results, so the worst that can happen is that some files are scanned twice.
+
+### By hand: oputil
+```bash
+#  every area; report only, record nothing
+./oputil.js fb virus-scan "*" --dry-run
+
+#  one area, files never scanned or last scanned more than 30 days ago,
+#  at most 500 of them
+./oputil.js fb virus-scan retro_dos --older-than 30 --max 500
+```
+
+The criteria are as for `fb rm`: area tags (with simple wildcards; `"*"` is every area), `AREA_TAG@STORAGE_TAG`, file IDs, SHA-256 hashes (or the start of one) and file name wildcards. If a criterion matches an area, it is taken as one. Criteria that between them select nothing are an error; they never fall back to every area. Each file's result is printed as it is checked, with the remove command under each infected one, then a summary. With `--dry-run` nothing is recorded and no notice is sent. oputil exits non-zero if an infected file was found, a file could not be checked, or on any error, much as a virus scanner does. Like `fb scan --virus-scan`, it loads mods' scanners through their `registerFileScanners` export only.
+
+### On a schedule: the event scheduler
+The built-in `rescanFileBase` event is manual-only: it has no schedule, so it runs only when started from the WFC task list. With no args it rescans every file in every area. To give it a schedule or args, redefine it in `config.hjson`; what you set is merged into the built-in entry:
+
+```hjson
+eventScheduler: {
+    events: {
+        rescanFileBase: {
+            //  e.g. once freshclam has updated the signatures
+            schedule: at 5:00 am on Sun
+            args: [
+                {
+                    olderThanDays: 6
+                    maxFiles: 5000
+                }
+            ]
+        }
+    }
+}
+```
+
+`args` is either empty or one object with any of:
+
+| Item | Default | Description |
+|------|---------|-------------|
+| `areas` | every area | An area tag, or a list of them. Simple wildcards (`*`, `?`) are allowed |
+| `olderThanDays` | none | Only files never scanned, or last scanned more than this many days ago. Without it, every file is scanned on every run |
+| `maxFiles` | none | Check at most this many files per run, in the order above; the rest are counted as left for a later run |
+| `dryRun` | `false` | Scan and report only: nothing is recorded and no notice is sent |
+
+Any other key is an error, so a misspelling cannot quietly rescan everything. The run's summary is kept as its output, shown in the WFC task detail. The task fails, so that the WFC flags it, when an infected file is in the file base, a file could not be checked, the run stopped early, or on any error; the notice has the details. Until scanning is set up it fails at once, saying why. A large file base takes a while: `maxFiles` keeps each run short, and the event's `timeout` only marks a run that goes on too long as overdue.
+
+:::note
+A schedule with an `@watch:` trigger file runs the task once every time the BBS starts if the file exists, as well as whenever it changes.
+:::
+
+## Releasing files and false positives
+Scanners get things wrong, and old DOS files (packed executables, trainers, demos) are flagged more than most. A file that was wrongly rejected sits in quarantine, and one a rescan wrongly flagged keeps `scan_result: infected` and is reported on every run. Two tools put that right, both in `oputil` and nowhere else: only someone with local operator access to the system can use them. Nothing a caller does on the BBS, and nothing over the REST API, can release a file or add to the allowlist. Every release, delete and allowlist change is logged at `info` level with the operator's OS user name.
+
+### The allowlist
+The allowlist is a list of SHA-256 hashes you have declared safe, kept in the file database (`file_scan_allowlist`).
+
+- **It matches exact bytes only.** There is no name or pattern matching: change one byte of a file, or put it in a different archive, and it is a different file to the allowlist.
+- **It is global**, with no per-area scope. A listed file is clean for every scan, from every source: telnet/SSH and REST uploads, TIC imports (passthrough echoes included), `fb scan --virus-scan` and rescans.
+- **It is checked before any scanner runs.** A listed file is clean with no scanner run at all; its entry records `scan_result: clean` and `scanner: allowlist`, the log says it was allowlisted (at `info` level), and a rescan records the same, dropping any old `scan_signature`. Scanning must still be enabled, with an entry that would have scanned the file: the allowlist only ever turns a scan into a pass, it never makes a file count as scanned on its own.
+- **The hash is ENiGMA½'s own**, worked out from the file's bytes as it reads them, never one a TIC or an uploader claimed. If a caller hands over a hash that is on the allowlist, the file is hashed once more and must agree.
+- If the allowlist cannot be read (a database problem), files are scanned as usual, and a warning is logged.
+- Each entry keeps who added it (`oputil:` and the OS user), when, your note, and the file's name and signature at the time.
+
+```bash
+#  allowlist a file in the file base by its file ID, or any file by its SHA-256
+./oputil.js fb mark-safe 123 --note "PKLITE'd demo, checked by hand"
+./oputil.js fb mark-safe 0f343b0931126a20f133d67c2b018a3b5d6c4c5e9bd76dc3c4b1a1a5e9a1b7c0
+
+#  what is on it, and taking an entry off again
+./oputil.js fb mark-safe --list
+./oputil.js fb mark-safe --remove 0f343b0931126a20f133d67c2b018a3b5d6c4c5e9bd76dc3c4b1a1a5e9a1b7c0
+```
+
+`mark-safe` also clears a rescan's result: every entry with that SHA-256 that is marked `infected` becomes `scan_result: clean`, `scanner: allowlist`, and loses its `scan_signature`. Given a file ID, it hashes the file as it is on disk now, and refuses if that no longer matches the entry (the file changed since it was imported); give the SHA-256 you mean to allow instead. If the file is missing there is nothing to check, so that is refused too, unless you add `--force` to use the SHA-256 recorded for the entry. Taking a hash off the allowlist changes no entry: the next rescan scans those files again, and reports them if a scanner still flags them.
+
+### Releasing a quarantined file
+```bash
+./oputil.js fb quarantine list
+#  a held file, once the scanner works again: scanned, then released
+./oputil.js fb quarantine release HELD.ZIP
+#  a false positive
+./oputil.js fb quarantine release DEMO.EX_ --allow --note "false positive"
+./oputil.js fb quarantine delete OTHER.ZIP
+```
+
+`quarantine list` shows each quarantined file with its original name, where it came from, the area it was headed for, the scanner and what it found, its SHA-256, size and when it was quarantined. A file without a readable sidecar is listed as "no sidecar", and a sidecar whose file is gone as "file missing".
+
+`quarantine release NAME` (the name the list shows) puts the file into the file base:
+
+1. Its SHA-256 must still be the one the sidecar recorded when it was quarantined; if not, nothing happens.
+2. The sidecar's original name and area came from the uploader or the TIC, so neither is trusted. The name is used only if it is already a plain, safe file name: no directory part, no `..`, no leading dot, none of `< > : " | ? *`, no control characters or invisible format characters (a right-to-left override, zero widths, line separators; this also refuses a legitimate zero width joiner or non-joiner, as some scripts and emoji use: give such a file its name with `--name`), no trailing dot or space, and not a name Windows reserves for a device (`CON`, `NUL`, `COM1.ZIP`, ...). Otherwise give one with `--name NEWNAME`. The area must be a configured, normal file base area with a storage location; a passthrough TIC has none, so give one with `--area TAG` (`--area` also overrides the sidecar's).
+3. **It is scanned first**, where it lies in quarantine, by the scanner entries for the `oputil` source (the allowlist included). If that scan finds something, cannot check it (the scanner is still down), or cannot run at all (scanning is disabled, or no entry takes `oputil`), the file stays in quarantine and oputil says why. A scanner that reads files by path as another user cannot read them there (the quarantine directory is `0700`, its files `0600`) and always "cannot check it": see [File permissions](#file-permissions), and stream the file instead (`clamdscan --fdpass`, or a mod scanner that streams it). So a held file is released once the scanner works again, and a flagged one only with `--allow`.
+4. The file gets its original name back (`DEMO.EX_` becomes `DEMO.EXE`) and is moved into the area's storage directory, never replacing a file there: a name that is taken becomes `DEMO(1).EXE`. It gets ordinary file permissions back (by your umask, still without execute permission).
+5. It is imported with what the sidecar recorded: the uploader, a description the uploader typed, hash tags, and a TIC's `Desc`, `Ldesc`, `Origin` and `File`, and with the result of the scan in step 3 (`scan_result`, `scanner`, `scanned_at`). The entry also records `quarantine_released_at` and `quarantine_released_by`; the latter is the operator's OS user name, which `{quarantineReleasedBy}` shows in file list formats.
+6. The sidecar is removed.
+
+If anything fails after the move, the file goes back into quarantine under its quarantine name, `0600` again, with its sidecar. (Should that name have been taken in the meantime, it gets another and the sidecar is rewritten to match; should even the move back fail, the error says where the file is: in the storage directory with no entry.)
+
+With `--allow` (and an optional `--note`), you are saying it is a false positive: its SHA-256 goes on the allowlist, the scan in step 3 passes it on that, and the entry records `scan_result: clean`, `scanner: allowlist`. If the release then fails, a hash this release added is taken off the allowlist again, and oputil says so.
+
+With `--no-scan`, step 3 is skipped and the entry gets no scan result: the file goes into the file base unscanned, on your responsibility (a later rescan scans it like any other file). It is for when nothing can scan the file and you have checked it some other way.
+
+A file the file base already has (the same SHA-256) is refused: delete the quarantined copy, and `mark-safe` the entry if it was a false positive. A file with no sidecar, or with more than one claiming it, is refused too; there is nothing to check it against. Move such a file into a storage directory yourself and import it with `fb scan` if you are sure of it.
+
+`quarantine delete NAME` deletes the file and its sidecar (or whichever of the two is left, or every sidecar that claims it when more than one does), after asking; `--yes` or `--no-prompt` skips the question. Anything already gone is reported as such, not as deleted.
+
+`quarantine list` and `mark-safe --list` show text that came from outside (names, a TIC's origin, scanner output) with control and invisible format characters replaced by `?`, and cut at 128 characters.
+
+## Writing a scanner
+A scanner is an object with a `scan()` function, registered by name. A mod provides it through a `registerFileScanners` export:
+
+```javascript
+// mods/my_scanner/my_scanner.js
+exports.moduleInfo = {
+    name: 'My Scanner',
+    desc: 'Checks files against a list of known bad hashes',
+    author: 'You',
+};
+
+const knownBad = new Set([
+    '275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f', // EICAR
+]);
+
+exports.registerFileScanners = (registry, cb) => {
+    registry.registerScanner('bad_hashes', {
+        //  optional startup health check; |entries| are the config entries
+        //  that name this scanner
+        init(entries, cb) {
+            if (0 === knownBad.size) {
+                return cb(null, { warnings: ['the hash list is empty'] });
+            }
+            return cb(null);
+        },
+
+        scan(filePath, ctx, cb) {
+            if (knownBad.has(ctx.sha256)) {
+                return cb(null, { result: 'infected', signature: 'Known bad hash' });
+            }
+            //  not "clean": this scanner only knows bad files
+            return cb(null, { result: 'skipped' });
+        },
+    });
+    return cb(null);
+};
+```
+
+`registerFileScanners(registry, cb)` is called once, both by the BBS at startup (early, before message networks start and before any mod's `moduleInitialize`) and by `oputil fb scan --virus-scan`, which calls nothing else of the mod. Both load the mods one at a time in the same, sorted order, so if two mods register the same name, the same one wins in both (the one loaded last), and the log says so. `registry` has `registerScanner(name, scanner)` and `ScanResults`. `cb` is optional: a function declared with only `registry` is done when it returns. A mod that throws, calls back an error, or does not call back within 30 seconds is logged and skipped.
+
+Because oputil requires the mod file just for this, keep the file free of side effects at load time: start servers, timers and listeners in `moduleInitialize`, not at the top of the file. (`oputil fb scan --virus-scan` exits when it is done regardless, but a server started at load time still starts in oputil, and at BBS startup it starts before the rest of the system is ready.)
+
+Calling `FileScanner.registerScanner()` (from `core/file_scanner.js`) in `moduleInitialize` still works at BBS startup, but such a scanner is not available to oputil. Prefer the export.
+
+Then name it in config:
+
+```hjson
+scanners: [
+    {
+        scanner: bad_hashes
+        onError: accept
+    }
+]
+```
+
+`scan(filePath, ctx, cb)` calls back `(err, { result, signature?, detail? })`:
+
+| `result` | Meaning |
+|----------|---------|
+| `clean` | Nothing found |
+| `infected` | Reject the file. `signature` names what was found |
+| `skipped` | No opinion: an unknown hash, a file type or size this scanner does not handle |
+| `error` | The scanner failed; `detail` says why. The entry's `onError` decides |
+
+An `err`, a throw, an unknown `result` or no answer within the entry's `timeout` all count as `error`. A file that only gets `skipped` results is accepted.
+
+`ctx` has:
+
+| Item | Description |
+|------|-------------|
+| `source` | `upload`, `web`, `tic`, `oputil` or `rescan` |
+| `fileName` | The file's real name, which may differ from the base name of `filePath` |
+| `areaTag` | The destination area, if there is one |
+| `user` | The uploading user, for `upload` and `web` |
+| `sha256`, `byteSize` | Already worked out; no need to read the file for them. A scanner that does read the file should hash what it reads and answer `error` if it does not match `sha256`; see [Hashing and scanning read the file separately](#hashing-and-scanning-read-the-file-separately) |
+| `ticInfo` | For `tic`: `area`, `origin`, `from`, `ticFileName`, `passthrough` |
+| `options` | The scanner's config entry |
+| `timeout`, `abortSignal` | The entry's timeout, and an `AbortSignal` that fires when it runs out. A scanner holding a socket or a child process should stop when it fires |
+
+A scanner returns a verdict only. It must not change, move or delete the file; ENiGMA½ does that.
+
+`init(entries, cb)` is optional. It runs once the scanner is registered, only when scanning is enabled, and is given the config entries that name the scanner. Use it to check what the scanner depends on (is the daemon answering, does every entry have an API key) and say what is wrong:
+
+* `cb(null)`: all is well.
+* `cb(null, { warnings: [ '...' ] })`: problems found. Each warning is logged at warn level ("File scanner reported a problem"). `warnings` may be a single string, and `cb(null, '...')` works too.
+* `cb(err)`: `init()` itself failed. This is logged at error level ("File scanner failed to initialize"). A throw counts the same.
+
+None of these stops startup or unregisters the scanner, and nothing waits for `init()`: `scan()` must work without it, and should answer `error` while what it needs is missing, so the entry's `onError` decides. A scanner that calls back an error for what is really a warning still works; the warning is just logged as an error.
+
+Each scanner is logged at info level when it is registered ("File scanner registered", with the mod's path). Registering a name a second time replaces the first scanner, with a warning in the log, so you can replace the built-in `command` scanner if you need to.
+
+## See Also
+* [Access & Uploads](acs.md)
+* [TIC Support](tic-support.md)
+* [oputil](../admin/oputil.md)

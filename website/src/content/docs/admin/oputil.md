@@ -171,6 +171,25 @@ Actions:
   May contain optional GLOB as last parameter.
   Example: ./oputil.js fb scan d0pew4r3z *.zip
 
+  virus-scan CRITERIA [...]    Rescan existing entries with the file scanners
+                               (report only)
+
+  CRITERIA may be any of the following:
+    - Area tag, with simple wildcards ("*" is every area)
+    - Area tag with @storageTag suffix
+    - File ID, SHA-256 (or the start of one), or filename including
+      '*' wildcards
+  An area match wins over a filename wildcard.
+
+  quarantine list              List what is in the file scanning quarantine
+  quarantine release NAME      Import a quarantined file into a file base area
+  quarantine delete NAME       Delete a quarantined file and its sidecar
+
+  mark-safe FILE_ID|SHA256     Put a file's SHA-256 on the file scanning
+                               allowlist and clear "infected" from its entries
+  mark-safe --list             List the allowlist
+  mark-safe --remove SHA256    Take a SHA-256 off the allowlist
+
   info CRITERIA                Display information about areas and/or files
 
   mv SRC [SRC...] DST          Move matching entry(s)
@@ -209,6 +228,64 @@ scan arguments:
 
   --update                     Attempt to update information for existing entries
   --full                       Perform a full scan (default is quick)
+  --virus-scan                 Run file (virus) scanning on each new file first
+
+  --virus-scan needs fileBase.scanning enabled and uses the scanners whose
+  "sources" include "oputil", or that list no sources. Scanners from mods
+  are loaded through their registerFileScanners() export (only that; mods
+  are not otherwise initialized). A file that fails is reported, not
+  imported, and quarantined or deleted per fileBase.scanning.failAction; the
+  operators get one inbox notice for the run. Without the flag nothing is
+  virus scanned.
+
+virus-scan arguments:
+  --older-than DAYS            Only entries never scanned, or last scanned more
+                               than DAYS days ago
+  --max N                      Check at most N entries (never tried by a rescan
+                               first, then the oldest try); the rest are left
+                               for a later run
+  --dry-run                    Scan and report only; record nothing
+
+  REPORT ONLY: nothing is moved, quarantined, deleted or removed. Needs
+  fileBase.scanning enabled and uses the entries whose "sources" include
+  "rescan", or that list no sources; files no entry's fileTypes covers are
+  left out. One file at a time. Each entry's scan result is recorded
+  (scan_result, scanned_at, scanner, scan_signature). An infected file is
+  listed with the command that removes it and its entry:
+    ./oputil.js fb rm FILE_ID --phys-file
+  and is reported again on every run until removed. The operators get one
+  inbox notice for the run if anything needs them. Exits non-zero if an
+  infected file was found, a file could not be checked, or on any error.
+
+quarantine release arguments:
+  --area TAG                   Area to release into; default: the area the file
+                               was headed for
+  --name NAME                  Name to give it; default: its original name
+  --allow                      Also put its SHA-256 on the allowlist
+  --note TEXT                  Note for the allowlist entry (needs --allow)
+
+  NAME is the quarantined file's name, as "quarantine list" shows it. Its
+  SHA-256 must still be the one its sidecar recorded. The original name and
+  area came from the uploader or TIC: unless they are a plain, safe file name
+  and a configured, normal area, it is refused and --name or --area must be
+  given. It is moved into the area's storage directory (never replacing a
+  file; a taken name becomes NAME(1).EXT) and imported WITHOUT a virus scan,
+  keeping the uploader, description and TIC details the sidecar recorded,
+  and the sidecar is removed. A file the file base already has is refused.
+  Without --allow a later scan or rescan may flag it again. A file with no
+  sidecar is refused: move it and "fb scan" it by hand.
+
+quarantine delete arguments:
+  --yes, --no-prompt           Delete without asking
+
+mark-safe arguments:
+  --note TEXT                  Why it is safe; kept with the entry
+
+  The allowlist is global and matches exact bytes (SHA-256) only. A file on
+  it is clean for every scan, from every source (uploads, REST, TIC, oputil,
+  rescans), without any scanner running. A FILE_ID's file is hashed as it is
+  on disk now and must still match its entry. Entries with that SHA-256 that
+  are marked infected become scan_result=clean, scanner=allowlist.
 
 info arguments:
   --show-desc                  Display short description, if any
@@ -253,6 +330,51 @@ $ ./oputil.js fb scan --update --quick --tags artscene,textmode artscene`
 Scan "oldschoolbbs" area using the description file at "/path/to/DESCRIPT.ION":
 ```
 $ ./oputil.js fb scan --desc-file /path/to/DESCRIPT.ION oldschoolbbs
+```
+
+Scan the "uploads" area for viruses before importing anything new; see [File Scanning](../filebase/file-scanning.md#oputil):
+```
+$ ./oputil.js fb scan --virus-scan uploads
+```
+
+#### Rescan for Viruses
+The `virus-scan` action runs files already in the file base through the configured [file scanners](../filebase/file-scanning.md) again and reports what it finds. It never moves or removes anything: each infected file is listed with the command that removes it (`./oputil.js fb rm FILE_ID --phys-file`). See [Rescanning the file base](../filebase/file-scanning.md#rescanning-the-file-base).
+
+##### Examples
+Report what a rescan of every area would find, recording nothing:
+```bash
+$ ./oputil.js fb virus-scan "*" --dry-run
+```
+
+Rescan the "retro_dos" area's files that were never scanned or were last scanned more than 30 days ago, at most 500 of them:
+```bash
+$ ./oputil.js fb virus-scan --older-than 30 --max 500 retro_dos
+```
+
+#### Quarantine and False Positives
+`quarantine list`, `quarantine release` and `quarantine delete` manage what [file scanning](../filebase/file-scanning.md) put in quarantine, and `mark-safe` manages the allowlist of SHA-256 hashes that are clean whatever a scanner says. See [Releasing files and false positives](../filebase/file-scanning.md#releasing-files-and-false-positives).
+
+##### Examples
+See what is in quarantine:
+```bash
+$ ./oputil.js fb quarantine list
+```
+
+Release a false positive into the area it was uploaded to, and allowlist those bytes so it is never flagged again:
+```bash
+$ ./oputil.js fb quarantine release DEMO.EX_ --allow --note "PKLITE'd demo, checked by hand"
+```
+
+Release a TIC file from a passthrough echo (it has no local area) under another name:
+```bash
+$ ./oputil.js fb quarantine release COOLAPP.ZIP --area retro_dos --name coolapp.zip
+```
+
+Clear an "infected" result a rescan recorded for file ID 123 (and every other entry with the same bytes), list the allowlist, and take an entry off it again:
+```bash
+$ ./oputil.js fb mark-safe 123 --note "false positive"
+$ ./oputil.js fb mark-safe --list
+$ ./oputil.js fb mark-safe --remove 0f343b0931126a20f133d67c2b018a3b5d6c4c5e9bd76dc3c4b1a1a5e9a1b7c0
 ```
 
 #### Retrieve Information
@@ -412,11 +534,17 @@ offline. `bso status` is how you find them:
 oputil.js bso status
 ```
 ```
-Node                    Queued  Missing  Oldest
------------------------------------------------
+Node                    Queued  Missing  Oldest  Poll
+-----------------------------------------------------
 1:218/701                    2        1     36s
 1:218/702                    1        1       -
+1:218/703                    0               2h   yes
 ```
+
+`Poll` marks a node with a poll request: a zero-length flow file asking for it to be called even
+though nothing is queued. It is not counted as queued, and the mailer removes it after the next
+successful session with that node (see [BinkP: Poll requests](../messageareas/binkp.md#poll-requests)).
+`bso list` shows the file as `POLL`.
 
 Note that a node whose queued entries have *all* gone missing still appears here, even
 though the mailer correctly stops polling it — that node is exactly the one you need to

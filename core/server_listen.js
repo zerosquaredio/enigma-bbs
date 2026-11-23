@@ -4,6 +4,7 @@
 //  ENiGMA½
 const { EnigError, ErrorCodes } = require('./enig_error.js');
 const logger = require('./logger.js');
+const PipeCodes = require('./pipe_codes.js');
 
 exports.listenServer = listenServer;
 exports.makeBindError = makeBindError;
@@ -11,6 +12,7 @@ exports.reportListening = reportListening;
 exports.reportBindFailure = reportBindFailure;
 exports.formatBindTarget = formatBindTarget;
 exports.consoleStyle = consoleStyle;
+exports.closeServer = closeServer;
 
 const ANSI_RESET = '\u001b[0m';
 
@@ -83,48 +85,29 @@ function makeBindError(err, { name, port, address }) {
 //  pipe, or a systemd journal gets clean text.
 //
 //  Input is pipe/Renegade coded so it matches the rest of the codebase rather
-//  than introducing a second colour vocabulary.
+//  than introducing a second colour vocabulary: |## colour codes only (the
+//  'color' dialect), so a '|' that starts no colour code is text.
 //
+//  Deliberately pipe_codes.js and *not* color_codes.js. color_codes.js
+//  reaches stat_log.js through predefined_mci -> message_area, and this runs
+//  before the databases are initialized -- stat_log captures dbs.system at
+//  load time, so pulling it in this early leaves it permanently undefined
+//  and StatLog.init() then throws. (color_codes.js also reaches back here
+//  via activitypub -> web.js, so a load-time require would be circular
+//  besides.) pipe_codes.js requires only ansi_term.js and display_width.js
+//  and is safe to load at any point of startup.
 //
-//  Renegade pipe colour index -> ANSI foreground digit. |00-|07 are normal
-//  intensity, |08-|15 the bright pair.
-//
-const PIPE_COLOR_TO_ANSI = [0, 4, 2, 6, 1, 5, 3, 7];
-const PIPE_CODE_RE = /\|([0-9]{2})/g;
-
-//
-//  Deliberately *not* color_codes.js. That module reaches stat_log.js through
-//  predefined_mci -> message_area, and this runs before the databases are
-//  initialized -- stat_log captures dbs.system at load time, so pulling it in
-//  this early leaves it permanently undefined and StatLog.init() then throws.
-//  (color_codes.js also reaches back here via activitypub -> web.js, so a
-//  load-time require would be circular besides.) Four colours do not justify
-//  either hazard.
-//
-function pipeToAnsi(s) {
-    return s.replace(PIPE_CODE_RE, (_m, digits) => {
-        const idx = parseInt(digits, 10);
-        if (idx > 15) {
-            return ''; //  background/unsupported: drop rather than mis-render
-        }
-        const intensity = idx > 7 ? 1 : 22;
-        return `\u001b[${intensity};3${PIPE_COLOR_TO_ANSI[idx % 8]}m`;
-    });
-}
-
-function stripPipeCodes(s) {
-    return s.replace(PIPE_CODE_RE, '');
-}
+const COLOR_ONLY = { dialect: 'color' };
 
 function consoleStyle(s, stream) {
     stream = stream || process.stdout;
 
     const useColor = !('NO_COLOR' in process.env) && true === stream.isTTY;
     if (!useColor) {
-        return stripPipeCodes(s);
+        return PipeCodes.strip(s, COLOR_ONLY);
     }
 
-    return `${pipeToAnsi(s)}${ANSI_RESET}`;
+    return `${PipeCodes.render(s, COLOR_ONLY)}${ANSI_RESET}`;
 }
 
 function nameColumn(name) {
@@ -206,5 +189,43 @@ function listenServer(server, options, cb) {
         //  Node throws synchronously for a malformed address/port rather than
         //  emitting 'error'.
         return finish(makeBindError(e, options));
+    }
+}
+
+//
+//  close() stops a server accepting connections at once, but its callback
+//  only comes once every connection already open has ended, which may be
+//  never as far as this is concerned. So a server that is no longer
+//  listening when close() returns counts as stopped; the callback is for
+//  anything else.
+//
+//  Shared by core/listening_server.js and the telnet server, which closes its
+//  own listeners.
+//
+function closeServer(server, log, name, cb) {
+    let called = false;
+    const done = () => {
+        if (!called) {
+            called = true;
+            return cb();
+        }
+    };
+
+    try {
+        server.close(() => done());
+    } catch (err) {
+        log.warn({ err, server: name }, 'Failed to stop listening; continuing');
+        return done();
+    }
+
+    //  net, http, https and tls servers have .listening; an ssh2 Server does
+    //  not, but its address() is null once it has stopped
+    if (
+        false === server.listening ||
+        (undefined === server.listening &&
+            'function' === typeof server.address &&
+            null === server.address())
+    ) {
+        return done();
     }
 }

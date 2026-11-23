@@ -23,6 +23,7 @@ const Errors = require('../enig_error.js').Errors;
 const ErrorCodes = require('../enig_error.js').ErrorCodes;
 const FileEntry = require('../file_entry.js');
 const scanFile = require('../file_base_area.js').scanFile;
+const FileScanner = require('../file_scanner.js');
 const getFileAreaByTag = require('../file_base_area.js').getFileAreaByTag;
 const getDescFromFileName = require('../file_base_area.js').getDescFromFileName;
 const { safeCopyFile } = require('../file_util.js');
@@ -131,6 +132,13 @@ function FTNMessageScanTossModule() {
     //  outgoing packet names claimed by an export in progress; see
     //  allocateEchoMailPacketPath()
     this.claimedPacketStems = new Set();
+    //  outgoing bundle names (lowercased basenames) claimed by an export in
+    //  progress; see getOutgoingBundleFileName()
+    this.claimedBundleNames = new Set();
+
+    //  how often a running export is reported as still running; see
+    //  performExport() (tests shorten it)
+    this.exportWatchdogMs = EXPORT_WATCHDOG_MS;
 
     const config = Config();
     if (_.has(config, 'scannerTossers.ftn_bso')) {
@@ -536,18 +544,54 @@ function FTNMessageScanTossModule() {
         }
 
         //
-        //  We need to now find the first entry that does not exist starting
-        //  with dd0 to ddz
+        //  We need to now find the first entry that is free, starting with
+        //  dd0 to ddz. Free means: not claimed by another export in this
+        //  process, not in |basePath| in either case, and not left in the
+        //  export temp area, where the bundle is built under this same name.
+        //
+        //  Exports run in parallel (one per area in the export scan), so two
+        //  can look for a name for the same destination before either bundle
+        //  exists. The claim is what keeps them apart: it is checked and taken
+        //  in one synchronous step, before the stats, so no other export here
+        //  can take the name while we look. Claims are by basename alone
+        //  because the temp area is shared by every destination, and two
+        //  destinations can have the same basename. The caller releases the
+        //  claim with releaseBundleName() once the bundle is in outbound or
+        //  has failed to get there.
         //
         const EXT_SUFFIXES = '0123456789abcdefghijklmnopqrstuvwxyz'.split('');
         let fileName = `${basename}.${moment().format('dd').toLowerCase()}`;
+        const absent = (p, next) =>
+            fs.stat(p, err => next(Boolean(err && 'ENOENT' === err.code)));
         async.detectSeries(
             EXT_SUFFIXES,
             (suffix, callback) => {
                 const checkFileName = fileName + suffix;
-                fs.stat(paths.join(basePath, checkFileName), err => {
-                    callback(null, err && 'ENOENT' === err.code ? true : false);
-                });
+                const key = checkFileName.toLowerCase();
+                if (self.claimedBundleNames.has(key)) {
+                    return callback(null, false);
+                }
+                //  Claimed before looking, and given back if the name turns
+                //  out to be taken: while we hold it, no other export here
+                //  can take it and put a bundle in outbound under it.
+                self.claimedBundleNames.add(key);
+                const candidates = [
+                    paths.join(basePath, checkFileName),
+                    paths.join(basePath, checkFileName.toUpperCase()),
+                ];
+                if (self.exportTempDir) {
+                    candidates.push(paths.join(self.exportTempDir, checkFileName));
+                }
+                async.everySeries(
+                    candidates,
+                    (p, nextCandidate) => absent(p, free => nextCandidate(null, free)),
+                    (err, allAbsent) => {
+                        if (!allAbsent) {
+                            self.claimedBundleNames.delete(key);
+                        }
+                        return callback(null, allAbsent);
+                    }
+                );
             },
             (err, finalSuffix) => {
                 if (finalSuffix) {
@@ -557,6 +601,11 @@ function FTNMessageScanTossModule() {
                 return cb(new Error('Could not acquire a bundle filename!'));
             }
         );
+    };
+
+    //  Gives back a name getOutgoingBundleFileName() claimed.
+    this.releaseBundleName = function (bundlePath) {
+        self.claimedBundleNames.delete(paths.basename(bundlePath).toLowerCase());
     };
 
     this.prepareMessage = function (message, options) {
@@ -1148,9 +1197,8 @@ function FTNMessageScanTossModule() {
     //  completes.
     //
     //  A per-destination temp subdirectory would also keep the temp names
-    //  apart, but not the outbound ones, and an archiver such as Info-ZIP
-    //  stores the directory part of each path it is given -- so it would
-    //  change what goes into a bundle.
+    //  apart, but not the outbound ones; and bundles are built from the temp
+    //  area itself, with bare packet names (see deliverEchoMailPackets()).
     //
     this.allocateEchoMailPacketPath = function (dest, messageId, claimed) {
         const proposed = self.getOutgoingPacketFileName(
@@ -1273,9 +1321,11 @@ function FTNMessageScanTossModule() {
                     );
                 },
                 function deliver(callback) {
-                    //  One destination at a time: two of them can want the same
-                    //  bundle name (getOutgoingBundleFileName looks at what is
-                    //  already in outbound), and they share the temp area.
+                    //  One destination at a time, so that one export call runs
+                    //  one archiver at a time. Bundle names do not depend on
+                    //  it: getOutgoingBundleFileName() claims each one, which
+                    //  also keeps apart export calls that run at the same time
+                    //  (the export scan runs one per area).
                     //
                     //  |onDestinationDone| runs as each one is finished with,
                     //  delivered or failed, before the next one starts: relay
@@ -1647,6 +1697,11 @@ function FTNMessageScanTossModule() {
             return cb(null);
         }
 
+        //  Set once a bundle name is claimed: the claim is released, and the
+        //  temp bundle removed if it did not reach outbound, however this ends.
+        let claimedBundlePath = null;
+        let tempBundlePath = null;
+
         async.waterfall(
             [
                 function createArcMailBundle(callback) {
@@ -1667,20 +1722,49 @@ function FTNMessageScanTossModule() {
                                     return callback(err);
                                 }
 
-                                //  adjust back to temp path
-                                const tempBundlePath = paths.join(
+                                claimedBundlePath = bundlePath;
+
+                                //  adjust back to temp path (absolute: the
+                                //  archiver runs from the temp area)
+                                tempBundlePath = paths.resolve(
                                     self.exportTempDir,
                                     paths.basename(bundlePath)
                                 );
 
-                                self.archUtil.compressTo(
-                                    exportOpts.nodeConfig.archiveType,
-                                    tempBundlePath,
-                                    exportedFileNames,
-                                    err => {
-                                        callback(err, [tempBundlePath]);
+                                //  Archivers add to an archive that is already
+                                //  there, so start from nothing: a file at this
+                                //  path can only be left over from this process.
+                                fs.rm(tempBundlePath, { force: true }, err => {
+                                    if (err) {
+                                        return callback(err);
                                     }
-                                );
+                                    //  A throw here (an archiver entry that
+                                    //  cannot be used, say) would otherwise
+                                    //  leave this export, and its claim on
+                                    //  the name, unfinished for good.
+                                    //
+                                    //  Packets are named relative to the
+                                    //  temp area they are in, and the
+                                    //  archiver run from there: most store
+                                    //  the path of each file they are
+                                    //  given, and a bundle must hold bare
+                                    //  packet names. (Blue Wave and QWK
+                                    //  packets are built the same way.)
+                                    //
+                                    try {
+                                        self.archUtil.compressTo(
+                                            exportOpts.nodeConfig.archiveType,
+                                            tempBundlePath,
+                                            exportedFileNames.map(f => paths.basename(f)),
+                                            self.exportTempDir,
+                                            err => {
+                                                callback(err, [tempBundlePath]);
+                                            }
+                                        );
+                                    } catch (e) {
+                                        return callback(e);
+                                    }
+                                });
                             }
                         );
                     } else {
@@ -1814,7 +1898,47 @@ function FTNMessageScanTossModule() {
                     );
                 },
             ],
-            err => cb(err || null)
+            err => {
+                if (!claimedBundlePath) {
+                    return cb(err || null);
+                }
+
+                //  Removed before the claim is released, so that no other
+                //  export can be building a bundle at this path yet. After a
+                //  successful move there is nothing left to remove.
+                const release = () => {
+                    self.releaseBundleName(claimedBundlePath);
+                    return cb(err || null);
+                };
+                if (!err) {
+                    //  The bundle is in outbound and referenced, so the
+                    //  packets in it are not needed here any more. (After a
+                    //  failure the caller discards them.)
+                    return async.each(
+                        packetFiles,
+                        (file, nextFile) =>
+                            fs.rm(file, { force: true }, rmErr => {
+                                if (rmErr) {
+                                    Log.warn(
+                                        { path: file, error: rmErr.message },
+                                        'Could not remove a bundled FTN packet'
+                                    );
+                                }
+                                return nextFile();
+                            }),
+                        () => release()
+                    );
+                }
+                fs.rm(tempBundlePath, { force: true }, rmErr => {
+                    if (rmErr) {
+                        Log.warn(
+                            { path: tempBundlePath, error: rmErr.message },
+                            'Could not remove an undelivered FTN bundle'
+                        );
+                    }
+                    return release();
+                });
+            }
         );
     };
 
@@ -3597,6 +3721,70 @@ function FTNMessageScanTossModule() {
         ];
     };
 
+    //
+    //  What file scanning (#291) is told about a TIC payload: the name it will
+    //  be stored or relayed under, and where it came from, for the quarantine
+    //  sidecar and the operator notice.
+    //
+    this.ticFileScanContext = function (ticFileInfo, localInfo) {
+        return {
+            fileName:
+                ticFileInfo.longFileName ||
+                (ticFileInfo.filePath && paths.basename(ticFileInfo.filePath)),
+            //  a passthrough echo has no local area
+            areaTag: localInfo.passthrough ? undefined : localInfo.areaTag,
+            ticInfo: {
+                area: localInfo.externalAreaTag,
+                origin: ticFileInfo.getAsString('Origin'),
+                from: ticFileInfo.getAsString('From'),
+                ticFileName: paths.basename(ticFileInfo.path),
+                passthrough: !!localInfo.passthrough,
+                //  for the sidecar, so that a release loses nothing
+                shortFileName: ticFileInfo.getAsString('File'),
+                desc: ticFileInfo.getAsString('Desc'),
+                ldesc: ticFileInfo.getAsString('Ldesc', '\n'),
+            },
+        };
+    };
+
+    //
+    //  Quarantine or delete a payload file scanning rejected, and hang what
+    //  happened on |rejectedErr| for the pass's operator notice; see
+    //  processTicFilesInDirectory(). Never fails; calls back (null, disposed).
+    //
+    //  An infected payload that cannot be quarantined is deleted instead (see
+    //  applyFailAction()). One that could not be moved at all is unlinked
+    //  with its .tic by the reject path -- and, if it was only held and so
+    //  may be clean, archived to |reject| first.
+    //
+    this.disposeRejectedTicPayload = function (ticFileInfo, rejectedErr, cb) {
+        FileScanner.applyFailAction(
+            ticFileInfo.filePath,
+            rejectedErr.verdict,
+            rejectedErr.scanContext,
+            (err, disposition) => {
+                if (err) {
+                    Log.error(
+                        {
+                            error: err.message,
+                            file: ticFileInfo.filePath,
+                            verdict: rejectedErr.verdict.result,
+                        },
+                        'Failed to quarantine or delete rejected TIC payload'
+                    );
+                    disposition = { error: err.message, path: ticFileInfo.filePath };
+                }
+
+                rejectedErr.scanRejection = {
+                    ctx: rejectedErr.scanContext,
+                    verdict: rejectedErr.verdict,
+                    disposition,
+                };
+                return cb(null, !err);
+            }
+        );
+    };
+
     this.processSingleTicFile = function (ticFileInfo, inboundType, cb) {
         Log.debug(
             { tic: ticFileInfo.path, file: ticFileInfo.getAsString('File') },
@@ -3798,6 +3986,20 @@ function FTNMessageScanTossModule() {
                 },
                 function scan(localInfo, callback) {
                     //
+                    //  File scanning (#291) sees every TIC payload, stored or
+                    //  passed through. A rejection stops the import here,
+                    //  before anything is stored or forwarded; what happens
+                    //  to the payload is up to processTicFilesInDirectory():
+                    //  an infected one is quarantined or deleted at once, a
+                    //  held one (the scanner failed) is held and tried again.
+                    //
+                    const fileScanCtx = self.ticFileScanContext(ticFileInfo, localInfo);
+                    const scanned = (err, fileEntry) => {
+                        localInfo.fileEntry = fileEntry;
+                        return callback(err, localInfo);
+                    };
+
+                    //
                     //  Nothing to scan into. The scanner's whole output is a
                     //  FileEntry -- hashes, archive type, FILE_ID.DIZ, release
                     //  year -- and a transit file gets no database row, so all
@@ -3805,12 +4007,28 @@ function FTNMessageScanTossModule() {
                     //  computed the CRC-32 (or SHA-256) we need for the
                     //  outgoing TIC, from the bytes we actually received.
                     //
+                    //  File scanning cannot ride along inside scanFile() for
+                    //  the same reason, so it is called directly: without it
+                    //  an infected file would be relayed to every downlink.
+                    //
                     if (localInfo.passthrough) {
-                        return callback(null, localInfo);
+                        return FileScanner.scanFile(
+                            ticFileInfo.filePath,
+                            Object.assign(
+                                {
+                                    source: FileScanner.ScanSources.Tic,
+                                    sha256: localInfo.sha256, //  *may* be known
+                                },
+                                fileScanCtx
+                            ),
+                            err => scanned(err)
+                        );
                     }
 
                     const scanOpts = {
                         sha256: localInfo.sha256, //  *may* have already been calculated
+                        scanSource: FileScanner.ScanSources.Tic,
+                        scanContext: fileScanCtx,
                         meta: {
                             //  some TIC-related metadata we always want
                             short_file_name: ticFileInfo
@@ -3855,8 +4073,7 @@ function FTNMessageScanTossModule() {
                             Log.trace({ reason: err.message }, 'Scanning failed');
                         }
 
-                        localInfo.fileEntry = fileEntry;
-                        return callback(err, localInfo);
+                        return scanned(err, fileEntry);
                     });
                 },
                 function store(localInfo, callback) {
@@ -5116,21 +5333,29 @@ function FTNMessageScanTossModule() {
         //
         //  Select all messages with a |message_id| > |lastScanId|.
         //  Additionally exclude messages with the System state_flags0 which will be present for
-        //  imported or already exported messages
+        //  imported or already exported messages. A new StateFlags0 bit needs a
+        //  decision here: does it, on its own, keep a message from the echo?
         //
-        //  NOTE: If StateFlags0 starts to use additional bits, we'll likely need to check them here!
+        //  The one flag that does not exclude a message is ActivityPubExported
+        //  on its own: a local post in an area that is both federated and an
+        //  FTN echo, which the ActivityPub tosser delivered before this scan
+        //  came round. It still has to reach the echo (#1032). Exported, which
+        //  this exporter writes with the MSGID, keeps it from going twice.
         //
-        //  Other tossers write state_flags0 too (ActivityPub marks a post it
-        //  exported, email a failure), so this also passes over a message one
-        //  of them got to first. That is long-standing behaviour and is kept
-        //  as is; see test/ftn_export_retry.test.js.
+        //  Other tossers' flags still exclude a message (email's failure, a
+        //  message ActivityPub flagged Exported before it had a bit of its
+        //  own). That is long-standing behaviour and is kept as is; see
+        //  test/ftn_export_retry.test.js.
         //
         const getNewUuidsSql = `SELECT message_id, message_uuid
             FROM message m
             WHERE area_tag = ? AND message_id > ? AND
-                (SELECT COUNT(message_id)
-                FROM message_meta
-                WHERE message_id = m.message_id AND meta_category = 'System' AND meta_name = 'state_flags0') = 0
+                NOT EXISTS (
+                    SELECT 1 FROM message_meta
+                    WHERE message_id = m.message_id AND meta_category = 'System'
+                      AND meta_name = 'state_flags0'
+                      AND CAST(meta_value AS INTEGER) <> ${Message.StateFlags0.ActivityPubExported}
+                )
             ORDER BY message_id;`;
 
         //  we shouldn't, but be sure we don't try to pick up private mail here
@@ -5429,10 +5654,11 @@ function FTNMessageScanTossModule() {
     //  EchoMail we imported, offered on to the area's other uplinks.
     //
     //  performEchoMailExport() cannot do this: it excludes any message carrying
-    //  a System/state_flags0 row, and import always writes one. So a second
-    //  uplink on an area -- a downstream point, or a sub-hub -- has until now
-    //  only ever received messages composed by a user at a terminal on this
-    //  system, never the echomail that flowed in from the area's own source.
+    //  a System/state_flags0 row other than ActivityPubExported alone (#1032),
+    //  and import always writes one, with Imported. So a second uplink on an
+    //  area -- a downstream point, or a sub-hub -- has until now only ever
+    //  received messages composed by a user at a terminal on this system,
+    //  never the echomail that flowed in from the area's own source.
     //
     //  Opt-in per area via `relay: true`, because relaying is outwardly visible
     //  on the network: a board that configured a second uplink for some other
@@ -5950,6 +6176,10 @@ require('util').inherits(FTNMessageScanTossModule, MessageScanTossModule);
 //
 const TIC_HOLD_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
+//  Backoff between attempts to scan a held TIC payload; see noteTicScanHeld()
+const TIC_SCAN_RETRY_MIN_MS = 5 * 60 * 1000;
+const TIC_SCAN_RETRY_MAX_MS = 60 * 60 * 1000;
+
 //
 //  Whether TIC files arriving in |inboundType| are processed at all.
 //
@@ -6015,13 +6245,25 @@ FTNMessageScanTossModule.prototype.getTicClaimedNames = function (importDir, fil
 FTNMessageScanTossModule.prototype.maybeHoldTicFile = function (ticFileInfo, err, cb) {
     const self = this;
 
+    //  file scanning could not check the payload (#291): a broken scanner the
+    //  sysop needs to hear about, unlike a payload that is merely late
+    const scanHeld = TicFileInfo.isScanHeldError(err);
+    const why = scanHeld
+        ? 'file scanning could not check the payload'
+        : 'payload not yet available';
+
     const hold = ageMs => {
         //
         //  Announce the hold once, then drop to debug: a weekly nodelist can sit
         //  here across many poll cycles and should not fill the log with it.
+        //  A scanner failure is a warning every pass until it is fixed; the
+        //  operator notice waits for the hold to run out.
         //
         self._ticHolds = self._ticHolds || new Set();
-        const level = self._ticHolds.has(ticFileInfo.path) ? 'debug' : 'info';
+        let level = self._ticHolds.has(ticFileInfo.path) ? 'debug' : 'info';
+        if (scanHeld) {
+            level = 'warn';
+        }
         self._ticHolds.add(ticFileInfo.path);
 
         Log[level](
@@ -6032,12 +6274,13 @@ FTNMessageScanTossModule.prototype.maybeHoldTicFile = function (ticFileInfo, err
                 reasonCode: err.reasonCode,
                 heldForMs: ageMs,
             },
-            `Holding TIC for "${ticFileInfo.getAsString(
-                'File'
-            )}"; payload not yet available`
+            `Holding TIC for "${ticFileInfo.getAsString('File')}"; ${why}`
         );
 
-        return cb(true);
+        if (!scanHeld) {
+            return cb(true);
+        }
+        return self.noteTicScanHeld(ticFileInfo, () => cb(true));
     };
 
     let maxAgeMs = _.get(
@@ -6076,9 +6319,11 @@ FTNMessageScanTossModule.prototype.maybeHoldTicFile = function (ticFileInfo, err
                 heldForMs: ageMs,
                 holdMaxAgeMs: maxAgeMs,
             },
-            `Giving up on TIC for "${ticFileInfo.getAsString(
-                'File'
-            )}"; payload never arrived`
+            `Giving up on TIC for "${ticFileInfo.getAsString('File')}"; ${
+                scanHeld
+                    ? 'file scanning never managed to check the payload'
+                    : 'payload never arrived'
+            }`
         );
 
         return cb(false);
@@ -6090,6 +6335,68 @@ FTNMessageScanTossModule.prototype.forgetTicHold = function (ticFileInfo) {
     if (this._ticHolds) {
         this._ticHolds.delete(ticFileInfo.path);
     }
+    if (this._ticScanRetries) {
+        this._ticScanRetries.delete(ticFileInfo.path);
+    }
+};
+
+//
+//  A payload file scanning held (#291) -- the scanner failed or timed out --
+//  is not scanned again on every pass, for up to the whole hold window: a
+//  payload that makes the scanner time out would otherwise cost a full
+//  timeout every few minutes for two days. Each failed attempt doubles the
+//  wait before the next, from TIC_SCAN_RETRY_MIN_MS up to
+//  TIC_SCAN_RETRY_MAX_MS; a payload that changes on disk is tried at once.
+//  The hold window itself is unchanged: the first attempt after it has run
+//  out still rejects (quarantines) the payload, at most one wait late.
+//
+//  Kept in memory, by .tic path: a restart simply tries everything again,
+//  and so does a config change (see startup()).
+//
+FTNMessageScanTossModule.prototype.noteTicScanHeld = function (ticFileInfo, cb) {
+    const self = this;
+    self._ticScanRetries = self._ticScanRetries || new Map();
+
+    const prev = self._ticScanRetries.get(ticFileInfo.path);
+    const attempts = prev ? prev.attempts + 1 : 1;
+    const delayMs = Math.min(
+        TIC_SCAN_RETRY_MIN_MS * Math.pow(2, attempts - 1),
+        TIC_SCAN_RETRY_MAX_MS
+    );
+    const payloadPath = ticFileInfo.filePath;
+
+    const record = payloadStamp => {
+        self._ticScanRetries.set(ticFileInfo.path, {
+            attempts,
+            retryAt: Date.now() + delayMs,
+            payloadPath,
+            payloadStamp,
+        });
+        Log.debug(
+            { tic: ticFileInfo.path, attempts, retryInMs: delayMs },
+            'File scanning will try the held TIC payload again later'
+        );
+        return cb(null);
+    };
+
+    if (!payloadPath) {
+        return record(null);
+    }
+    fs.stat(payloadPath, (err, stats) => {
+        return record(err ? null : `${stats.size}:${stats.mtimeMs}`);
+    });
+};
+
+//  Calls back (true) unless |ticFileInfo| is a held payload whose next
+//  attempt is not due yet; see noteTicScanHeld().
+FTNMessageScanTossModule.prototype.isTicScanRetryDue = function (ticFileInfo, cb) {
+    const retry = this._ticScanRetries && this._ticScanRetries.get(ticFileInfo.path);
+    if (!retry || Date.now() >= retry.retryAt || !retry.payloadStamp) {
+        return cb(true);
+    }
+    fs.stat(retry.payloadPath, (err, stats) => {
+        return cb(!!err || `${stats.size}:${stats.mtimeMs}` !== retry.payloadStamp);
+    });
 };
 
 FTNMessageScanTossModule.prototype.processTicFilesInDirectory = function (
@@ -6185,15 +6492,51 @@ FTNMessageScanTossModule.prototype.processTicFilesInDirectory = function (
                 );
             },
             function process(ticFilesInfo, callback) {
+                //  payloads file scanning refused this pass: one notice for all
+                const scanRejections = [];
+
                 async.eachSeries(
                     ticFilesInfo,
                     (ticFileInfo, nextTicInfo) => {
-                        //  archive rejected TIC stuff (.TIC + attach), then remove
-                        const reject = () => {
+                        //
+                        //  Archive rejected TIC stuff (.TIC + attach), then
+                        //  remove. A payload file scanning rejected is first
+                        //  quarantined or deleted, and is not archived -- an
+                        //  infected file must not land in |reject| -- unless
+                        //  it was only held and could not be quarantined.
+                        //
+                        const reject = err => {
                             self.forgetTicHold(ticFileInfo);
 
+                            if (!FileScanner.isFileRejected(err)) {
+                                return archiveAndRemove([
+                                    ticFileInfo.path,
+                                    ticFileInfo.filePath,
+                                ]);
+                            }
+
+                            self.disposeRejectedTicPayload(
+                                ticFileInfo,
+                                err,
+                                (_e, disposed) => {
+                                    scanRejections.push(err.scanRejection);
+
+                                    const keepPayload =
+                                        !disposed &&
+                                        FileScanner.Verdicts.Held === err.verdict.result;
+
+                                    return archiveAndRemove(
+                                        keepPayload
+                                            ? [ticFileInfo.path, ticFileInfo.filePath]
+                                            : [ticFileInfo.path]
+                                    );
+                                }
+                            );
+                        };
+
+                        const archiveAndRemove = archivePaths => {
                             async.each(
-                                [ticFileInfo.path, ticFileInfo.filePath],
+                                archivePaths,
                                 (path, nextPath) => {
                                     if (!path) {
                                         //  no "File" field, so no payload path
@@ -6217,32 +6560,53 @@ FTNMessageScanTossModule.prototype.processTicFilesInDirectory = function (
                             );
                         };
 
-                        self.processSingleTicFile(ticFileInfo, inboundType, err => {
-                            if (!err) {
-                                self.forgetTicHold(ticFileInfo);
-                                return self.removeAssocTicFiles(ticFileInfo, () => {
-                                    return nextTicInfo(null);
+                        const processTic = () =>
+                            self.processSingleTicFile(ticFileInfo, inboundType, err => {
+                                if (!err) {
+                                    self.forgetTicHold(ticFileInfo);
+                                    return self.removeAssocTicFiles(ticFileInfo, () => {
+                                        return nextTicInfo(null);
+                                    });
+                                }
+
+                                //
+                                //  The announced file may simply not be here yet: a
+                                //  TIC and its payload routinely arrive in separate
+                                //  mailer sessions. Leave both in place and try again
+                                //  next pass rather than rejecting the announcement
+                                //  and orphaning the file that follows it.
+                                //
+                                //  A payload file scanning could not check -- the
+                                //  scanner is down, timed out, or not registered --
+                                //  is held the same way, nothing imported or
+                                //  forwarded, and only rejected (quarantined) once
+                                //  the hold runs out: senders do not resend. An
+                                //  infected payload is rejected at once.
+                                //
+                                if (!TicFileInfo.isRetryableError(err)) {
+                                    return reject(err);
+                                }
+
+                                self.maybeHoldTicFile(ticFileInfo, err, held => {
+                                    return held ? nextTicInfo(null) : reject(err);
                                 });
-                            }
-
-                            //
-                            //  The announced file may simply not be here yet: a
-                            //  TIC and its payload routinely arrive in separate
-                            //  mailer sessions. Leave both in place and try again
-                            //  next pass rather than rejecting the announcement
-                            //  and orphaning the file that follows it.
-                            //
-                            if (!TicFileInfo.isRetryableError(err)) {
-                                return reject();
-                            }
-
-                            self.maybeHoldTicFile(ticFileInfo, err, held => {
-                                return held ? nextTicInfo(null) : reject();
                             });
+
+                        //  a payload file scanning held is not scanned again on
+                        //  every pass; see noteTicScanHeld()
+                        self.isTicScanRetryDue(ticFileInfo, due => {
+                            if (!due) {
+                                return nextTicInfo(null);
+                            }
+                            return processTic();
                         });
                     },
                     err => {
-                        return callback(err);
+                        return FileScanner.notifyOperators(
+                            scanRejections,
+                            { source: FileScanner.ScanSources.Tic },
+                            () => callback(err)
+                        );
                     }
                 );
             },
@@ -6696,6 +7060,14 @@ FTNMessageScanTossModule.prototype.startup = function (cb) {
         this._ticUnsecureWarned = false;
         this._autoAreaUnsecureWarned = false;
 
+        //  ...and scan held TIC payloads again on the next pass, not after
+        //  their backoff: the change may be the scanner the sysop has just
+        //  fixed or registered. Cleared, not replaced: noteTicScanHeld() may
+        //  be part way through adding to it.
+        if (this._ticScanRetries) {
+            this._ticScanRetries.clear();
+        }
+
         //  ...and re-check what the new config says about the outbound spool:
         //  a reload can introduce a bad defaultNetwork, or move the default
         //  network and leave mail behind in the previous directory.
@@ -7052,6 +7424,56 @@ function guardedCall(watchdogMs, label, fn, cb) {
         called = true;
         clearTimeout(timer);
         cb(e);
+    }
+}
+
+//
+//  Watchdog that only watches: runs |fn(done)| and calls |cb| exactly once,
+//  when |done| is invoked (or |fn| throws) -- never before. Every |watchdogMs|
+//  until then it logs that |label| is still running.
+//
+//  For work that cannot be interrupted. guardedCall() gives up on such work
+//  and lets the caller carry on as if it had ended, while it is in fact still
+//  running; anything the caller then starts runs alongside it (#1079).
+//
+function watchedCall(watchdogMs, label, fn, cb) {
+    const startedAt = Date.now();
+    const minutesRunning = () => Math.round((Date.now() - startedAt) / 60000);
+    let finished = false;
+    let warned = false;
+
+    const timer = setInterval(() => {
+        warned = true;
+        Log.error(
+            { label, watchdogMs, minutesRunning: minutesRunning() },
+            'FTN watchdog: still running; another will not start until it finishes'
+        );
+    }, watchdogMs);
+    //  this timer alone must not keep the process up
+    timer.unref();
+
+    const finish = err => {
+        if (finished) return;
+        finished = true;
+        clearInterval(timer);
+        if (warned) {
+            Log.info(
+                { label, minutesRunning: minutesRunning() },
+                'FTN watchdog: finished after running long'
+            );
+        }
+        return cb(err);
+    };
+
+    try {
+        fn(finish);
+    } catch (e) {
+        //  A throw from |cb| itself (finish ran synchronously) is not the
+        //  work failing: let it propagate rather than swallow it.
+        if (finished) {
+            throw e;
+        }
+        finish(e);
     }
 }
 
@@ -7747,17 +8169,22 @@ FTNMessageScanTossModule.prototype.performExport = function (cb) {
     const self = this;
     const outboundDir = self.moduleConfig.paths.outbound;
 
+    //
+    //  Watched, not guarded: nothing in an export can be interrupted, so it
+    //  is not abandoned when it runs long. Its callback, and so the export
+    //  block and the .bsy flag, wait for the work to end (#1079).
+    //
     withFtnBsyFlag(
         outboundDir,
         done => {
-            guardedCall(
-                EXPORT_WATCHDOG_MS,
+            watchedCall(
+                self.exportWatchdogMs,
                 'FTN export',
                 innerDone => {
                     async.eachSeries(
                         //  EchoMailRelay runs after EchoMail: both can target
                         //  the same node, and the export scan's packets should
-                        //  claim their bundle names first.
+                        //  get the earlier bundle names.
                         ['EchoMail', 'EchoMailRelay', 'NetMail'],
                         (type, nextType) => {
                             self[`perform${type}Export`](err => {

@@ -46,6 +46,7 @@ const { emulationOf } = require('./term');
 const { attachRipLayer } = require('./term/select.js');
 const DeviceAttributes = require('./term/ansi/device_attributes.js');
 const AnsiInput = require('./term/ansi/input_decoder.js');
+const InputCapture = require('./input_capture.js');
 
 //  deps
 const stream = require('stream');
@@ -382,6 +383,20 @@ Client.prototype.restoreIdleLogoutSeconds = function () {
 };
 
 //
+//  Turn away a connection that is not being served (every node is busy):
+//  tell the caller why where the transport has a terminal already, then end
+//  it. The client is never tracked, so none of the usual 'end' or 'close'
+//  handling applies. SSH has no terminal until its shell opens and does this
+//  its own way; see core/servers/login/ssh.js.
+//
+Client.prototype.refuseConnection = function (message) {
+    if (this.term) {
+        this.term.write(`\n${message}\n`);
+    }
+    return this.end();
+};
+
+//
 //  end() is reached more than once on a server initiated disconnect, and
 //  always has been: end() calls disconnect(), the socket emits 'close',
 //  login_server_module's handler calls clientConnections.removeClient(),
@@ -413,16 +428,32 @@ Client.prototype.end = function () {
             this.themeChangedListener
         );
 
-        //  :TODO: getCurrentModule does not exist (the getter is
-        //  menuStack.currentModule), so this never finds a module and no
-        //  module's leave() runs here. Fixing it starts every module's leave()
-        //  running on disconnect, which wants its own review; it must then
-        //  mark the top stack entry |left| so MenuStack._refuseEnded() does
-        //  not leave() it a second time.
-        const currentModule = this.menuStack.getCurrentModule;
+        //  No key will come for a capture now (a cover, a mod's own
+        //  captureInput()): drop them, giving each its onDrop() cleanup
+        InputCapture.dropAllInput(this);
 
-        if (currentModule) {
-            currentModule.leave();
+        //  Run the current module's leave(): it is a module's one chance
+        //  to clean up on disconnect (a door's node count, an upload's temp
+        //  files, ...). Mark the top entry |left| first, so nothing can
+        //  leave() it a second time; see MenuStack._refuseEnded().
+        //
+        //  Guard the call itself: a leave() that throws (a third party mod
+        //  writing to |term.output|, which is null by now, say) must not
+        //  stop the rest of this teardown -- the monitors below would keep
+        //  running for a dead session, and removeClient()'s events would
+        //  never fire.
+        const currentModuleInfo = this.menuStack.top();
+
+        if (currentModuleInfo && !currentModuleInfo.left) {
+            currentModuleInfo.left = true;
+            try {
+                currentModuleInfo.instance.leave();
+            } catch (e) {
+                this.log.warn(
+                    { error: e.message, menuName: currentModuleInfo.name },
+                    'Module leave() failed on disconnect'
+                );
+            }
         }
 
         //  persist time online for authenticated users
@@ -460,6 +491,28 @@ Client.prototype.destroySoon = function () {
     return this.output.destroySoon.apply(this.output, arguments);
 };
 
+//
+//  Input capture: while a capture is active only the top capture's handler
+//  gets a key, and the forms under it get none. See core/input_capture.js.
+//
+Client.prototype.captureInput = function (handler, options) {
+    return InputCapture.captureInput(this, handler, options);
+};
+
+Client.prototype.releaseInput = function (token) {
+    return InputCapture.releaseInput(this, token);
+};
+
+Client.prototype.hasInputCapture = function () {
+    return InputCapture.hasInputCapture(this);
+};
+
+//
+//  Call |cb(ch, key)| with the next key, once: a plain once('key press').
+//  The key also reaches every other 'key press' listener (a form still
+//  attached, unless a cover holds the input), and several waits pending at
+//  once all get the same key. Not a capture: see captureInput().
+//
 Client.prototype.waitForKeyPress = function (cb) {
     this.once('key press', function kp(ch, key) {
         cb(ch, key);

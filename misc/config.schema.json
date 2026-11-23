@@ -520,6 +520,26 @@
                 "cls": {
                     "type": "boolean",
                     "default": true
+                },
+                "animations": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "description": "Animation views (%AV) animate. Off, each shows its first frame and never ticks. Off here is off everywhere; a menu's config.animations: false turns off just that menu.",
+                            "type": "boolean",
+                            "default": true
+                        },
+                        "minFrameIntervalMs": {
+                            "description": "No animation frame is drawn sooner than this many ms after the last.",
+                            "type": "number",
+                            "minimum": 1,
+                            "default": 50
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
                 }
             },
             "patternProperties": {
@@ -763,6 +783,13 @@
                             "description": "Menu entered when connecting as one of users.newUserNames; must name an entry in menu.hjson.",
                             "type": "string",
                             "default": "sshConnectedNewUser"
+                        },
+                        "loginTimeoutSeconds": {
+                            "description": "Seconds a connection may take from connecting to reaching the shell (key exchange and login) before it is disconnected. 0 disables; at most 2147483 (about 24.8 days).",
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 2147483,
+                            "default": 120
                         },
                         "untrustedTermSizeClients": {
                             "type": "array",
@@ -1282,7 +1309,42 @@
                             "type": "string"
                         },
                         "restApi": {
-                            "type": "object"
+                            "type": "object",
+                            "properties": {
+                                "corsAllowedOrigins": {
+                                    "description": "Origins sent CORS headers; [] sends none, [\"*\"] allows any.",
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "files": {
+                                    "type": "object",
+                                    "properties": {
+                                        "publicAccess": {
+                                            "type": "object",
+                                            "additionalProperties": true
+                                        }
+                                    }
+                                },
+                                "jwtSecret": {
+                                    "description": "JWT signing secret; generated and stored in the database when omitted.",
+                                    "type": "string"
+                                },
+                                "messages": {
+                                    "type": "object",
+                                    "properties": {
+                                        "publicAccess": {
+                                            "type": "object",
+                                            "additionalProperties": true
+                                        }
+                                    }
+                                },
+                                "system": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
                         },
                         "tryFiles": {
                             "description": "File names tried, in order, when a request names a directory under staticRoot. Unset tries index.html, then index.htm.",
@@ -1465,6 +1527,11 @@
                         "useSsl": {
                             "type": "boolean",
                             "default": false
+                        },
+                        "verifyCertificate": {
+                            "description": "With useSsl, require a valid certificate for serverHostname. Turn off only for a private server you trust.",
+                            "type": "boolean",
+                            "default": true
                         },
                         "retryDelay": {
                             "type": "number",
@@ -2364,8 +2431,11 @@
                                     "additionalProperties": false
                                 },
                                 "pullSchedule": {
-                                    "description": "When to poll uplinks for waiting mail, in the same syntax as eventScheduler.",
-                                    "type": "string",
+                                    "description": "When to poll uplinks for waiting mail, in the same syntax as eventScheduler; null or \"\" for never.",
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
                                     "default": "every 15 minutes"
                                 },
                                 "crashmailDebounceMs": {
@@ -2579,6 +2649,93 @@
                             "type": "number",
                             "minimum": 1,
                             "default": 1440
+                        }
+                    },
+                    "patternProperties": {
+                        "^_": true
+                    },
+                    "additionalProperties": false
+                },
+                "scanning": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "description": "Scan untrusted files (uploads, TIC imports) before anything looks inside them.",
+                            "type": "boolean",
+                            "default": false
+                        },
+                        "failAction": {
+                            "description": "What happens to a file a scanner finds something in. A file held because a scanner failed is always quarantined.",
+                            "type": "string",
+                            "enum": [
+                                "quarantine",
+                                "delete"
+                            ],
+                            "default": "quarantine"
+                        },
+                        "quarantinePath": {
+                            "description": "Where rejected files go, each with a JSON sidecar. Relative paths resolve against areaStoragePrefix.",
+                            "type": "string",
+                            "default": ".quarantine"
+                        },
+                        "notifyUserIds": {
+                            "description": "User IDs sent a private message about rejected files.",
+                            "type": "array",
+                            "items": {
+                                "type": "number"
+                            },
+                            "default": [
+                                1
+                            ]
+                        },
+                        "defangExtensions": {
+                            "description": "Extensions renamed DOS style in quarantine (.exe becomes .ex_), without the dot.",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": [
+                                "exe",
+                                "com",
+                                "bat",
+                                "cmd",
+                                "scr",
+                                "pif",
+                                "ps1",
+                                "vbs",
+                                "js",
+                                "sh"
+                            ]
+                        },
+                        "scanners": {
+                            "description": "Scanners run in order: { scanner, sources, fileTypes, timeout, onError, ... }. The first to find something rejects the file.",
+                            "type": "array",
+                            "items": {
+                                "type": "object"
+                            },
+                            "default": []
+                        },
+                        "maxConcurrent": {
+                            "description": "Most file scanners running at once, across every source; the rest wait their turn.",
+                            "type": "number",
+                            "minimum": 1,
+                            "default": 2
+                        },
+                        "maxQueueWaitMs": {
+                            "description": "Longest a file waits for a free scanner before that counts as a scanner error (onError applies). 0 waits as long as it takes.",
+                            "type": "number",
+                            "minimum": 0,
+                            "default": 600000
+                        },
+                        "hideInfected": {
+                            "description": "Hide entries a rescan marked infected from users: not listed, found, queued, sent or served. Applies whether or not scanning is enabled.",
+                            "type": "boolean",
+                            "default": true
+                        },
+                        "infectedVisibleAcs": {
+                            "description": "ACS of users who still see, flagged, and can download entries hidden by hideInfected.",
+                            "type": "string",
+                            "default": "GM[sysops]|ID1"
                         }
                     },
                     "patternProperties": {

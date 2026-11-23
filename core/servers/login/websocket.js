@@ -17,7 +17,8 @@ const {
 
 //  deps
 const _ = require('lodash');
-const WebSocketServer = require('ws').Server;
+const WebSocket = require('ws');
+const WebSocketServer = WebSocket.Server;
 const http = require('http');
 const https = require('https');
 const fs = require('graceful-fs');
@@ -118,6 +119,40 @@ class WebSocketClient extends TelnetClient {
 
             _read() {
                 //  dummy
+            }
+
+            //
+            //  end() is how a session is ended from this side (logoff, idle
+            //  timeout, a kick; see TelnetClient.disconnect()). Close the
+            //  WebSocket once everything written before it has gone out, so
+            //  the caller sees the last screen and then the close. Without
+            //  this the browser's connection stayed open with nothing behind
+            //  it (#1017).
+            //
+            _final(cb) {
+                this._closeWebSocket();
+                return cb();
+            }
+
+            //
+            //  And if the stream fails or is destroyed before it gets to
+            //  _final() (a write after the end, say), close the WebSocket
+            //  anyway: it must never be left open behind an ended session.
+            //
+            _destroy(err, cb) {
+                this._closeWebSocket();
+                return cb(err);
+            }
+
+            _closeWebSocket() {
+                if (WebSocket.OPEN !== this.ws.readyState) {
+                    return; //  closing or closed already
+                }
+                try {
+                    this.ws.close(this.closeCode || 1000, this.closeReason);
+                } catch (e) {
+                    this.ws.terminate();
+                }
             }
 
             _data(data) {
@@ -229,6 +264,16 @@ class WebSocketClient extends TelnetClient {
                 'webSignInConnected'
             ),
         });
+    }
+
+    //
+    //  As for telnet, plus a close code that says why: 1013 is "Try Again
+    //  Later" in the WebSocket close code registry.
+    //
+    refuseConnection(message) {
+        this.socket.rawSocket.closeCode = 1013;
+        this.socket.rawSocket.closeReason = 'All nodes are busy';
+        return super.refuseConnection(message);
     }
 }
 

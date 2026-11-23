@@ -421,6 +421,15 @@ class MultiLineEditTextView extends View {
         return ColorPreview.cursorNearCompleteCode(chars, col);
     }
 
+    //  A pending pipe code collapse would draw after the view is gone
+    destroy() {
+        if (this._pipeCodeDebounceTimer !== null) {
+            clearTimeout(this._pipeCodeDebounceTimer);
+            this._pipeCodeDebounceTimer = null;
+        }
+        super.destroy();
+    }
+
     //  Cancel any pending debounce timer and leave expanded mode.
     _ensureCollapsed() {
         if (this._pipeCodeDebounceTimer !== null) {
@@ -680,6 +689,57 @@ class MultiLineEditTextView extends View {
 
     _recordDrawnVisibleArea() {
         this._drawnVisibleArea = this._visibleAreaState();
+    }
+
+    //
+    //  redrawChanged() -- draw what changed in the visible area since it was
+    //  last drawn: the rows from the first one that differs, or all of it
+    //  when the view scrolled, a search highlights matches, its layout
+    //  changed, or it was never drawn. For text changed without drawing
+    //  (addText(text, { redraw: false })), drawn later from a background
+    //  draw.
+    //
+    redrawChanged() {
+        const drawn = this._drawnVisibleArea;
+        const now = this._visibleAreaState();
+        const sameLayout =
+            drawn &&
+            !this._findState &&
+            now.buffer === drawn.buffer &&
+            now.top === drawn.top &&
+            now.key === drawn.key;
+
+        const term = this.client.term;
+        const batch =
+            term && _.isFunction(term.beginWrite) && _.isFunction(term.commitWrite);
+        if (batch) {
+            term.beginWrite();
+        }
+        try {
+            if (sameLayout) {
+                const rows = Math.max(now.lines.length, drawn.lines.length);
+                let startRow = 0;
+                while (
+                    startRow < rows &&
+                    now.lines[startRow] === drawn.lines[startRow] &&
+                    now.lines[startRow] !== undefined &&
+                    now.lines[startRow].chars === drawn.chars[startRow]
+                ) {
+                    ++startRow;
+                }
+                if (startRow < rows && startRow < this.dimens.height) {
+                    this.redrawRows(startRow, this.dimens.height);
+                }
+                this._recordDrawnVisibleArea();
+            } else {
+                this.redraw();
+            }
+            this.moveClientCursorToCursorPos();
+        } finally {
+            if (batch) {
+                term.commitWrite();
+            }
+        }
     }
 
     _isVisibleAreaAsDrawn() {
@@ -1837,6 +1897,14 @@ class MultiLineEditTextView extends View {
     }
 
     setFocus(focused) {
+        //  Losing focus: a pending pipe code collapse would draw this row,
+        //  and leave the cursor in it, after another field has the keys.
+        //  Collapse it now instead, so the row looks as it would have; the
+        //  field that takes focus next puts the cursor back where it goes.
+        if (!focused && this._pipeCodeDebounceTimer !== null) {
+            this._collapsePipeCodes();
+        }
+
         super.setFocus(focused);
 
         if (this.isEditMode() && this.getSGR() !== this.getFocusSGR()) {
@@ -1844,6 +1912,13 @@ class MultiLineEditTextView extends View {
         } else {
             this.client.term.rawWrite(this.getTextSgrPrefix());
         }
+        this.moveClientCursorToCursorPos();
+    }
+
+    //  Where setFocus(true) leaves the cursor and SGR (the edit position in
+    //  the visible area), without drawing the text again
+    restoreFocusPosition() {
+        this.client.term.rawWrite(this.getTextSgrPrefix());
         this.moveClientCursorToCursorPos();
     }
 
@@ -1966,6 +2041,12 @@ class MultiLineEditTextView extends View {
             this._scrollToEndOfDocument();
         } else {
             this._scrollToStartOfDocument();
+        }
+
+        //  the caller draws later, with redrawChanged(): a background draw
+        //  (drawInBackground()) whose drawFn must only draw
+        if (false === options.redraw) {
+            return;
         }
 
         const term = this.client.term;

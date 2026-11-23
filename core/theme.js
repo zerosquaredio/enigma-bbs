@@ -10,12 +10,15 @@ const art = require('./art.js');
 const ansi = require('./ansi_term.js');
 const Log = require('./logger.js').log;
 const asset = require('./asset.js');
-const ViewController = require('./view_controller.js').ViewController;
+const { ViewController, MCI_REGEXP, FormLifecycle } = require('./view_controller.js');
+const { View } = require('./view');
+const { DeepMergeProperties: TableViewDeepMergeProperties } = require('./table_view.js');
 const Errors = require('./enig_error.js').Errors;
 const Events = require('./events.js');
 const AnsiPrep = require('./ansi_prep.js');
 const UserProps = require('./user_property.js');
 const { emulationOf, DEFAULT_EMULATION } = require('./term');
+const { getArtOrigin, setArtOrigin } = require('./mci_map_origin.js');
 
 const ConfigLoader = require('./config_loader');
 const { getConfigPath } = require('./config_util');
@@ -328,13 +331,44 @@ exports.ThemeManager = class ThemeManager {
             return _.remove(Object.keys(obj), k => !isNaN(k));
         };
 
+        //
+        //  TableView (%TV) entries: TableView's own object-valued properties
+        //  deep-merge, so a theme can set e.g. columns.new.sgr alone (arrays
+        //  inside them still replace). Every other property, and every other
+        //  view type, keeps the replace behaviour above. Objects taken from
+        //  the theme are copied, so the merged menu never aliases theme.hjson.
+        //  Keys are parsed as ViewController parses them (code + view ID).
+        //
+        const isTableViewMci = mci => {
+            const m = mci.match(MCI_REGEXP);
+            return null !== m && 'TV' === m[1];
+        };
+
+        const tableViewMciCustomizer = (objVal, srcVal, key) => {
+            if (TableViewDeepMergeProperties.includes(key) && _.isPlainObject(srcVal)) {
+                return _.mergeWith(
+                    {},
+                    _.isPlainObject(objVal) ? objVal : {},
+                    srcVal,
+                    (o, s) => (Array.isArray(s) ? _.cloneDeep(s) : undefined)
+                );
+            }
+            const value = mciCustomizer(objVal, srcVal, key);
+            return _.isObject(value) && value === srcVal ? _.cloneDeep(value) : value;
+        };
+
         const mergeMciProperties = (dst, src) => {
             Object.keys(src).forEach(mci => {
+                const tableView = isTableViewMci(mci);
                 if (dst[mci]) {
-                    _.mergeWith(dst[mci], src[mci], mciCustomizer);
+                    _.mergeWith(
+                        dst[mci],
+                        src[mci],
+                        tableView ? tableViewMciCustomizer : mciCustomizer
+                    );
                 } else {
                     //  theme contains a MCI that's not found in menu
-                    dst[mci] = src[mci];
+                    dst[mci] = tableView ? _.cloneDeep(src[mci]) : src[mci];
                 }
             });
         };
@@ -860,6 +894,12 @@ function getThemeArt(options, cb) {
     //                  ART): only when |name| is the operator's choice, never
     //                  a name a user supplied or influenced. Never applies to
     //                  a name holding a path.
+    //      modArtPath - a folder mod's art/ folder (mods/<name>/art), for art
+    //                  shown by a menu whose module is that mod (MenuModule
+    //                  passes it). Looked in after the themes, before the
+    //                  general art directory, for a plain name only. It is an
+    //                  operator-installed place, like a theme directory: the
+    //                  options above apply there as in a theme.
     //
     const config = Config();
 
@@ -888,29 +928,32 @@ function getThemeArt(options, cb) {
     //  1)  Direct/relative path
     //  2)  Via theme supplied by |themeId|
     //  3)  Via default theme
-    //  4)  General art directory
+    //  4)  The mod's own art/ folder (|modArtPath|), plain names only
+    //  5)  General art directory
     //
     async.waterfall(
         [
             function fromPath(callback) {
                 //
-                //  We allow relative (to enigma-bbs) or full paths
+                //  We allow relative (to enigma-bbs) or full paths. A
+                //  relative one is made absolute first: getArt() reads a name
+                //  with an extension as basePath + name, so handing it the
+                //  relative name with basePath already holding its directory
+                //  joined the directory twice, and the lookup missed.
                 //
+                let fullName;
                 if ('/' === options.name.charAt(0)) {
                     //  just take the path as-is
-                    options.basePath = paths.dirname(options.name);
+                    fullName = options.name;
                 } else if (options.name.indexOf('/') > -1) {
                     //  make relative to base BBS dir
-                    options.basePath = paths.join(
-                        __dirname,
-                        '../',
-                        paths.dirname(options.name)
-                    );
+                    fullName = paths.join(__dirname, '../', options.name);
                 } else {
                     return callback(null, null);
                 }
 
-                art.getArt(options.name, options, (err, artInfo) => {
+                options.basePath = paths.dirname(fullName);
+                art.getArt(fullName, options, (err, artInfo) => {
                     return callback(null, artInfo);
                 });
             },
@@ -930,6 +973,24 @@ function getThemeArt(options, cb) {
                 }
 
                 options.basePath = paths.join(config.paths.themes, defaultThemeId);
+                art.getArt(options.name, options, (err, artInfo) => {
+                    return callback(null, artInfo);
+                });
+            },
+            function fromModArtDir(artInfo, callback) {
+                //  a name holding a path was the operator pointing at a file:
+                //  it is never looked for in a mod's folder
+                if (
+                    artInfo ||
+                    !_.isString(options.modArtPath) ||
+                    0 === options.modArtPath.length ||
+                    art.nameHasPath(options.name)
+                ) {
+                    return callback(null, artInfo);
+                }
+
+                //  a missing folder is no error: on to the general art
+                options.basePath = options.modArtPath;
                 art.getArt(options.name, options, (err, artInfo) => {
                     return callback(null, artInfo);
                 });
@@ -1024,6 +1085,24 @@ function displayThemeArt(options, cb) {
 function displayThemedPrompt(name, client, options, cb) {
     const usingTempViewController = options.viewController === undefined;
 
+    //  A pause takes no typing, but the forms under it stay attached and
+    //  their focused field stays the input focus view: set it aside so a
+    //  ticker in the pause art leaves the cursor alone instead of putting
+    //  it back in a field the pause has covered. Given back below, on the
+    //  error path as well.
+    const inputFocus = options.pause ? View.suspendInputFocus(client) : null;
+
+    //  A pause that clears the screen is drawn over whatever was there,
+    //  whose forms may still be attached: their tickers and status bars do
+    //  not draw over it while it waits for its key (a view that missed a
+    //  draw gets one after). The prompt's own views were made after this,
+    //  and draw as usual. A clear-screen prompt that does not pause hands
+    //  the screen back to its caller as soon as it is drawn (a module that
+    //  takes input on it owns the screen from then on), and a prompt on the
+    //  same screen suspends nothing: both behave as they always have.
+    const drawSuspend =
+        options.clearScreen && options.pause ? View.suspendBackgroundDraw(client) : null;
+
     async.waterfall(
         [
             function display(callback) {
@@ -1044,7 +1123,11 @@ function displayThemedPrompt(name, client, options, cb) {
                 //  doing so messes things up -- most terminals that support font
                 //  changing can only display a single font at at time.
                 //
-                const dispOptions = Object.assign({}, options, promptConfig.config);
+                //  |modArtPath| is the menu's (see MenuModule.promptForInput()),
+                //  never a prompt config key
+                const dispOptions = Object.assign({}, options, promptConfig.config, {
+                    modArtPath: options.modArtPath,
+                });
                 //  :TODO: We can use term detection to do nifty things like avoid this kind of kludge:
                 // if(!options.clearScreen) {
                 //     dispOptions.font = 'not_really_a_font!';    //  kludge :)
@@ -1095,6 +1178,17 @@ function displayThemedPrompt(name, client, options, cb) {
                             mci.position[1] += options.position.col || 0;
                         }
                     });
+
+                    //  and where the art is, for views placed by config
+                    //  `position`: its first row lands where the markers
+                    //  above do, and it moves right as they do
+                    const origin = getArtOrigin(artInfo.mciMap);
+                    setArtOrigin(artInfo.mciMap, {
+                        row: _.isNumber(options.position.row)
+                            ? options.position.row
+                            : origin.row,
+                        col: origin.col + (options.position.col || 0),
+                    });
                 }
 
                 const loadOpts = {
@@ -1142,9 +1236,13 @@ function displayThemedPrompt(name, client, options, cb) {
                 );
             }
 
+            //  the temporary form is finished with for good
             if (assocViewController && usingTempViewController) {
-                assocViewController.detachClientEvents();
+                FormLifecycle.destroy(assocViewController);
             }
+
+            View.resumeInputFocus(client, inputFocus);
+            View.resumeBackgroundDraw(client, drawSuspend);
 
             return cb(null, artInfo, pressedKey);
         }

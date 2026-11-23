@@ -96,13 +96,15 @@ function main() {
                 return displayStartupBanner(() =>
                     callback(
                         null,
-                        configOverridePath || conf.Config.getDefaultPath(),
+                        configOverridePath, //  undefined: the default
                         _.isString(configOverridePath)
                     )
                 );
             },
             function initConfig(configPath, configPathSupplied, callback) {
-                const configFile = configPath + 'config.hjson';
+                const configFile = conf.Config.getConfigFilePath(configPath, msg =>
+                    console.error(`Warning: ${msg}`)
+                );
 
                 conf.Config.create(resolvePath(configFile), err => {
                     //
@@ -124,8 +126,8 @@ function main() {
                             //
                             const missingPath = err.configPath || resolvePath(configFile);
                             const isBaseConfig =
-                                paths.basename(missingPath).toLowerCase() ===
-                                'config.hjson';
+                                paths.resolve(missingPath) ===
+                                paths.resolve(resolvePath(configFile));
 
                             if (isBaseConfig) {
                                 console.error(
@@ -190,10 +192,11 @@ function main() {
 //  How long an orderly shutdown may take in all before the process exits
 //  anyway, with a non-zero code. Every step below either bounds itself
 //  (the listening servers get about 1 s to stop, running Amiga doors about
-//  3 s to sync their images) or is quick, so this only fires when one of
-//  them hangs. A service manager must allow at least this long before it
-//  kills ENiGMA½: see "Stopping" in
-//  website/src/content/docs/installation/production.md.
+//  3 s to sync their images, v86 doors about 5 s to write theirs, live BinkP
+//  sessions about 4 s to end and release their .bsy locks) or is quick, so
+//  this only fires when one of them hangs. A service manager
+//  must allow at least this long before it kills ENiGMA½: see "Stopping"
+//  in website/src/content/docs/installation/production.md.
 //
 const ShutdownTimeoutMs = 15000;
 
@@ -205,8 +208,8 @@ const ShutdownSignals = ['SIGINT', 'SIGTERM'];
 //  What an orderly shutdown stops, in this order. The listening servers stop
 //  accepting connections first, so that nobody new can call in, or start an
 //  Amiga door, while the rest stops; connected callers are then told and
-//  disconnected, and running Amiga doors get to sync their disk images. Each
-//  step calls back without an error.
+//  disconnected, running Amiga doors get to sync their disk images, and v86
+//  doors write theirs back to disk. Each step calls back without an error.
 //
 const shutdownSteps = [
     {
@@ -245,6 +248,12 @@ const shutdownSteps = [
         run: cb => require('./amiga_door/amiga_door.js').shutdown(() => cb(null)),
     },
     {
+        name: 'stopV86Doors',
+        //  Best effort, about 5 s at most: v86 doors write their disk images
+        //  back to disk before the process exits
+        run: cb => require('./v86_door/v86_door.js').shutdown(() => cb(null)),
+    },
+    {
         name: 'stopEventScheduler',
         run: cb => {
             if (!initServices.eventScheduler) {
@@ -258,8 +267,16 @@ const shutdownSteps = [
         run: cb => require('./file_area_web.js').shutdown(() => cb(null)),
     },
     {
+        //  Includes BinkP: live sessions are ended and their .bsy locks
+        //  released, about 4 s at most
         name: 'stopMsgNetwork',
         run: cb => require('./msg_network.js').shutdown(() => cb(null)),
+    },
+    {
+        //  file scanning notices held back to coalesce them; see
+        //  core/file_scanner.js notifyOperatorsCoalesced()
+        name: 'flushFileScanNotices',
+        run: cb => require('./file_scanner.js').flushCoalescedNotices(() => cb(null)),
     },
 ];
 
@@ -666,6 +683,7 @@ function initialize(cb) {
 
                     const StatLog = require('./stat_log');
                     StatLog.setNonPersistentSystemStat(SysProps.TotalUserCount, count);
+                    StatLog.markTotalUserCountRefreshed(); //  fresh; no re-read on first use
                     return callback(null);
                 });
             },
@@ -675,6 +693,19 @@ function initialize(cb) {
             function initMCI(callback) {
                 return require('./predefined_mci.js').init(callback);
             },
+            function registerFileScanners(callback) {
+                //
+                //  Before message networks: a TIC already waiting in an
+                //  inbound is imported as soon as they start, and must not
+                //  get there ahead of the scanners that check it. Mods are
+                //  registered in the order oputil uses; initializeModules()
+                //  below then skips them. See core/file_scanner.js.
+                //
+                return require('./file_scanner.js').loadModFileScanners(
+                    conf.get().paths.mods,
+                    () => callback(null)
+                );
+            },
             function readyMessageNetworkSupport(callback) {
                 return require('./msg_network.js').startup(callback);
             },
@@ -683,6 +714,10 @@ function initialize(cb) {
             },
             function genericModulesInit(callback) {
                 return require('./module_util.js').initializeModules(callback);
+            },
+            function readyFileScanning(callback) {
+                //  after the modules: they register the scanners it checks for
+                return require('./file_scanner.js').startup(callback);
             },
             function listenConnections(callback) {
                 return require('./listening_server.js').startup(callback);

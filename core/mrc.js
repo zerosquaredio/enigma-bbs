@@ -5,6 +5,7 @@
 const Log = require('./logger.js').log;
 const { MenuModule } = require('./menu_module.js');
 const { pipeToAnsi } = require('./color_codes.js');
+const { colorCodeAt } = require('./pipe_codes.js');
 const stringFormat = require('./string_format.js');
 const StringUtil = require('./string_util.js');
 const Config = require('./config.js').get;
@@ -78,6 +79,24 @@ const helpText = `
 |03/|11set |03<option> <value>      |08- |07Personalise your MRC experience |08(/set help)
 |03/|11ctcp |03<target> <command>   |08- |07Send a CTCP request |08(/ctcp help)
 `;
+
+//  /rainbow lines are cut at 140 characters (codes included), backing off
+//  to the start of a |## code the cut would split: a receiver shows half a
+//  code ('|0') as text.
+const RainbowMaxChars = 140;
+
+function cutRainbowLine(line) {
+    if (line.length <= RainbowMaxChars) {
+        return line;
+    }
+    let cut = RainbowMaxChars;
+    if (colorCodeAt(line, cut - 2) >= 0) {
+        cut -= 2;
+    } else if (colorCodeAt(line, cut - 1) >= 0) {
+        cut -= 1;
+    }
+    return line.slice(0, cut);
+}
 
 exports.getModule = class mrcModule extends MenuModule {
     constructor(options) {
@@ -376,7 +395,7 @@ exports.getModule = class mrcModule extends MenuModule {
                                 'chatServers.mrc.multiplexerPort',
                                 5000
                             ),
-                            host: 'localhost',
+                            host: '127.0.0.1', //  the multiplexer listens on IPv4 loopback only
                         };
 
                         // connect to multiplexer
@@ -499,6 +518,10 @@ exports.getModule = class mrcModule extends MenuModule {
                 termWidth - viewCol + 1
             )
         );
+        //  The lines go into the log first, and are drawn after: a background
+        //  draw only draws (it is skipped, or its output dropped, while
+        //  something covers the screen, and the log redrawn after)
+        let trimmed = false;
         lines.forEach(line => {
             const { wrapped } = wordWrapText(line, {
                 width: viewWidth,
@@ -508,13 +531,29 @@ exports.getModule = class mrcModule extends MenuModule {
                 const converted = glyphSmiliesAllowed(this.userPrefs, this.client)
                     ? smiliesToGlyphs(wline)
                     : wline;
-                chatLogView.addText(pipeToAnsi(converted), { scrollMode: 'end' });
+                chatLogView.addText(pipeToAnsi(converted), {
+                    scrollMode: 'end',
+                    redraw: false,
+                });
 
                 if (chatLogView.getLineCount() > this.config.maxScrollbackLines) {
                     chatLogView.deleteLine(0);
+                    trimmed = true;
                 }
             });
         });
+
+        //  deleteLine() leaves the scroll position as it was, now one line
+        //  past the end for each line trimmed: scroll back to the end so
+        //  the newest line is on the bottom row
+        if (trimmed) {
+            chatLogView._scrollToEndOfDocument();
+        }
+
+        //  Lines arrive whenever the server sends them, usually while the
+        //  user is typing: drawInBackground() puts the cursor back in the
+        //  input line, or the next key would echo at the end of the log
+        chatLogView.drawInBackground(() => chatLogView.redrawChanged());
     }
 
     /**
@@ -881,11 +920,9 @@ exports.getModule = class mrcModule extends MenuModule {
                             .padStart(2, '0');
                         a += `|${cc}${c}|00 `;
                         return a;
-                    }, '')
-                    .substr(0, 140)
-                    .replace(/\\s\|\d*$/, '');
+                    }, '');
 
-                this.processOutgoingMessage(line);
+                this.processOutgoingMessage(cutRainbowLine(line));
                 break;
             }
 

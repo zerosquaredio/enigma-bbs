@@ -20,7 +20,72 @@ Refer to [Upgrading](./website/src/content/docs/admin/upgrading.md) for details 
 # Version to Version Notes
 > :warning: Be sure to inspect these notes during any upgrades!
 
+## 0.6.1-beta to 0.6.2-beta
+
+* **Mod authors: covers pause background drawing** ([#1136](https://github.com/NuSkooler/enigma-bbs/issues/1136), [#1137](https://github.com/NuSkooler/enigma-bbs/issues/1137)). Nothing in your configuration, menus, art or themes needs to change, and `client.waitForKeyPress()` works as before.
+
+  **What changes by itself:** interrupts, help pages and pauses that clear the screen pause the background drawing (`drawInBackground()`) of the views under them while they wait, and redraw them once afterwards. Interrupts and the stock help pages also keep every key, including the one that dismisses them, from the forms underneath.
+
+  **Action:** none for most mods. A `drawInBackground()` draw function should only draw: while the screen is covered it still runs, but its output is thrown away, and the view gets a full `redraw()` afterwards. If a view of yours changes state inside its draw function, move that change before the call. See [When something covers the screen](website/src/content/docs/art/views/views.md#when-something-covers-the-screen).
+
+* **Mod authors: a menu that has been left stops** (new `hasLeftMenu()`). Nothing in your configuration, menus, art or themes needs to change.
+
+  **What changes by itself:** once `leave()` has run, the default `initSequence()` stops at its next step. `prepViewController()`, `prepViewControllerWithArt()` and `displayArtAndPrepViewController()` still call back, with the same arguments, but a form they build for the left menu is torn down first (and one that already existed is not refocused). `nextTimeout` and `prevMenuOnTimeout()` do nothing after `leave()`. A module that overrides `initSequence()` is unaffected, and can check `this.hasLeftMenu()` after its own async steps.
+
+  **Action:** if your module overrides `leave()`, make sure it calls `super.leave()` (it already had to, to tear down its forms).
+
+* **Mod authors: a left menu's forms are destroyed for good.** Nothing in your configuration, menus, art or themes needs to change.
+
+  **What changes by itself:** `leave()` now destroys every form still in the menu's `viewControllers`. A destroyed form cannot be attached again: `setFocus(true)`, `activate()`, `attachClientEvents()` and `switchFocus()` on it do nothing (a debug log line says so). Before, a callback that finished after the caller had left the menu could re-attach one of its forms, and keys typed on the next menu reached it too. A reload, or coming back to the menu, creates a new instance with new forms, which is unaffected. `removeViewController()`, `setFocus(false)` and `detachClientEvents()` keep their meaning: they detach the form (and tear it down), and `setFocus(true)` attaches it again, as before.
+
+  **Action:** none for most mods. Only a module that attaches one of its forms after its menu was left notices, and that was already a bug. See [Form states](website/src/content/docs/art/views/views.md#form-states).
+
+* **Mod authors: the full screen editor keeps its forms' view listeners.** Nothing in your configuration, menus, art or themes needs to change, and nothing changes for a mod that does not extend the full screen editor (`core/fse.js`).
+
+  **What changes by itself:** when one of the editor's forms loses the keys (the header while the body is typed into, the body under the Escape menu, a footer under another footer), it is deactivated or covered instead of torn down with `setFocus(false)`. Its tickers and status bars keep running, and listeners added to its views are still there when it gets the keys back.
+
+  **Action:** a module that extends the full screen editor and adds listeners to its views each time a form gets the keys back should remove them first (`removeListener()`, then `on()`), or add them once; otherwise they fire once more after every focus change. `promptForInput({ prevFormName })` still removes the previous form's view listeners, as before.
+
+* **Mod authors: screens that switch pages keep the hidden page's view listeners.** Nothing in your configuration, menus, art or themes needs to change, and nothing changes for a mod that does not extend one of these stock modules: `onelinerz`, `rumorz`, `bbs_list`, `file_area_list`, `activitypub/ap_search`, `activitypub/actor_search`, `activitypub/user_config`.
+
+  **What changes by itself:** the page not shown is covered (`cover()`) instead of torn down with `setFocus(false)` (`detachClientEvents()` for the file list's details), and activated when it is shown again. Its tickers and status bars pause instead of stopping, and listeners added to its views are still there when it is shown again.
+
+  **Action:** a module that extends one of them and adds listeners to a page's views each time the page is shown should remove them first (`removeListener()`, then `on()`), or add them once; otherwise they fire once more after every visit.
+
+* **Sysops and theme authors: new warnings about `mci` keys.** Nothing needs to change: every key applies exactly as it did before.
+
+  **What you may see in the log:** warnings naming the menu (`menuName`), form (`formId`, or `promptName` for a prompt) and key (`mci`):
+  * `MCI key "ET8" configures view 8, which is a %ME; applying it anyway`: the key's code is not the code in the art. Views are matched by ID, so it still applies. Rename the key to the art's code (`ME8`).
+  * `MCI key "MET3" is not a code and view ID alone; read as "ET3"`: rename the key to what the art has (`ME3`). Copies of the stock `new_user` menus made from earlier templates have `MET3`.
+  * `MCI "position" ignored: the art already has this view ID for another code`: a placed view's ID is taken in the art. Pick a free, high ID.
+
+  These warnings are logged each time the form is loaded (each visit to the screen), not once at startup.
+
+  The stock templates and the luciano_blocktronics theme have been fixed (`MET3` to `ME3`, and a few theme keys such as `ET8`/`ET9` to `ME8`/`SM9` on the user config screen). Your own copies of menus made from older templates are not changed; fix them when convenient.
+
+  **New, opt-in:** `position` in an `mci` block places a view (see [Placing Views from Configuration](website/src/content/docs/art/mci.md#placing-views-from-configuration)). It does nothing unless you add it.
+
+## 0.6.0-beta to 0.6.1-beta
+
+* **MRC over TLS needs a valid certificate.** This applies only if you have MRC enabled with `chatServers.mrc.useSsl` on (the config template's setting).
+
+  **What changes by itself:** the board refuses an MRC server whose certificate is not trusted or not valid for `serverHostname`, logs why, and keeps retrying.
+
+  **Action:** none for the default server, `mrc.bottomlessabyss.net`. For a private server with a self-signed certificate, or one you reach by an IP address its certificate does not name, set `chatServers.mrc.verifyCertificate` to `false`.
+
+* **The MRC multiplexer port is local only.**
+
+  **What changes by itself:** `chatServers.mrc.multiplexerPort` now listens on `127.0.0.1` rather than every interface. MRC chat on the board and its connection to the MRC network are unaffected.
+
+  **Action:** none, unless something on another machine or in another container connects to that port. That was never supported, and it no longer works.
+
 ## 0.5.1-beta to 0.6.0-beta
+
+* **An area that is both an ActivityPub area and an FTN echo** ([#1032](https://github.com/NuSkooler/enigma-bbs/issues/1032)). This applies only if you map an ActivityPub area (for example `activitypub_shared`) as an FTN echo as well.
+
+  **What changes by itself:** a local post that ActivityPub delivers before the FTN export scan reaches it is now sent to the echo too. Before, with scheduled export, such a post never reached the echo.
+
+  **Action:** none. Posts ActivityPub delivered before you upgrade are left as they were and are not sent to the echo now.
 
 * **Pipe codes are measured the way they are drawn** ([#1022](https://github.com/NuSkooler/enigma-bbs/issues/1022)). Nothing in your configuration, menus or themes needs to change, and colours look the same.
 
@@ -109,6 +174,14 @@ Refer to [Upgrading](./website/src/content/docs/admin/upgrading.md) for details 
 * **The ActivityPub actor cache is emptied once, at the first start.** Cached remote actors could have been planted by another server, and such an entry cannot be told from a genuine one, so the `actors` collection in `db/activitypub.sqlite3` is cleared once and actors are fetched again as they are needed. Follower and following lists, posts and reactions are not touched. The log shows `Purging the ActivityPub actor cache` and `Purged the ActivityPub actor cache`; 50,000 cached actors took under a second.
 
   **Action:** none. Delivery to followers is not interrupted: when a post, boost or like goes out, followers in the cache get it at once, and a follower that is not in the cache is fetched again in the background (four at a time across the board, once however many posts are waiting on it) and gets it once found, if it still follows. On a board with many followers, the first posts after the upgrade reach most followers a little later than usual, and expect more outbound fetching for a while. A follower that cannot be fetched is not tried again for six hours (this is kept in memory, so a restart tries it again).
+
+* **ActivityPub data stored before this release is kept** ([#966](https://github.com/NuSkooler/enigma-bbs/issues/966)). The actor cache is emptied (above), but inbox and shared inbox entries, follower and following lists, and posts already imported from ActivityPub are kept as they are. They were accepted under the older, looser checks. ENiGMA½ now checks who owns an object before acting on it, and refuses an update or delete when stored copies disagree, so such an entry is not acted on when it conflicts with the stored owner.
+
+  **Action:** none required. If you want a clean start for ActivityPub, stop the board, move `db/activitypub.sqlite3` aside, and start again: everything ActivityPub is fetched or rebuilt as needed, but your users' remote followers are lost and must follow again. Imported posts in your message areas are not affected.
+
+* **ActivityPub: the board has an instance actor** ([#966](https://github.com/NuSkooler/enigma-bbs/issues/966)). Fetches the board makes for itself are now signed as an `Application` actor at `/_enig/ap/actor`, so servers that answer only signed fetches answer them. Its key is made at the first start, about a second after it, and stored in `db/activitypub.sqlite3`; keep it, since remote servers that cached the key do not all pick up a new one at once. WebFinger finds it as `acct:<domain>@<domain>`, so a local user named exactly like your web domain is no longer found through WebFinger; the log warns at startup if you have one.
+
+  **Action:** none, unless that warning appears. Behind a reverse proxy, nothing new needs forwarding: it is under `/_enig/` like every other ActivityPub URL. See [Instance Actor](website/src/content/docs/servers/contentservers/activitypub-handler.md#instance-actor).
 
 * **ActivityPub: a fediverse server on your own network needs `allowedPrivateAddresses`** ([#966](https://github.com/NuSkooler/enigma-bbs/issues/966)). Outbound requests now refuse a name that resolves to a private address, so a server on your LAN whose name resolves privately can no longer federate until it is listed. Your board's own URLs are exempt and need nothing.
 

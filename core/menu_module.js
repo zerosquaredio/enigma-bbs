@@ -5,13 +5,15 @@ const PluginModule = require('./plugin_module.js').PluginModule;
 const theme = require('./theme.js');
 const artUtil = require('./art.js');
 const ansi = require('./ansi_term.js');
-const ViewController = require('./view_controller.js').ViewController;
+const { ViewController, FormLifecycle } = require('./view_controller.js');
 const menuUtil = require('./menu_util.js');
 const Config = require('./config.js').get;
 const stringFormat = require('../core/string_format.js');
 const MultiLineEditTextView =
     require('../core/multi_line_edit_text_view.js').MultiLineEditTextView;
 const { TextView } = require('../core/text_view.js');
+const { View } = require('./view');
+const ScreenCover = require('./screen_cover.js');
 const { Errors, ErrorReasons } = require('../core/enig_error.js');
 const { getPredefinedMCIValue } = require('../core/predefined_mci.js');
 const EnigAssert = require('./enigma_assert');
@@ -38,6 +40,66 @@ const MenuFlags = {
 
 exports.MenuFlags = MenuFlags;
 
+//
+//  Menus that have been left (leave() has run). Kept here rather than as a
+//  property, so no name is taken from a mod's MenuModule subclass (some
+//  keep their own `left`). See hasLeftMenu().
+//
+const leftMenus = new WeakSet();
+
+//  menu -> Set of timeout handles from setMenuTimeout(), cleared by leave()
+const menuTimeouts = new WeakMap();
+
+//  passed down a waterfall (initSequence(), a module's page steps) to stop
+//  it once the menu is left; the final callback maps it back to no error
+const MenuLeftStop = Symbol('menuLeft');
+exports.MenuLeftStop = MenuLeftStop;
+
+//
+//  Tear down |vc| for good: its menu was left. An attached form is detached
+//  as before (detachClientEvents()); then a ViewController is destroyed
+//  (FormLifecycle, not a method a mod's subclass may have replaced): its
+//  views are torn down (also for a form that never attached, or was
+//  blurred: its views are still there, and a ticker among them its timer)
+//  and it is marked destroyed, so nothing can attach it again (a late
+//  setFocus(true) from a callback that finished after the menu was left).
+//
+function destroyForm(vc) {
+    if (vc instanceof ViewController) {
+        if (vc.attached) {
+            vc.detachClientEvents();
+        }
+        return FormLifecycle.destroy(vc);
+    }
+
+    //  not a ViewController: tear down what it has, as before
+    if (vc.attached) {
+        return vc.detachClientEvents();
+    }
+
+    _.forEach(vc.views, view => {
+        if (View.isDestroyed(view)) {
+            return;
+        }
+        View.releaseInputFocus(view);
+        view.removeAllListeners();
+        if (_.isFunction(view.destroy)) {
+            view.destroy();
+        }
+        View.markDestroyed(view);
+    });
+}
+
+//  Every form |menu| still has, for good (see destroyForm())
+function destroyMenuForms(menu) {
+    Object.keys(menu.viewControllers).forEach(name => {
+        const vc = menu.viewControllers[name];
+        if (vc) {
+            destroyForm(vc);
+        }
+    });
+}
+
 exports.MenuModule = class MenuModule extends PluginModule {
     constructor(options) {
         super(options);
@@ -45,6 +107,17 @@ exports.MenuModule = class MenuModule extends PluginModule {
         this.menuName = options.menuName;
         this.menuConfig = options.menuConfig;
         this.client = options.client;
+        //
+        //  A folder mod's own art/ folder (mods/<name>/art), set by
+        //  menu_util.loadMenu() for a menu whose module is that mod; undefined
+        //  for every other menu. Art this menu shows through the helpers below
+        //  (displayAsset(), prepViewControllerWithArt(),
+        //  displayArtAndPrepViewController(), promptForInput(), paged art) is
+        //  looked for there after the themes and before the general art
+        //  directory: see theme.getThemeArt(). Mod code calling theme.js
+        //  directly can pass it on as |modArtPath| too.
+        //
+        this.modArtPath = options.modArtPath;
         this.menuMethods = {}; //  methods called from @method's
         this.menuConfig.config = this.menuConfig.config || {};
         //  Fall back to the global menus.cls, defaulting to false if the config
@@ -114,8 +187,104 @@ exports.MenuModule = class MenuModule extends PluginModule {
         });
     }
 
+    //
+    //  The caller is leaving this menu (or it is being reloaded). A module
+    //  that overrides this must call super.leave(): that marks the menu
+    //  left (hasLeftMenu()), clears its setMenuTimeout() timers and
+    //  destroys its forms. Destroyed is terminal: a callback that finishes
+    //  later and calls setFocus(true) or switchFocus() on one of them
+    //  does nothing (the keys stay with the menu now on screen).
+    //
     leave() {
+        leftMenus.add(this);
+        this.clearMenuTimeouts();
         this.detachViewControllers();
+        destroyMenuForms(this);
+    }
+
+    //
+    //  True once leave() has run. Anything that finishes after an async
+    //  step (art loading, a pause, a database read) and would draw or build
+    //  forms checks this first: the screen belongs to another menu now. The
+    //  default initSequence() and the prep*() helpers below do.
+    //
+    hasLeftMenu() {
+        return leftMenus.has(this);
+    }
+
+    //
+    //  setTimeout() for this menu: |fn| runs after |ms| unless the menu has
+    //  been left first; leave() clears every one still pending. Returns a
+    //  handle for clearMenuTimeout().
+    //
+    setMenuTimeout(fn, ms) {
+        let timeouts = menuTimeouts.get(this);
+        if (!timeouts) {
+            timeouts = new Set();
+            menuTimeouts.set(this, timeouts);
+        }
+
+        const handle = setTimeout(() => {
+            timeouts.delete(handle);
+            if (this.hasLeftMenu()) {
+                return;
+            }
+            return fn();
+        }, ms);
+        timeouts.add(handle);
+        return handle;
+    }
+
+    clearMenuTimeout(handle) {
+        const timeouts = menuTimeouts.get(this);
+        if (timeouts && timeouts.delete(handle)) {
+            clearTimeout(handle);
+        }
+    }
+
+    clearMenuTimeouts() {
+        const timeouts = menuTimeouts.get(this);
+        if (timeouts) {
+            timeouts.forEach(handle => clearTimeout(handle));
+            timeouts.clear();
+        }
+    }
+
+    //  Forms that may have been built after leave() tore down the others
+    _destroyFormsAfterLeave() {
+        destroyMenuForms(this);
+    }
+
+    //
+    //  For a prep*() helper about to call back: if the menu has been left,
+    //  the form |vc| it built (or would refocus) is torn down first, so no
+    //  form of a menu that is gone takes keys or runs timers. The helper
+    //  still calls back, as it always has. Returns true if it was left.
+    //
+    _tearDownFormIfLeft(vc, step) {
+        if (!this.hasLeftMenu()) {
+            return false;
+        }
+        this.client.log.debug(
+            { menuName: this.menuName, step },
+            'Menu was left; form torn down'
+        );
+        if (vc) {
+            destroyForm(vc);
+        }
+        return true;
+    }
+
+    //  For a step that finished after leave(): note it, and stop
+    _stoppedAfterLeave(step) {
+        if (!this.hasLeftMenu()) {
+            return false;
+        }
+        this.client.log.debug(
+            { menuName: this.menuName, step },
+            'Menu was left; not continuing'
+        );
+        return true;
     }
 
     initSequence() {
@@ -138,6 +307,10 @@ exports.MenuModule = class MenuModule extends PluginModule {
                     return self.beforeArt(callback);
                 },
                 function displayMenuArt(callback) {
+                    if (self._stoppedAfterLeave('beforeArt')) {
+                        return callback(MenuLeftStop);
+                    }
+
                     if (!hasArt()) {
                         return callback(null, null);
                     }
@@ -174,6 +347,10 @@ exports.MenuModule = class MenuModule extends PluginModule {
                     );
                 },
                 function displayPromptArt(artData, callback) {
+                    if (self._stoppedAfterLeave('art')) {
+                        return callback(MenuLeftStop);
+                    }
+
                     if (!_.isString(self.menuConfig.prompt)) {
                         return callback(null);
                     }
@@ -206,9 +383,21 @@ exports.MenuModule = class MenuModule extends PluginModule {
                     );
                 },
                 function afterArtDisplayed(callback) {
+                    //  left while the art loaded: no forms (or tickers) for
+                    //  a menu that is gone
+                    if (self._stoppedAfterLeave('promptArt')) {
+                        return callback(MenuLeftStop);
+                    }
+
                     return self.mciReady(mciData, callback);
                 },
                 function displayPauseIfRequested(callback) {
+                    if (self._stoppedAfterLeave('mciReady')) {
+                        //  forms built after leave() tore down the others
+                        self._destroyFormsAfterLeave();
+                        return callback(MenuLeftStop);
+                    }
+
                     if (!self.shouldPause() || self.getPauseMode() === 'pageBreak') {
                         return callback(null, null);
                     }
@@ -220,12 +409,20 @@ exports.MenuModule = class MenuModule extends PluginModule {
                     );
                 },
                 function finishAndNext(artInfo, callback) {
+                    if (self._stoppedAfterLeave('pause')) {
+                        return callback(MenuLeftStop);
+                    }
+
                     self.finishedLoading();
                     self.realTimeInterrupt = 'allowed';
                     return self.autoNextMenu(callback);
                 },
             ],
             err => {
+                if (MenuLeftStop === err) {
+                    return; //  left part-way; see hasLeftMenu()
+                }
+
                 if (err) {
                     return self.initSequenceFailed(err);
                 }
@@ -387,6 +584,25 @@ exports.MenuModule = class MenuModule extends PluginModule {
         });
     }
 
+    //
+    //  coverScreen([options,] fn, cb) -- show something over this menu's
+    //  screen (a help page, a message) while its forms stay attached: keys
+    //  go to the cover, not the forms, and the forms' tickers and status
+    //  bars do not draw over it. See core/screen_cover.js for |options|
+    //  (restore(cb) repaints the menu afterwards).
+    //
+    //  Background drawing is suspended for the views that exist when the
+    //  cover starts; views created inside the cover (a form built in fn, a
+    //  ticker in its pause prompt) draw as usual. options.scope changes
+    //  that (see View.suspendBackgroundDraw()): { scope: { menu: this } }
+    //  also suspends every form of this menu, whenever it is built, so a
+    //  form whose art finishes loading under the cover does not draw over
+    //  it (core's interrupt cover does this).
+    //
+    coverScreen(options, fn, cb) {
+        return ScreenCover.coverScreen(this.client, options, fn, cb);
+    }
+
     gotoMenuOrShowMessage(name, message, options, cb) {
         if (!cb && _.isFunction(options)) {
             cb = options;
@@ -397,14 +613,23 @@ exports.MenuModule = class MenuModule extends PluginModule {
 
         this.gotoMenu(name, options, err => {
             if (err) {
-                if (options.clearScreen) {
-                    this.client.term.rawWrite(ansi.resetScreen());
-                }
+                //  The message is shown over this menu, which is still
+                //  attached: its forms get no key and its tickers do not
+                //  draw while the pause waits. prevMenu() repaints, after.
+                return this.coverScreen(
+                    { redrawMissed: false },
+                    done => {
+                        if (options.clearScreen) {
+                            this.client.term.rawWrite(ansi.resetScreen());
+                        }
 
-                this.client.term.write(`${message}\n`);
-                return this.pausePrompt(() => {
-                    return this.prevMenu(cb);
-                });
+                        this.client.term.write(`${message}\n`);
+                        return this.pausePrompt(() => done());
+                    },
+                    () => {
+                        return this.prevMenu(cb);
+                    }
+                );
             }
 
             if (cb) {
@@ -425,8 +650,9 @@ exports.MenuModule = class MenuModule extends PluginModule {
         );
     }
 
+    //  not if the menu has been left by then (see setMenuTimeout())
     prevMenuOnTimeout(timeout, cb) {
-        setTimeout(() => {
+        return this.setMenuTimeout(() => {
             return this.prevMenu(cb);
         }, timeout);
     }
@@ -441,6 +667,12 @@ exports.MenuModule = class MenuModule extends PluginModule {
         return vc;
     }
 
+    //
+    //  Unchanged from before form states: detach the form
+    //  (detachClientEvents(), which does nothing on a form that never
+    //  attached) and forget it. It is not destroyed: a module that kept it
+    //  can add it again and setFocus(true) it.
+    //
     removeViewController(name) {
         if (this.viewControllers[name]) {
             this.viewControllers[name].detachClientEvents();
@@ -673,6 +905,7 @@ exports.MenuModule = class MenuModule extends PluginModule {
                 //  and RIP art, unless the caller says |artSpec| may not be the
                 //  operator's choice (see theme.getThemeArt())
                 acceptRip: false !== artOptions.acceptRip,
+                modArtPath: self.modArtPath,
             }),
             (err, artInfo) => {
                 if (err) {
@@ -705,7 +938,8 @@ exports.MenuModule = class MenuModule extends PluginModule {
             true === this.menuConfig.runtime.autoNext
         ) {
             if (this.hasNextTimeout()) {
-                setTimeout(() => {
+                //  not if the caller has moved on by then
+                this.setMenuTimeout(() => {
                     return gotoNextMenu();
                 }, this.menuConfig.config.nextTimeout);
             } else {
@@ -791,7 +1025,10 @@ exports.MenuModule = class MenuModule extends PluginModule {
                 font: this.menuConfig.config.font,
                 encodedAs: this.menuConfig.config.encodedAs, //  propagate to art loader; undefined if unset
             },
-            options //  caller can override
+            options, //  caller can override
+            //  ...but not this: |options| is often the menu's config block,
+            //  and no config key may name a folder to look for art in
+            { modArtPath: this.modArtPath }
         );
 
         if (Buffer.isBuffer(nameOrData)) {
@@ -815,6 +1052,13 @@ exports.MenuModule = class MenuModule extends PluginModule {
         );
     }
 
+    //
+    //  The prep*() helpers call back as they always have, also once the
+    //  menu has been left (hasLeftMenu()), so a caller's cleanup still
+    //  runs. But a form they build or refocus for a menu that has been
+    //  left is torn down (its keys detached, its views destroyed, their
+    //  timers stopped) before they call back.
+    //
     prepViewController(name, formId, mciMap, cb) {
         const needsCreated = this.viewControllers[name] === undefined;
         if (needsCreated) {
@@ -832,13 +1076,18 @@ exports.MenuModule = class MenuModule extends PluginModule {
             };
 
             return vc.loadFromMenuConfig(loadOpts, err => {
+                this._tearDownFormIfLeft(vc, `prepViewController:${name}`);
                 return cb(err, vc, true);
             });
         }
 
-        this.viewControllers[name].setFocus(true);
+        const vc = this.viewControllers[name];
+        //  a left menu's form stays torn down
+        if (!this._tearDownFormIfLeft(null, `prepViewController:${name}`)) {
+            vc.setFocus(true);
+        }
 
-        return cb(null, this.viewControllers[name], false);
+        return cb(null, vc, false);
     }
 
     prepViewControllerWithArt(name, formId, options, cb) {
@@ -931,10 +1180,32 @@ exports.MenuModule = class MenuModule extends PluginModule {
 
         options.trailingLF = _.get(options, 'trailingLF', false);
 
+        //
+        //  The prompt is drawn over (or beside) the previous form, which is
+        //  covered meanwhile: it takes no keys and its views do not draw in
+        //  the background (a ticker under the prompt), but the views and
+        //  their timers are kept. On submit it is uncovered (a view that
+        //  missed a background draw is redrawn once) and gets the keys back.
+        //
+        //  Its view listeners are removed, as setFocus(false) always did
+        //  here (for an attached form; it left a detached one alone):
+        //  modules bind them again in the prompt's actions (msg_list), and
+        //  would otherwise bind them twice. Something in viewControllers
+        //  that is not a ViewController gets setFocus(false / true), as
+        //  before.
+        //
         let prevVc;
         if (prevFormName) {
             prevVc = this.viewControllers[prevFormName];
-            if (prevVc) {
+            if (prevVc instanceof ViewController) {
+                const wasAttached = prevVc.attached;
+                FormLifecycle.cover(prevVc);
+                if (wasAttached) {
+                    Object.values(prevVc.views || {}).forEach(view =>
+                        view.removeAllListeners()
+                    );
+                }
+            } else if (prevVc) {
                 prevVc.setFocus(false);
             }
         }
@@ -946,7 +1217,9 @@ exports.MenuModule = class MenuModule extends PluginModule {
                 originalSubmitNotify();
             }
 
-            if (prevVc) {
+            if (prevVc instanceof ViewController) {
+                FormLifecycle.activate(prevVc);
+            } else if (prevVc) {
                 prevVc.setFocus(true);
             }
             this.removeViewController(formName);
@@ -964,6 +1237,8 @@ exports.MenuModule = class MenuModule extends PluginModule {
         };
 
         options.viewController.setFocus(true);
+        //  a prompt this menu asks for may have its art in the mod's folder
+        options.modArtPath = this.modArtPath;
 
         this.optionalMoveToPosition(position);
         if (!options.position) {
@@ -979,6 +1254,12 @@ exports.MenuModule = class MenuModule extends PluginModule {
         });
     }
 
+    //
+    //  Show art |name| (menu config `art.<name>`) and load form |formId|
+    //  over it into view controller |name|, or refocus that controller if
+    //  it already exists. Calls back (err). Once the menu has been left the
+    //  form is torn down before it calls back: see prepViewController().
+    //
     displayArtAndPrepViewController(name, formId, options, cb) {
         const config = this.menuConfig.config;
         EnigAssert(_.isObject(config));
@@ -1001,7 +1282,11 @@ exports.MenuModule = class MenuModule extends PluginModule {
                     theme.displayThemedAsset(
                         config.art[name],
                         this.client,
-                        { font: this.menuConfig.font, trailingLF: false },
+                        {
+                            font: this.menuConfig.font,
+                            trailingLF: false,
+                            modArtPath: this.modArtPath,
+                        },
                         (err, artData) => {
                             return callback(err, artData);
                         }
@@ -1038,10 +1323,24 @@ exports.MenuModule = class MenuModule extends PluginModule {
                             viewOffsets: options.viewOffsets,
                         };
 
-                        return vc.loadFromMenuConfig(loadOpts, callback);
+                        return vc.loadFromMenuConfig(loadOpts, err => {
+                            this._tearDownFormIfLeft(
+                                vc,
+                                `displayArtAndPrepViewController:${name}`
+                            );
+                            return callback(err);
+                        });
                     }
 
-                    this.viewControllers[name].setFocus(true);
+                    //  a left menu's form stays torn down
+                    if (
+                        !this._tearDownFormIfLeft(
+                            null,
+                            `displayArtAndPrepViewController:${name}`
+                        )
+                    ) {
+                        this.viewControllers[name].setFocus(true);
+                    }
                     return callback(null);
                 },
             ],
@@ -1069,6 +1368,37 @@ exports.MenuModule = class MenuModule extends PluginModule {
         return form && form.getView(id);
     }
 
+    //
+    //  Defaults for the custom info formats (`${formName}InfoFormat${id}`) of
+    //  |formName|, as { id: formatString }, e.g. { 10: '{msgCount} new' }.
+    //  A module overrides this to ship formats that work with no operator
+    //  config. Return a new object; never write into menuConfig, which is the
+    //  shared, cached theme object.
+    //
+    getDefaultCustomInfoFormats(/*formName*/) {
+        return {};
+    }
+
+    //
+    //  The format for custom view |id| of |formName|. Anything an operator
+    //  sets (menu `config` / theme) always wins, including an empty string,
+    //  null or false, which hide the view even when the module has a default
+    //  for it. Absent that, the module's default, else undefined. A format
+    //  that comes out empty is treated as unset by the callers (no view,
+    //  nothing drawn).
+    //
+    getCustomInfoFormat(formName, id) {
+        const config = (this.menuConfig && this.menuConfig.config) || {};
+        const configured = config[`${formName}InfoFormat${id}`];
+        if (undefined !== configured) {
+            return configured;
+        }
+
+        const defaults = this.getDefaultCustomInfoFormats(formName) || {};
+        const dflt = defaults[id];
+        return 'string' === typeof dflt ? dflt : undefined;
+    }
+
     getCustomViewsWithFilter(formName, startId, options) {
         options = options || {};
 
@@ -1081,7 +1411,6 @@ exports.MenuModule = class MenuModule extends PluginModule {
             return views;
         }
 
-        const config = this.menuConfig.config;
         const endId = options.endId || 99;
 
         //  Walk the whole range rather than stopping at the first missing ID:
@@ -1094,13 +1423,14 @@ exports.MenuModule = class MenuModule extends PluginModule {
             }
 
             const key = `${formName}InfoFormat${customMciId}`; //  e.g. "mainInfoFormat10"
-            const format = config[key];
+            const format = this.getCustomInfoFormat(formName, customMciId);
 
             if (
                 format &&
                 (!options.filter || options.filter.find(f => format.indexOf(f) > -1))
             ) {
                 view.key = key; // cache
+                view.infoFormat = format; // what updateCustomViewTextsWithFilter() draws
                 views.push(view);
             }
         }
@@ -1126,11 +1456,10 @@ exports.MenuModule = class MenuModule extends PluginModule {
     updateCustomViewTextsWithFilter(formName, startId, fmtObj, options) {
         options = options || {};
         const views = this.getCustomViewsWithFilter(formName, startId, options);
-        const config = this.menuConfig.config;
         let drawn = 0;
 
         views.forEach(view => {
-            const format = config[view.key];
+            const format = view.infoFormat;
             //  measured with the client the view renders it with
             const text = stringFormat(format, fmtObj, { client: this.client });
 
@@ -1186,9 +1515,10 @@ exports.MenuModule = class MenuModule extends PluginModule {
     //
     //  A view whose setText(text, false) followed by redraw() draws what
     //  setText(text) would, and whose getData() is the text it draws.
-    //  EditTextView and MaskEditTextView keep the caller's raw text after the
-    //  first draw, so a later redraw() is not the same picture; a ButtonView's
-    //  getData() is not its text at all.
+    //  EditTextView and MaskEditTextView are left out: their getData() is the
+    //  text being edited, not what is drawn (an itemFormat previews its colour
+    //  codes, a mask adds its literals); a ButtonView's getData() is not its
+    //  text at all.
     //
     static canSkipUnchangedText(view) {
         return (
@@ -1199,22 +1529,27 @@ exports.MenuModule = class MenuModule extends PluginModule {
     }
 
     //
-    //  Move the terminal cursor back to where the focused view of `formName`
-    //  wants it, after something else has drawn over the screen.
+    //  Move the terminal cursor back to where the view the user is typing
+    //  into wants it, after something else has drawn over the screen.
     //
-    //  Only views that know where their cursor belongs implement
-    //  _repositionCursor() -- EditTextView, and views that patch the same hook
-    //  in. For anything else (menu views, MultiLineEditTextView) or when
-    //  nothing holds focus, this is a no-op and the caller's cursor handling
-    //  stands. _repositionCursor() is used rather than setFocus(true) so that
-    //  no focus state is mutated and no switch-focus events are fired.
+    //  That is the client's input focus view (View.getInputFocusView()), on
+    //  whichever form it is: the custom views may be in the menu's art and
+    //  the field in its prompt. |_formName| is no longer used to find it and
+    //  is kept so existing callers and overrides still work.
     //
-    repositionCursorToFocusedView(formName) {
-        const form = this.viewControllers[formName];
-        const view = form && form.getFocusedView();
-
-        if (view && view.hasFocus && _.isFunction(view._repositionCursor)) {
-            view._repositionCursor();
+    //  The view's restoreFocusPosition() puts back its cursor and SGR:
+    //  EditTextView through _repositionCursor() (so a version patched onto a
+    //  view, as sysop chat does, is used), MultiLineEditTextView at its edit
+    //  row and column, MaskEditTextView and other TextViews where
+    //  setFocus(true) leaves the cursor. Menu views know no cursor position
+    //  and write nothing; with nothing focused this is a no-op, and the
+    //  caller's cursor handling stands. No focus state is changed and no
+    //  switch-focus events are fired.
+    //
+    repositionCursorToFocusedView(_formName) {
+        const view = View.getInputFocusView(this.client);
+        if (view) {
+            view.restoreFocusPosition();
         }
     }
 

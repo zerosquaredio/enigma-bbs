@@ -17,11 +17,13 @@ const moveFileWithCollisionHandling =
 const pathWithTerminatingSeparator =
     require('./file_util.js').pathWithTerminatingSeparator;
 const Log = require('./logger.js').log;
-const Errors = require('./enig_error.js').Errors;
+const { Errors, ErrorCodes } = require('./enig_error.js');
 const FileEntry = require('./file_entry.js');
 const isAnsi = require('./string_util.js').isAnsi;
 const Events = require('./events.js');
 const UploadTempDir = require('./upload_temp_dir.js');
+const FileScanner = require('./file_scanner.js');
+const { maskHiddenDupes } = require('./file_base_visibility.js');
 
 //  deps
 const async = require('async');
@@ -40,6 +42,7 @@ const FormIds = {
     processing: 1,
     fileDetails: 2,
     dupes: 3,
+    rejected: 4,
 };
 
 const MciViewIds = {
@@ -56,6 +59,7 @@ const MciViewIds = {
         archiveListIndicator: 2,
         descFileIndicator: 3,
         logStep: 4,
+        virusScanIndicator: 5, //  optional
         customRangeStart: 10, //  10+ = customs
     },
 
@@ -69,6 +73,10 @@ const MciViewIds = {
 
     dupes: {
         dupeList: 1,
+    },
+
+    rejected: {
+        rejectedList: 1,
     },
 };
 
@@ -91,6 +99,7 @@ exports.getModule = class UploadModule extends MenuModule {
         if (_.has(options, 'lastMenuResult.areaInfo')) {
             this.areaInfo = options.lastMenuResult.areaInfo;
             this.uploadType = options.lastMenuResult.uploadType;
+            this.uploadFromMenu = options.lastMenuResult.uploadFromMenu;
         }
 
         this.availAreas = getSortedAvailableFileAreas(this.client, { writeAcs: true });
@@ -267,6 +276,8 @@ exports.getModule = class UploadModule extends MenuModule {
                     direction: 'recv',
                     uploadAreaInfo: this.availAreas[areaIndex],
                     uploadType: this.uploadType,
+                    //  where to send the caller if |uploadDoneMenu| is missing
+                    uploadFromMenu: this.menuBelow(),
                 },
             };
 
@@ -376,6 +387,25 @@ exports.getModule = class UploadModule extends MenuModule {
                 updateIndicator(MciViewIds.processing.descFileIndicator, true);
                 break;
 
+            case 'virus_scan_start':
+                stepIndicatorFmt =
+                    fmtConfig.virusScanStartFormat || 'Scanning for viruses';
+                updateIndicator(MciViewIds.processing.virusScanIndicator);
+                break;
+
+            case 'virus_scan_finish':
+                //  the user is told it failed, not what a scanner found
+                if (_.get(stepInfo, 'scanVerdict.rejected')) {
+                    logStepFmt = stepIndicatorFmt =
+                        fmtConfig.virusScanRejectedFormat ||
+                        '{fileName} failed the upload check';
+                } else {
+                    stepIndicatorFmt =
+                        fmtConfig.virusScanFinishFormat || 'Virus scan finished';
+                }
+                updateIndicator(MciViewIds.processing.virusScanIndicator, true);
+                break;
+
             case 'finished':
                 logStepFmt = stepIndicatorFmt =
                     fmtConfig.scanningStartFormat || 'Finished';
@@ -415,6 +445,7 @@ exports.getModule = class UploadModule extends MenuModule {
         const results = {
             newEntries: [],
             dupes: [],
+            rejected: [], //  failed file scanning (#291); never persisted
         };
 
         self.client.log.debug('Scanning upload(s)', { paths: this.recvFilePaths });
@@ -424,8 +455,6 @@ exports.getModule = class UploadModule extends MenuModule {
         async.eachSeries(
             this.recvFilePaths,
             (filePath, nextFilePath) => {
-                //  :TODO: virus scanning/etc. should occur around here
-
                 currentFileNum += 1;
 
                 self.scanStatus = {
@@ -436,6 +465,8 @@ exports.getModule = class UploadModule extends MenuModule {
                     areaTag: self.areaInfo.areaTag,
                     storageTag: self.areaInfo.storageTags[0],
                     hashTags: self.areaInfo.hashTags,
+                    scanSource: FileScanner.ScanSources.Upload,
+                    scanContext: { user: self.client.user },
                 };
 
                 function handleScanStep(stepInfo, nextScanStep) {
@@ -453,6 +484,20 @@ exports.getModule = class UploadModule extends MenuModule {
                     scanOpts,
                     handleScanStep,
                     (err, fileEntry, dupeEntries) => {
+                        //
+                        //  A rejected file is a result, like a dupe, not a
+                        //  reason to abandon the rest of the batch.
+                        //
+                        if (FileScanner.isFileRejected(err)) {
+                            results.rejected.push({
+                                filePath,
+                                fileName: paths.basename(filePath),
+                                verdict: err.verdict,
+                                ctx: err.scanContext,
+                            });
+                            return nextFilePath(null);
+                        }
+
                         if (err) {
                             return nextFilePath(err);
                         }
@@ -464,7 +509,15 @@ exports.getModule = class UploadModule extends MenuModule {
                                 dupeEntries: dupeEntries,
                             });
 
-                            results.dupes = results.dupes.concat(dupeEntries);
+                            //  a dupe of an entry hidden from them (#291) is
+                            //  still a dupe, but is not named
+                            results.dupes = results.dupes.concat(
+                                maskHiddenDupes(
+                                    self.client,
+                                    dupeEntries,
+                                    paths.basename(filePath)
+                                )
+                            );
                         } else {
                             //  new one
                             results.newEntries.push(fileEntry);
@@ -475,7 +528,11 @@ exports.getModule = class UploadModule extends MenuModule {
                 );
             },
             err => {
-                return cb(err, results);
+                //  even when a later file aborted the batch: rejected files
+                //  are quarantined and reported either way
+                self.disposeRejectedUploads(results.rejected, () => {
+                    return cb(err, results);
+                });
             }
         );
     }
@@ -601,6 +658,127 @@ exports.getModule = class UploadModule extends MenuModule {
         );
     }
 
+    //
+    //  Rejected uploads leave the receive directory here: quarantined or
+    //  deleted per fileBase.scanning.failAction. One operator notice covers
+    //  the whole session. Never fails: a file that cannot be moved is still
+    //  removed with the rest of the receive directory.
+    //
+    disposeRejectedUploads(rejected, cb) {
+        if (0 === rejected.length) {
+            return cb(null);
+        }
+
+        async.eachSeries(
+            rejected,
+            (rej, nextRej) => {
+                FileScanner.applyFailAction(
+                    rej.filePath,
+                    rej.verdict,
+                    rej.ctx,
+                    (err, disposition) => {
+                        if (err) {
+                            this.client.log.warn(
+                                { fileName: rej.fileName, error: err.message },
+                                'Failed to quarantine or delete rejected upload'
+                            );
+                            //  never imported: only newEntries leave it
+                            disposition = {
+                                error: `${err.message}; removed with the upload's temporary directory`,
+                            };
+                        }
+                        rej.disposition = disposition;
+                        return nextRej(null);
+                    }
+                );
+            },
+            () => {
+                return FileScanner.notifyOperators(
+                    rejected,
+                    {
+                        source: FileScanner.ScanSources.Upload,
+                        user: this.client.user,
+                    },
+                    cb
+                );
+            }
+        );
+    }
+
+    //
+    //  The uploader is told a file was refused and, in general terms, why --
+    //  not the signature a scanner reported, unless the theme asks for it.
+    //
+    displayRejectedPage(rejected, cb) {
+        const self = this;
+        const config = this.menuConfig.config;
+
+        const infoFormat = config.rejectedInfoFormat || '{fileName}: {reason}';
+        const reasonFor = verdict => {
+            if (FileScanner.Verdicts.Held === _.get(verdict, 'result')) {
+                return config.rejectedHeldReason || 'could not be checked';
+            }
+            return config.rejectedInfectedReason || 'failed the upload check';
+        };
+
+        //  the name and a scanner's output come from outside: no pipe codes
+        const clean = FileScanner.cleanDisplayText;
+        const lines = rejected.map(rej =>
+            stringFormat(infoFormat, {
+                fileName: clean(rej.fileName) || '?',
+                reason: reasonFor(rej.verdict),
+                scanResult: _.get(rej, 'verdict.result', ''),
+                signature: clean(_.get(rej, 'verdict.signature')) || '',
+            })
+        );
+
+        async.waterfall(
+            [
+                function prepArtAndViewController(callback) {
+                    self.prepViewControllerWithArt(
+                        'rejected',
+                        FormIds.rejected,
+                        { clearScreen: true, trailingLF: false },
+                        err => {
+                            if (err) {
+                                //  the art is optional, as for dupes
+                                self.client.term.pipeWrite('|00|07Upload(s) rejected:\n');
+                                return callback(null, null);
+                            }
+
+                            return callback(
+                                null,
+                                self.viewControllers.rejected.getView(
+                                    MciViewIds.rejected.rejectedList
+                                )
+                            );
+                        }
+                    );
+                },
+                function populate(rejectedListView, callback) {
+                    if (rejectedListView) {
+                        rejectedListView.setItems(lines);
+                        rejectedListView.redraw();
+                    } else {
+                        lines.forEach(line => {
+                            self.client.term.pipeWrite(`${line}\n`);
+                        });
+                    }
+                    return callback(null);
+                },
+                function pause(callback) {
+                    return self.pausePrompt(
+                        { row: self.client.term.termHeight },
+                        callback
+                    );
+                },
+            ],
+            err => {
+                return cb(err);
+            }
+        );
+    }
+
     displayDupesPage(dupes, cb) {
         //
         //  If we have custom art to show, use it - else just dump basic info.
@@ -635,6 +813,12 @@ exports.getModule = class UploadModule extends MenuModule {
                     async.each(
                         dupes,
                         (dupe, nextDupe) => {
+                            if (dupe.hiddenDupe) {
+                                dupe.areaName = dupe.areaDesc =
+                                    self.menuConfig.config.hiddenDupeAreaName ||
+                                    'this board';
+                                return nextDupe(null);
+                            }
                             FileEntry.loadBasicEntry(dupe.fileId, dupe, err => {
                                 if (err) {
                                     return nextDupe(err);
@@ -742,6 +926,15 @@ exports.getModule = class UploadModule extends MenuModule {
                         return callback(null, scanResults);
                     });
                 },
+                function displayRejected(scanResults, callback) {
+                    if (0 === scanResults.rejected.length) {
+                        return callback(null, scanResults);
+                    }
+
+                    return self.displayRejectedPage(scanResults.rejected, () => {
+                        return callback(null, scanResults);
+                    });
+                },
                 function prepDetails(scanResults, callback) {
                     return self.prepDetailsForUpload(scanResults, callback);
                 },
@@ -774,9 +967,66 @@ exports.getModule = class UploadModule extends MenuModule {
                     self.cleanupTempFiles(); //  normally called after moveAndPersistUploadsToDatabase() is completed.
                 }
 
-                return self.gotoMenu('fileBaseMainMenu');
+                return self.gotoUploadDoneMenu();
             }
         );
+    }
+
+    //  The name of the menu under this one: where the upload was started from
+    menuBelow() {
+        const below = _.invoke(this.client, 'menuStack.peekPrev');
+        return _.isString(_.get(below, 'name')) ? below.name : undefined;
+    }
+
+    //
+    //  Where the caller goes once the upload is done, or has failed: the
+    //  menu's |uploadDoneMenu|, else the stock 'fileBaseMainMenu'. A board
+    //  without that menu (its file base menu has another name) sends the
+    //  caller back to the menu they started the upload from, with a warning,
+    //  rather than ending their session.
+    //
+    gotoUploadDoneMenu(cb) {
+        const doneMenu = this.menuConfig.config.uploadDoneMenu || 'fileBaseMainMenu';
+        const fallbackMenu = this.uploadFromMenu;
+        const fail = err => {
+            if (cb) {
+                return cb(err);
+            }
+            //  as the menu stack does without a callback: an ended session
+            //  or a menu the caller may not enter goes nowhere; anything
+            //  else ends the session
+            if (this.client.clientEnded || ErrorCodes.AccessDenied === err.code) {
+                return;
+            }
+            return this.client.defaultHandlerMissingMod()(err);
+        };
+
+        return this.gotoMenu(doneMenu, {}, err => {
+            if (!err) {
+                return cb ? cb(null) : undefined;
+            }
+
+            if (
+                this.client.clientEnded ||
+                !fallbackMenu ||
+                fallbackMenu === doneMenu ||
+                fallbackMenu === this.menuName
+            ) {
+                return fail(err);
+            }
+
+            this.client.log.warn(
+                { uploadDoneMenu: doneMenu, fallbackMenu, error: err.message },
+                'Upload done menu unavailable; returning to the menu the upload started from. Set "uploadDoneMenu" in the upload menu\'s config'
+            );
+
+            return this.gotoMenu(fallbackMenu, {}, fallbackErr => {
+                if (fallbackErr) {
+                    return fail(fallbackErr);
+                }
+                return cb ? cb(null) : undefined;
+            });
+        });
     }
 
     displayOptionsPage(cb) {

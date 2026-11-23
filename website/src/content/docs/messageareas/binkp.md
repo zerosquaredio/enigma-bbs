@@ -139,7 +139,7 @@ See [Configuration Files — Secret Files](../configuration/config-files.md#secr
 
 [Later.js text expression](https://bunkat.github.io/later/parsers.html#text) — for example `"every 15 minutes"` or `"at 3:00 am"`. When the timer fires, ENiGMA½ dials **every** configured peer in `binkp.nodes` (excluding wildcard patterns and any peer with `pull: false`). This is independent of whether we have outbound mail queued — its job is to give quiet hubs a chance to push their pending echo mail down to us.
 
-Set to `null`, `""`, or omit the key entirely to disable the pull cycle. Crashmail (event-driven dialing on outbound) still works without it.
+Set to `null` or `""` to disable the pull cycle. Leaving the key out does not disable it: the default, `"every 15 minutes"`, applies. Crashmail (event-driven dialing on outbound) still works without it.
 
 If the expression fails to parse, the pull cycle is disabled and a warning is logged at startup.
 
@@ -156,9 +156,26 @@ When ENiGMA½ acquires a node lock (`.bsy` file in the outbound directory), it e
 `staleLockMaxAgeMs` (default `30 * 60 * 1000`, i.e. 30 minutes) controls how long a `.bsy` file may live untouched before it's reaped. Two paths use it:
 
 - **Startup sweep** runs unconditionally on BinkP module startup (even when inbound is disabled, since outbound calls also acquire locks).
-- **Just-in-time check** runs when `acquireLock` hits an `EEXIST`: if the existing lock is older than the threshold, it's unlinked and the lock is acquired.
+- **Just-in-time check** runs when taking a lock finds one already there.
 
 The default is 6× the internal session timeout (5 minutes), giving a generous safety margin without making post-crash recovery slow. If you ever raise the session timeout, raise this in proportion.
+
+ENiGMA½ refreshes every `.bsy` it holds once a minute (more often if `staleLockMaxAgeMs` is under 5 minutes), as binkd does, so a long session's lock never looks stale to anyone. It does so by writing the lock's own line back over itself, so the file's modification time is the one the filesystem assigns (on a network filesystem, the file server's clock). Its own locks hold one line, the process ID first (FTS-5005.003 §5.1):
+
+```
+1275201 ENiGMA 3f9a1c0b7d2e 9c4e1a7b2f60d8e1
+```
+
+The second field identifies the machine's current boot and PID namespace (as a short hash, or `-` where it cannot be read, such as on non-Linux systems); the third is new for every lock taken. A lock in this form is removed:
+
+- at once, when it was written on this machine (same boot, same PID namespace) by a process that is no longer running. A crash or `SIGKILL` therefore leaves nothing behind on restart.
+- after 5 minutes without being refreshed (or `staleLockMaxAgeMs`, if that is shorter): its process stopped refreshing it. This covers a container restarted after a crash (each start has a new PID namespace) and other machines sharing the outbound.
+
+A lock's age is its modification time compared with the clock of whoever is looking at it. **Machines sharing an outbound (and the file server, for a network filesystem) need their clocks within a few minutes of each other**; use NTP. A clock running more than about 4 minutes ahead of the file server can take a live ENiGMA½ lock for an orphaned one.
+
+Any other `.bsy` (binkd's, other software's, an older ENiGMA½'s) is removed only once it is older than `staleLockMaxAgeMs`, never because of the PID in it.
+
+When ENiGMA½ releases a lock it removes the file only if it still holds what it wrote: a lock another program took in the meantime stays. If a lock it holds is removed or replaced while a session is running, or cannot be refreshed for half the 5 minutes, ENiGMA½ logs a warning and stops relying on it: for the rest of the session it neither changes the flow files that lock covers nor deletes or truncates the files it sends from them. Those files stay where they are, still queued, and are sent again next session. On shutdown, live sessions are sent `M_BSY` ("Shutting down") and closed, and their locks released, within 4 seconds; anything still held when the process exits is removed as it exits (only if it still holds ENiGMA½'s own line).
 
 The same `.bsy` files are honoured by external mailers such as Binkd, and by the ENiGMA½ *tosser* when it queues outbound — see [`flowLockTimeoutMs`](#flowlocktimeoutms) below.
 
@@ -173,6 +190,14 @@ When a node calls in, it presents its addresses (AKAs), and ENiGMA½ locks each 
 - If every address is busy, the session is answered `M_BSY` "All AKAs are busy", again instead of accepting the password.
 
 When ENiGMA½ calls a node it locks that node (as above) before dialling and skips it if it is busy.
+
+### Poll requests
+
+A zero-length flow file is a poll request ([FTS-5005.003](http://ftsc.org/docs/fts-5005.003) §3.2, §3.4): call this node even though nothing is queued for it. It is how a sysop asks for a call by hand (`touch 00010002.clo`) and how other software sharing the outbound asks for one. A zero-length `.ilo`, `.clo`, `.dlo`, `.flo`, `.iut`, `.cut`, `.dut` or `.out` makes the node due a call the next time ENiGMA½ polls: the pull cycle, the `binkpPullNow` task, or crashmail. The node still needs a `host` in `binkp.nodes` to be dialled; without one, the poll waits until the node calls in.
+
+The file is removed once a session with that node ends successfully, whichever side started it: a call ENiGMA½ made, or the node calling in and authenticating for that address. ENiGMA½ removes it while it still holds the node's `.bsy` lock, and only if it is still a zero-length file; one that has had mail queued into it during the session is kept and read as a normal flow file next session. A session that drops, ends in an error or is refused with `M_BSY` leaves it in place, as §3.4 asks, so the node is called again. If another mailer sharing the outbound answers the poll first, it removes the file and ENiGMA½ has nothing to do.
+
+Hold (`.hlo`, `.hut`) means wait for the node to call us, so an empty hold file is neither a reason to dial nor removed. A flow file that is a symlink is not a poll request even when the file it leads to is empty. `oputil bso status` shows nodes with a poll request in its `Poll` column, and `oputil bso list` shows the file as `POLL`.
 
 ### Flow file lines
 
@@ -189,7 +214,7 @@ Leading and trailing whitespace is ignored, and so is a UTF-8 byte order mark at
 
 When ENiGMA½ marks a line sent, or removes one, it writes a new copy of the flow file beside it and renames it into place (for a flow file that is a symlink, beside the file the link leads to, keeping the link), so nothing reading the flow file at that moment sees it half written. Every line it did not change goes back exactly as it was: other software's bytes, CRLF or LF endings, and blank lines. The copy keeps the original's permissions and group. A flow file that belongs to another user (a separate mailer running as its own user, in a group-shared outbound) is not replaced, since that would make it ENiGMA½'s and could lock the other mailer out of it; it is changed in place instead, marking a `^`, `#`, `-` or `@` line by overwriting its first character with `~` as binkd does. Temporary copies are named `.enigma-flow-*.tmp`; one left behind by a crash is removed at startup once it is older than [`staleLockMaxAgeMs`](#binkpstalelockmaxagems).
 
-A flow file is removed only after ENiGMA½ has marked or removed a line in it and nothing is left to send, that is, every remaining line is blank or starts with `~` or `!`. A zero-length flow file (a poll request) or one holding only such lines that ENiGMA½ did not just change is left alone. If the flow file cannot be removed (a directory ENiGMA½ may not delete files in), it is written with the lines marked instead, so nothing already sent goes again. For a flow file that is a symlink, ENiGMA½ removes only the link, and writes the file it leads to with the lines marked; that file is never removed. A flow file that is a link into ENiGMA½'s configuration, security, database or log directories (see [`flowDispositionRoots`](#binkpflowdispositionroots)) is not read or changed at all: nothing is sent from it, it does not make the node due for a poll, a warning is logged at most once an hour, and `oputil bso list` shows it as `REFUSED` with the file it leads to. While it is there, the TIC passthrough transit sweep removes nothing, since it cannot tell what that flow file still names.
+A flow file is removed only after ENiGMA½ has marked or removed a line in it and nothing is left to send, that is, every remaining line is blank or starts with `~` or `!`. A flow file holding only such lines that ENiGMA½ did not just change is left alone. So is a zero-length flow file (a poll request; see [Poll requests](#poll-requests)): marking lines in other flow files never removes it. If the flow file cannot be removed (a directory ENiGMA½ may not delete files in), it is written with the lines marked instead, so nothing already sent goes again. For a flow file that is a symlink, ENiGMA½ removes only the link, and writes the file it leads to with the lines marked; that file is never removed. A flow file that is a link into ENiGMA½'s configuration, security, database or log directories (see [`flowDispositionRoots`](#binkpflowdispositionroots)) is not read or changed at all: nothing is sent from it, it does not make the node due for a poll, a warning is logged at most once an hour, and `oputil bso list` shows it as `REFUSED` with the file it leads to. While it is there, the TIC passthrough transit sweep removes nothing, since it cannot tell what that flow file still names.
 
 ### `binkp.flowRefWarnRepeatMs`
 

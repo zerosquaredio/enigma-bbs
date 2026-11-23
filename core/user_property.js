@@ -7,6 +7,14 @@
 //  This IS NOT a full list. For example, custom modules
 //  can utilize their own properties as well!
 //
+//  The "pref__" prefix (double underscore) is RESERVED for user preferences:
+//  choices between alternatives the operator offers, written only by
+//  @systemMethod:setUserPreference and the user_pref_select module (see
+//  user_preference.js) and routed on with PV[pref__<name>,<value>]. Never
+//  give a property below that prefix (a test enforces this). A mod storing
+//  its own data uses a prefix of its own or its mod database
+//  (getModDatabasePath()), not pref__.
+//
 module.exports = {
     PassPbkdf2Salt: 'pw_pbkdf2_salt',
     PassPbkdf2Dk: 'pw_pbkdf2_dk',
@@ -89,6 +97,10 @@ module.exports = {
 
     NewPrivateMailCount: 'new_private_mail_count', //  non-persistent
     NewAddressedToMessageCount: 'new_addr_to_msg_count', //  non-persistent
+    NewMessageCountCurrentArea: 'new_msg_count_cur_area', //  non-persistent
+    NewMessageCountCurrentConf: 'new_msg_count_cur_conf', //  non-persistent
+    NewMessageCountNewScan: 'new_msg_count_new_scan', //  non-persistent
+    MessageCountCurrentArea: 'msg_count_cur_area', //  non-persistent
     SSHPubKey: 'ssh_public_key', //  OpenSSH format (ssh-keygen, etc.)
     AuthFactor1Types: 'auth_factor1_types', //  List of User.AuthFactor1Types value(s)
     AuthFactor2OTP: 'auth_factor2_otp', //  If present, OTP type for 2FA. See OTPTypes

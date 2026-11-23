@@ -239,6 +239,16 @@ module.exports = () => {
 
         menus: {
             cls: true, //  Clear screen before each menu by default?
+
+            //  Animation views (%AV) and animated focused menu items
+            //  (focusItemFrames). |enabled| false turns them off
+            //  everywhere; a menu's own config.animations: false turns off
+            //  just that menu. Off: each shows its first frame, never ticks.
+            animations: {
+                enabled: true,
+                //  no animation frame is drawn sooner than this after the last
+                minFrameIntervalMs: 50,
+            },
         },
 
         doors: {
@@ -332,6 +342,15 @@ module.exports = () => {
                 ),
                 firstMenu: 'sshConnected',
                 firstMenuNewUser: 'sshConnectedNewUser',
+
+                //
+                //  How long a connection may take to get from connecting to the
+                //  shell (key exchange, then authentication, password typing included),
+                //  in seconds, after which it is disconnected. Until it gets there it
+                //  holds a node, and the idle timeout does not apply yet. The same
+                //  default as OpenSSH's LoginGraceTime. 0 disables the limit.
+                //
+                loginTimeoutSeconds: 120,
 
                 //
                 //  SSH clients whose reported terminal size cannot be believed, matched
@@ -605,6 +624,8 @@ module.exports = () => {
                 serverPort: 5000,
                 serverSslPort: 5001,
                 useSsl: false,
+                //  with useSsl, the server's certificate must be valid for serverHostname
+                verifyCertificate: true,
                 retryDelay: 10000,
                 multiplexerPort: 5000,
             },
@@ -1604,9 +1625,11 @@ module.exports = () => {
                     //  Stale .bsy lock reaper. When the BBS crashes mid-session
                     //  the per-node .bsy lock isn't released and that node is
                     //  un-pollable until the file is removed. On startup (and
-                    //  on every acquireLock attempt that hits EEXIST) we treat
-                    //  any .bsy older than this threshold as orphaned and
-                    //  unlink it.
+                    //  whenever taking a lock finds one already there) we
+                    //  treat any .bsy untouched for longer than this as
+                    //  orphaned and unlink it. ENiGMA's own locks are touched
+                    //  while held, and are reaped sooner once their process is
+                    //  gone: see core/bso_lock.js.
                     //
                     //  Default: 30 minutes (6× the internal session timeout of
                     //  5 minutes). If you ever raise the session timeout, raise
@@ -1820,6 +1843,66 @@ module.exports = () => {
             },
 
             //
+            //  File scanning (virus scanning) of untrusted files -- uploads,
+            //  TIC imports -- before anything looks inside them. Off by
+            //  default. See core/file_scanner.js.
+            //
+            scanning: {
+                enabled: false,
+
+                //  What happens to a file a scanner finds something in:
+                //  'quarantine' or 'delete'. A file held because a scanner
+                //  failed is always quarantined, never deleted.
+                failAction: 'quarantine',
+
+                //  Relative paths are relative to |areaStoragePrefix|.
+                quarantinePath: '.quarantine',
+
+                //  Who gets the private mail about a rejected file
+                notifyUserIds: [1],
+
+                //  Renamed DOS style in quarantine: .exe -> .ex_
+                defangExtensions: [
+                    'exe',
+                    'com',
+                    'bat',
+                    'cmd',
+                    'scr',
+                    'pif',
+                    'ps1',
+                    'vbs',
+                    'js',
+                    'sh',
+                ],
+
+                //
+                //  Run in order. Each entry: { scanner, sources, fileTypes,
+                //  timeout, onError, ... scanner specific options }.
+                //
+                scanners: [],
+
+                //  Most scanners running at once, across every source; the
+                //  rest wait their turn. A scanner's timeout starts when it
+                //  does.
+                maxConcurrent: 2,
+
+                //  Longest a file waits for a free scanner before that is a
+                //  scanner error (onError applies). 0 waits as long as it takes.
+                maxQueueWaitMs: 600000, //  10 minutes
+
+                //  Hide entries a rescan marked infected (scan_result=infected)
+                //  from users: not listed, found, queued, sent or served, and
+                //  asked for directly they do not exist. Applies whether or not
+                //  scanning is enabled. oputil fb mark-safe or removing the
+                //  entry is how one comes back or goes away.
+                hideInfected: true,
+
+                //  Who still sees (flagged) and can download hidden infected
+                //  entries
+                infectedVisibleAcs: 'GM[sysops]|ID1',
+            },
+
+            //
             //  File area storage location tag/value pairs.
             //  Non-absolute paths are relative to |areaStoragePrefix|.
             //
@@ -1955,6 +2038,17 @@ module.exports = () => {
                 binkpPullNow: {
                     desc: 'BinkP pull from all nodes now',
                     action: '@method:core/misc_scheduled_events.js:binkpPullNowScheduledEvent',
+                },
+
+                //  Rescans the file base with the file scanners (fileBase.scanning)
+                //  and reports what it finds; it never moves or removes anything.
+                //  Refuses to run until scanning is set up. Give it a schedule
+                //  and/or args in your config.hjson, e.g.
+                //  rescanFileBase: { schedule: 'at 5:00 am on Sun', args: [ { olderThanDays: 6 } ] }
+                //  args: [ { areas, olderThanDays, maxFiles, dryRun } ]; see file-scanning.md
+                rescanFileBase: {
+                    desc: 'Rescan the file base for viruses (report only)',
+                    action: '@method:core/file_base_rescan.js:rescanFileBaseScheduledEvent',
                 },
 
                 //

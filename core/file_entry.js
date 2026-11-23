@@ -45,7 +45,66 @@ const FILE_WELL_KNOWN_META = {
     session_temp_dl: v => (parseInt(v) ? true : false),
     desc_sauce: s => JSON.parse(s) || {},
     desc_long_sauce: s => JSON.parse(s) || {},
+    //  file scanning (#291); see core/file_scanner.js
+    scan_result: null, //  a file_scanner Verdicts value: clean, skipped, ...
+    scanned_at: null, //  ISO 8601 timestamp
+    scanner: null, //  scanner name(s) that ran, comma separated
+    scan_signature: null, //  what an infected verdict found (rescan)
+    rescan_attempted_at: null, //  ISO 8601: last rescan attempt, whatever came of it
+    quarantine_released_at: null, //  ISO 8601: released from quarantine (oputil)
+    quarantine_released_by: null, //  the operator who released it
 };
+
+//
+//  Meta a file scan owns (#291). Only the scan writers set these: a new
+//  entry's scanFile() verdict, the rescan and mark-safe (replaceMetaValues()),
+//  and quarantine release. See persist() for what an update does with them.
+//
+const SCAN_META_NAMES = [
+    'scan_result',
+    'scanned_at',
+    'scanner',
+    'scan_signature',
+    'rescan_attempted_at',
+];
+
+//  scan_result of an entry a scan or rescan found something in
+const INFECTED_SCAN_RESULT = 'infected';
+
+//
+//  Applies one file_meta row to |entry|.meta. Meta are meant to be single
+//  valued, but file_meta is UNIQUE on (file_id, meta_name, meta_value), so an
+//  older database can hold two rows for one name and the last one read would
+//  win. For scan_result that must not be a coin toss: an 'infected' row wins
+//  over any other, the same answer findFiles({ excludeInfected }) and
+//  getInfectedFileIds() give, so an entry is never hidden by one and shown by
+//  the other.
+//
+function applyMetaRow(entry, name, value) {
+    if (
+        'scan_result' === name &&
+        INFECTED_SCAN_RESULT === entry.meta.scan_result &&
+        entry.meta.scan_result !== value
+    ) {
+        return;
+    }
+    const conv = FILE_WELL_KNOWN_META[name];
+    entry.meta[name] = conv ? conv(value) : value;
+}
+
+//
+//  The infected test as SQL, for a file row aliased |alias|. Any 'infected'
+//  scan_result row counts (see applyMetaRow()).
+//
+function infectedExistsSql(alias) {
+    return `EXISTS (
+        SELECT 1
+        FROM file_meta im
+        WHERE im.file_id = ${alias}.file_id
+            AND im.meta_name = 'scan_result'
+            AND im.meta_value = '${INFECTED_SCAN_RESULT}'
+    )`;
+}
 
 //
 //  A SQLite LIKE pattern from a DOS style glob ('*' and '?').
@@ -100,6 +159,28 @@ const SORTABLE_FILE_COLUMNS = [
     'upload_timestamp',
 ];
 
+//
+//  |hashTags| as a new Set of trimmed, non-empty tags: from a string
+//  ("a,b" or "a b", as areas and users type them), an array or a Set. Null
+//  for anything else, so callers can keep what they have.
+//
+function toHashTagSet(hashTags) {
+    let tags;
+    if (_.isString(hashTags)) {
+        tags = hashTags.split(/[\s,]+/);
+    } else if (Array.isArray(hashTags) || hashTags instanceof Set) {
+        tags = Array.from(hashTags);
+    } else {
+        return null;
+    }
+
+    return new Set(
+        tags
+            .map(tag => (_.isString(tag) || _.isFinite(tag) ? String(tag).trim() : ''))
+            .filter(tag => tag.length > 0)
+    );
+}
+
 module.exports = class FileEntry {
     constructor(options) {
         options = options || {};
@@ -107,7 +188,9 @@ module.exports = class FileEntry {
         this.fileId = options.fileId || 0;
         this.areaTag = options.areaTag || '';
         this.meta = Object.assign({ dl_count: 0 }, options.meta);
-        this.hashTags = options.hashTags || new Set();
+        //  Areas give hashTags as a string ("a,b"), an array or a Set; a
+        //  string kept as is would be iterated as single characters
+        this.hashTags = toHashTagSet(options.hashTags) || new Set();
         this.fileName = options.fileName;
         this.storageTag = options.storageTag;
         this.fileSha256 = options.fileSha256;
@@ -188,13 +271,49 @@ module.exports = class FileEntry {
                 return cb(err);
             }
 
+            //
+            //  Two kinds of update (#291):
+            //
+            //  - an EDIT: this object came from the database (load(),
+            //    findByFileNameWildcard()) or was persisted by it, so it knows
+            //    what the entry holds. Meta, ratings and web batch rows the
+            //    object does not mention stay; see the scan meta rule below.
+            //    (fb desc, the desc editor, fb scan's dupe update)
+            //
+            //  - a REPLACE: a fresh entry for new bytes under an old file ID
+            //    (a TIC "Replaces", say), which never loaded the old one.
+            //    Nothing the old entry had says anything about the new file
+            //    -- least of all its scan result -- so its meta, user ratings
+            //    and web batch rows go first, as the REPLACE INTO file's
+            //    foreign key cascade used to do, and the object's are written.
+            //
+            const isReplace = isUpdate && !self.loadedScanMeta;
+
             try {
                 fileDb.transaction(() => {
                     if (isUpdate) {
+                        //
+                        //  An upsert, never a REPLACE: REPLACE deletes the
+                        //  row first, and with foreign keys on that cascades
+                        //  to every file_meta, file_hash_tag and
+                        //  file_user_rating row of the entry -- user ratings
+                        //  lost on any edit, and the scan meta below that is
+                        //  deliberately not rewritten gone with it. What a
+                        //  replace must drop, it drops by name below.
+                        //
                         fileDb
                             .prepare(
-                                `REPLACE INTO file (file_id, area_tag, file_sha256, file_name, storage_tag, storage_tag_rel_path, desc, desc_long, upload_timestamp)
-                                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);`
+                                `INSERT INTO file (file_id, area_tag, file_sha256, file_name, storage_tag, storage_tag_rel_path, desc, desc_long, upload_timestamp)
+                                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(file_id) DO UPDATE SET
+                                    area_tag = excluded.area_tag,
+                                    file_sha256 = excluded.file_sha256,
+                                    file_name = excluded.file_name,
+                                    storage_tag = excluded.storage_tag,
+                                    storage_tag_rel_path = excluded.storage_tag_rel_path,
+                                    desc = excluded.desc,
+                                    desc_long = excluded.desc_long,
+                                    upload_timestamp = excluded.upload_timestamp;`
                             )
                             .run(
                                 self.fileId,
@@ -226,14 +345,80 @@ module.exports = class FileEntry {
                         self.fileId = info.lastInsertRowid;
                     }
 
+                    if (isReplace) {
+                        for (const table of [
+                            'file_meta',
+                            'file_user_rating',
+                            'file_web_serve_batch',
+                        ]) {
+                            fileDb
+                                .prepare(`DELETE FROM ${table} WHERE file_id = ?;`)
+                                .run(self.fileId);
+                        }
+                    }
+
                     const metaStmt = fileDb.prepare(
                         `REPLACE INTO file_meta (file_id, meta_name, meta_value)
                         VALUES (?, ?, ?);`
                     );
+                    const delMetaStmt = fileDb.prepare(
+                        `DELETE FROM file_meta
+                        WHERE file_id = ? AND meta_name = ?;`
+                    );
                     for (const [n, v] of Object.entries(self.meta)) {
-                        metaStmt.run(self.fileId, n, coerceToText(v));
+                        if (isUpdate) {
+                            //
+                            //  Scan meta on an update (#291). A value this
+                            //  entry was loaded (or last persisted) with and
+                            //  still holds is left alone: a rescan or
+                            //  mark-safe may have changed it since, and
+                            //  writing the stale copy back would undo that
+                            //  -- worst of all, a stale 'clean' unhiding an
+                            //  entry flagged infected.
+                            //
+                            if (
+                                SCAN_META_NAMES.includes(n) &&
+                                self.loadedScanMeta &&
+                                _.isEqual(self.loadedScanMeta[n], v)
+                            ) {
+                                continue;
+                            }
+                            //  Meta are single valued: a new value replaces
+                            //  every row of that name rather than adding one
+                            //  beside it (file_meta is UNIQUE on name *and*
+                            //  value), so an old 'infected' cannot linger
+                            //  beside a fresh verdict.
+                            delMetaStmt.run(self.fileId, n);
+                        }
+                        if (!_.isNil(v)) {
+                            metaStmt.run(self.fileId, n, coerceToText(v));
+                        }
                     }
 
+                    //  a new verdict without a signature (clean, skipped) leaves
+                    //  no old one behind
+                    if (
+                        isUpdate &&
+                        !_.isNil(self.meta.scan_result) &&
+                        !(
+                            self.loadedScanMeta &&
+                            _.isEqual(
+                                self.loadedScanMeta.scan_result,
+                                self.meta.scan_result
+                            )
+                        ) &&
+                        !_.has(self.meta, 'scan_signature')
+                    ) {
+                        delMetaStmt.run(self.fileId, 'scan_signature');
+                    }
+
+                    //  |hashTags| is the whole set: on an update, tags it no
+                    //  longer has go (what the cascade used to do)
+                    if (isUpdate) {
+                        fileDb
+                            .prepare('DELETE FROM file_hash_tag WHERE file_id = ?;')
+                            .run(self.fileId);
+                    }
                     const insertTagStmt = fileDb.prepare(
                         `INSERT OR IGNORE INTO hash_tag (hash_tag) VALUES (?);`
                     );
@@ -249,6 +434,9 @@ module.exports = class FileEntry {
                         insertFileTagStmt.run(hashTag, self.fileId);
                     }
                 })();
+
+                //  what the database now holds, as far as this entry knows
+                self.loadedScanMeta = _.pick(self.meta, SCAN_META_NAMES);
 
                 return cb(null);
             } catch (transErr) {
@@ -387,8 +575,107 @@ module.exports = class FileEntry {
         }
     }
 
+    //
+    //  Sets single-valued meta: every existing row for each name in |values|
+    //  is replaced by the one value given, in one transaction. A null or
+    //  undefined value removes the name.
+    //
+    //  persistMetaValue() cannot do that: file_meta is UNIQUE on (file_id,
+    //  meta_name, meta_value), so its REPLACE adds a second row for a new
+    //  value rather than replacing the old one, and loadMeta() then keeps
+    //  whichever row it reads last.
+    //
+    static replaceMetaValues(fileId, values, cb) {
+        try {
+            const del = fileDb.prepare(
+                `DELETE FROM file_meta
+                WHERE file_id = ? AND meta_name = ?;`
+            );
+            const ins = fileDb.prepare(
+                `INSERT INTO file_meta (file_id, meta_name, meta_value)
+                VALUES (?, ?, ?);`
+            );
+            fileDb.transaction(() => {
+                for (const [name, value] of Object.entries(values)) {
+                    del.run(fileId, name);
+                    if (!_.isNil(value)) {
+                        ins.run(fileId, name, coerceToText(value));
+                    }
+                }
+            })();
+            return cb(null);
+        } catch (err) {
+            return cb(err);
+        }
+    }
+
+    //
+    //  Entries for a file base rescan (#291): those in |areaTags|, plus those
+    //  in |fileIds|, never those in |excludeAreaTags|. Neither areaTags nor
+    //  fileIds given: none. Calls back (err, [ { fileId, fileName, scannedAt,
+    //  attemptedAt, scanResult } ]): the scanned_at, rescan_attempted_at and
+    //  scan_result meta (the latest, should there be more than one row), or
+    //  null where an entry has none.
+    //
+    static getRescanCandidates(filter, cb) {
+        const areaTags = (filter.areaTags || []).filter(_.isString);
+        const fileIds = (filter.fileIds || []).filter(_.isFinite);
+        const excludeAreaTags = (filter.excludeAreaTags || []).filter(_.isString);
+
+        if (0 === areaTags.length && 0 === fileIds.length) {
+            return cb(null, []);
+        }
+
+        const placeholders = list => list.map(() => '?').join(', ');
+        const which = [];
+        const params = [];
+        if (areaTags.length > 0) {
+            which.push(`f.area_tag IN (${placeholders(areaTags)})`);
+            params.push(...areaTags);
+        }
+        if (fileIds.length > 0) {
+            which.push(`f.file_id IN (${placeholders(fileIds)})`);
+            params.push(...fileIds);
+        }
+
+        const metaColumn = name => `(SELECT MAX(m.meta_value)
+                FROM file_meta m
+                WHERE m.file_id = f.file_id AND m.meta_name = '${name}')`;
+
+        let sql = `SELECT f.file_id, f.file_name,
+                ${metaColumn('scanned_at')} AS scanned_at,
+                ${metaColumn('rescan_attempted_at')} AS attempted_at,
+                ${metaColumn('scan_result')} AS scan_result
+            FROM file f
+            WHERE (${which.join(' OR ')})`;
+        if (excludeAreaTags.length > 0) {
+            sql += ` AND f.area_tag NOT IN (${placeholders(excludeAreaTags)})`;
+            params.push(...excludeAreaTags);
+        }
+        sql += ' ORDER BY f.file_id;';
+
+        try {
+            const rows = fileDb.prepare(sql).all(...params);
+            return cb(
+                null,
+                rows.map(r => ({
+                    fileId: r.file_id,
+                    fileName: r.file_name,
+                    scannedAt: r.scanned_at || null,
+                    attemptedAt: r.attempted_at || null,
+                    scanResult: r.scan_result || null,
+                }))
+            );
+        } catch (err) {
+            return cb(err);
+        }
+    }
+
     loadMeta(cb) {
         try {
+            //  what the database says, not what this entry held before
+            //  (applyMetaRow() keeps an 'infected' it has already seen)
+            delete this.meta.scan_result;
             for (const meta of fileDb
                 .prepare(
                     `SELECT meta_name, meta_value
@@ -396,11 +683,10 @@ module.exports = class FileEntry {
                     WHERE file_id=?;`
                 )
                 .iterate(this.fileId)) {
-                const conv = FILE_WELL_KNOWN_META[meta.meta_name];
-                this.meta[meta.meta_name] = conv
-                    ? conv(meta.meta_value)
-                    : meta.meta_value;
+                applyMetaRow(this, meta.meta_name, meta.meta_value);
             }
+            //  what persist() compares against: see there
+            this.loadedScanMeta = _.pick(this.meta, SCAN_META_NAMES);
             return cb(null);
         } catch (err) {
             return cb(err);
@@ -469,17 +755,85 @@ module.exports = class FileEntry {
     }
 
     setHashTags(hashTags) {
-        if (_.isString(hashTags)) {
-            this.hashTags = new Set(hashTags.split(/[\s,]+/));
-        } else if (Array.isArray(hashTags)) {
-            this.hashTags = new Set(hashTags);
-        } else if (hashTags instanceof Set) {
-            this.hashTags = hashTags;
+        const tags = toHashTagSet(hashTags);
+        if (tags) {
+            this.hashTags = tags;
         }
     }
 
     static get WellKnownMetaValues() {
         return Object.keys(FILE_WELL_KNOWN_META);
+    }
+
+    //  |id| as a file ID (a positive whole number, from a number or a string
+    //  of digits), or null
+    static toFileId(id) {
+        if (_.isString(id) && /^[0-9]{1,15}$/.test(id.trim())) {
+            id = parseInt(id, 10);
+        }
+        return Number.isSafeInteger(id) && id > 0 ? id : null;
+    }
+
+    static get ScanMetaNames() {
+        return SCAN_META_NAMES.slice();
+    }
+
+    static get InfectedScanResult() {
+        return INFECTED_SCAN_RESULT;
+    }
+
+    //
+    //  Which of |fileIds| a scan marked infected (#291), as a Set. Reads the
+    //  database rather than any entry in memory, so it is right about an
+    //  entry flagged after it was loaded or queued. Synchronous, like the
+    //  database underneath it, so it can sit in a filter.
+    //
+    //
+    //  Entries named |fileName| (any case) that a scan marked infected, as
+    //  basic FileEntry objects: for something that serves files by path
+    //  rather than by entry (a FREQ search directory) to tell whether a file
+    //  is one of them.
+    //
+    static getInfectedEntriesByFileName(fileName) {
+        return fileDb
+            .prepare(
+                `SELECT ${FILE_TABLE_MEMBERS.map(m => `f.${m}`).join(', ')}
+                FROM file f
+                WHERE f.file_name = ? COLLATE NOCASE
+                    AND ${infectedExistsSql('f')};`
+            )
+            .all(String(fileName))
+            .map(row => {
+                const entry = new FileEntry();
+                FILE_TABLE_MEMBERS.forEach(prop => {
+                    entry[_.camelCase(prop)] = row[prop];
+                });
+                entry.relPath = row.storage_tag_rel_path || null;
+                return entry;
+            });
+    }
+
+    static getInfectedFileIds(fileIds) {
+        //  '12' is file 12; anything that is not a whole number is no file
+        //  and so never infected -- callers keep such an item only where it
+        //  is not a file entry at all (a bare path)
+        const ids = _.uniq(
+            (fileIds || []).map(FileEntry.toFileId).filter(id => !_.isNil(id))
+        );
+        const infected = new Set();
+        //  well under SQLite's bound parameter limit
+        for (const chunk of _.chunk(ids, 500)) {
+            fileDb
+                .prepare(
+                    `SELECT f.file_id
+                    FROM file f
+                    WHERE f.file_id IN (${chunk.map(() => '?').join(', ')})
+                        AND ${infectedExistsSql('f')};`
+                )
+                .all(...chunk)
+                .forEach(r => infected.add(r.file_id));
+        }
+        return infected;
     }
 
     static getFileIdsBySha(sha, options = {}, cb) {
@@ -580,12 +934,12 @@ module.exports = class FileEntry {
             (metaRows || []).forEach(row => {
                 const entry = entriesById.get(row.file_id);
                 if (entry) {
-                    const conv = FILE_WELL_KNOWN_META[row.meta_name];
-                    entry.meta[row.meta_name] = conv
-                        ? conv(row.meta_value)
-                        : row.meta_value;
+                    applyMetaRow(entry, row.meta_name, row.meta_value);
                 }
             });
+            for (const entry of entriesById.values()) {
+                entry.loadedScanMeta = _.pick(entry.meta, SCAN_META_NAMES);
+            }
 
             const tagRows = fileDb
                 .prepare(
@@ -632,6 +986,7 @@ module.exports = class FileEntry {
     //    possible, but want to allow users to search for wildcard matches in
     //    which some cases we'll use multiple LIKE queries.
     //    See _normalizeFileSearchTerms()
+    //  - excludeInfected: leave out entries a scan marked infected (#291)
     //
     static findFiles(filter, cb) {
         filter = filter || {};
@@ -846,6 +1201,14 @@ module.exports = class FileEntry {
 
         if (_.isNumber(filter.newerThanFileId)) {
             appendWhereClause('f.file_id > ?', filter.newerThanFileId);
+        }
+
+        //  Entries a scan found something in (#291). Off unless asked for:
+        //  user facing callers ask through file_base_visibility.js, which
+        //  knows hideInfected and who may see them anyway; oputil, dupe
+        //  checks and the like want everything.
+        if (filter.excludeInfected) {
+            appendWhereClause(`NOT ${infectedExistsSql('f')}`);
         }
 
         sql += `${sqlWhere} ${sqlOrderBy}`;

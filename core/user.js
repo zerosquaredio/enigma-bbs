@@ -11,6 +11,7 @@ const Events = require('./events.js');
 const UserProps = require('./user_property.js');
 const Log = require('./logger.js').log;
 const StatLog = require('./stat_log.js');
+const { generateActorKeyPair } = require('./activitypub/key_pair.js');
 
 //  deps
 const crypto = require('crypto');
@@ -757,7 +758,13 @@ module.exports = class User {
         );
     }
 
+    //
+    //  The persist and remove methods below call |cb| outside their try, so
+    //  a throw from the caller's callback is not caught and reported back
+    //  through that same callback as a database error.
+    //
     static persistPropertyByUserId(userId, propName, propValue, cb) {
+        let error = null;
         try {
             userDb
                 .prepare(
@@ -765,13 +772,12 @@ module.exports = class User {
                     VALUES (?, ?, ?);`
                 )
                 .run(userId, propName, coerceToText(propValue));
-            if (cb) {
-                return cb(null, propValue);
-            }
         } catch (err) {
-            if (cb) {
-                return cb(err);
-            }
+            error = err;
+        }
+
+        if (cb) {
+            return error ? cb(error) : cb(null, propValue);
         }
     }
 
@@ -810,6 +816,7 @@ module.exports = class User {
         //  update live
         delete this.properties[propName];
 
+        let error = null;
         try {
             userDb
                 .prepare(
@@ -817,17 +824,17 @@ module.exports = class User {
                     WHERE user_id = ? AND prop_name = ?;`
                 )
                 .run(this.userId, propName);
-            if (cb) {
-                return cb(null);
-            }
         } catch (err) {
-            if (cb) {
-                return cb(err);
-            }
+            error = err;
+        }
+
+        if (cb) {
+            return cb(error);
         }
     }
 
     removeProperties(propNames, cb) {
+        let error = null;
         try {
             const stmt = userDb.prepare(
                 `DELETE FROM user_property WHERE user_id = ? AND prop_name = ?;`
@@ -836,38 +843,23 @@ module.exports = class User {
                 delete this.properties[name];
                 stmt.run(this.userId, name);
             }
-            if (cb) {
-                return cb(null);
-            }
         } catch (err) {
-            if (cb) {
-                return cb(err);
-            }
+            error = err;
+        }
+
+        if (cb) {
+            return cb(error);
         }
     }
 
     updateActivityPubKeyPairProperties(cb) {
-        crypto.generateKeyPair(
-            'rsa',
-            {
-                modulusLength: 4096,
-                publicKeyEncoding: {
-                    type: 'spki',
-                    format: 'pem',
-                },
-                privateKeyEncoding: {
-                    type: 'pkcs8',
-                    format: 'pem',
-                },
-            },
-            (err, publicKey, privateKey) => {
-                if (!err) {
-                    this.setProperty(UserProps.PrivateActivityPubSigningKey, privateKey);
-                    this.setProperty(UserProps.PublicActivityPubSigningKey, publicKey);
-                }
-                return cb(err);
+        generateActorKeyPair((err, keys) => {
+            if (!err) {
+                this.setProperty(UserProps.PrivateActivityPubSigningKey, keys.privateKey);
+                this.setProperty(UserProps.PublicActivityPubSigningKey, keys.publicKey);
             }
-        );
+            return cb(err);
+        });
     }
 
     generateNewRandomAvatar(cb) {
@@ -954,10 +946,11 @@ module.exports = class User {
             for (const [propName, propValue] of Object.entries(properties)) {
                 stmt.run(this.userId, propName, coerceToText(propValue));
             }
-            return cb(null);
         } catch (err) {
             return cb(err);
         }
+
+        return cb(null);
     }
 
     setNewAuthCredentials(password, cb) {

@@ -58,7 +58,8 @@ The `config` block for a menu entry can contain common members as well as a per-
 
 | Item | Description |
 |------|-------------|
-| `cls` | If `true` the screen will be cleared before showing this menu. |
+| `cls` | If `true` the screen will be cleared before showing this menu. Defaults to `menus.cls` in `config.hjson` (see **Menu Defaults** below). |
+| `animations` | `false` turns off this menu's [animation views](../art/views/animation_view.md) (`%AV`) and [animated focused items](../art/views/views.md#animated-focused-item) (`focusItemFrames`): each draws its first frame once (a focused item, its `focusItemFormat` if set) and nothing moves. It cannot turn them on where `menus.animations.enabled` in `config.hjson` has turned them off. |
 | `pause` | Controls post-display pause. `true` or `'end'`: pause once at the end; `'pageBreak'`: paginate art screen-by-screen with a prompt between pages; `'<promptId>'`: end pause using the named prompt (shorthand for `pause: true` + `pausePrompt: <promptId>`). See [Pause Prompts](../art/pause-prompts.md). |
 | `pausePrompt` | Override the prompt name(s) used for pauses. A string uses that prompt for both end-of-art and page-break pauses; an object `{ end, page }` controls each independently. Takes precedence over the `pause: '<promptId>'` shorthand. See [Pause Prompts](../art/pause-prompts.md). |
 | `pausePosition` | Force the pause prompt to a specific screen position: `{ row, col }` (1-based). |
@@ -66,6 +67,25 @@ The `config` block for a menu entry can contain common members as well as a per-
 | `baudRate` | Throttle art display to simulate a modem at the given speed. Works with all terminal clients. See [Baud Rates](../art/general.md#baud-rates). |
 | `font` | Sets a SyncTERM style font to use when displaying this menus `art`. See font listing in [General Art Information](../art/general.md). |
 | `menuFlags` | An array of menu flag(s) controlling menu behavior. See **Menu Flags** below.
+
+#### Menu Defaults
+A few settings for every menu live under `menus` in `config.hjson` (not in the menu files):
+
+| Item | Description |
+|------|-------------|
+| `cls` | Clear the screen before each menu that does not set `cls` itself. Default: `true`. |
+| `animations.enabled` | `false` turns off [animation views](../art/views/animation_view.md) (`%AV`) and [animated focused items](../art/views/views.md#animated-focused-item) (`focusItemFrames`) on every menu: each draws its first frame once (a focused item, its `focusItemFormat` if set) and nothing moves. A menu's `config.animations` cannot turn them back on. Default: `true`. |
+| `animations.minFrameIntervalMs` | No animation frame is drawn sooner than this many milliseconds after the one before it, whatever a view's `frameInterval` or `frameDurations` (or a menu's `focusItemFrameInterval` or `focusItemFrameDurations`) ask for. Default: `50`. |
+
+For example, to slow every animation on the board down to at most five frames a second, in `config.hjson`:
+
+```hjson
+menus: {
+    animations: {
+        minFrameIntervalMs: 200
+    }
+}
+```
 
 #### Menu Flags
 The `menuFlags` field of a `config` block can change default behavior of a particular menu:
@@ -84,7 +104,9 @@ ENiGMA½ uses a concept of *forms* in menus. A form is a collection of associate
 
 Menus may also support more than one layout type by using a *MCI key*. A MCI key is a alpha-numerically sorted key made from 1:n MCI codes. This lets the system choose the appropriate set of form(s) based on theme or random art. An example of this may be a matrix menu: Perhaps one style of your matrix uses a vertical light bar (`VM` key) while another uses a horizontal (`HM` key). The system can discover the correct form to use by matching MCI codes found in the art to that of the available forms defined in `menu.hjson`.
 
-For more information on views and associated MCI codes, see [MCI Codes](../art/mci.md).
+Only the codes in the art make up the MCI key. Views placed from configuration with `position` (no code in the art) do not change it, so the same form is chosen with or without them.
+
+For more information on views and associated MCI codes, see [MCI Codes](../art/mci.md), including [Placing Views from Configuration](../art/mci.md#placing-views-from-configuration).
 
 ## Submit Handlers
 When a form is submitted, it's data is matched against a *submit handler*. When a match is found, it's *action* is performed. Note: Setting the value explicitly to null matches against any value.
@@ -137,6 +159,7 @@ Many built in global/system methods exist. Below are a few. See [system_menu_met
 | `prevArea` | Sets the users message area to the previous available. |
 | `nextArea` | Sets the users message area to the next available. |
 | `setClientEncoding` | Sets the client encoding (such as cp437 and utf-8.) |
+| `setUserPreference` | Sets (or, with `value: null`, clears) a user preference from `extraArgs: { pref, value }`, then goes to `extraArgs.next` or back to the previous menu. `pref` must start with `pref__`. See [User Preference Select](../modules/user-pref-select.md#the-setuserpreference-system-method). |
 
 ## Example
 Let's look a couple basic menu entries:

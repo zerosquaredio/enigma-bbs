@@ -24,6 +24,29 @@ let MenuModule;
 let moduleUtil;
 let ErrorReasons;
 let originalLoadModuleEx;
+let previousLog;
+let previousConfig;
+let loggerSwapped = false;
+let configPushed = false;
+let savedModules;
+
+//
+//  menu_util.js (and its neighbours) capture logger.log, and menu_module.js
+//  config.js's get(), when they load. Run alone, this file would load them
+//  before anything sets either up, and loadMenu()'s Log.trace() would throw
+//  (#1122). Give them a silent logger with every level and a minimal config,
+//  loading them fresh, and put everything back afterwards.
+//
+const FreshModules = [
+    '../core/menu_util.js',
+    '../core/menu_stack.js',
+    '../core/menu_module.js',
+].map(m => require.resolve(m));
+
+const SilentLog = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'].reduce(
+    (log, level) => Object.assign(log, { [level]: () => {} }),
+    { child: () => SilentLog }
+);
 
 //  name -> getModule class; set per test
 let fakeModules = {};
@@ -126,6 +149,22 @@ function menuConfig(module, extra = {}) {
 
 describe('MenuStack navigation guards', function () {
     before(() => {
+        const loggerModule = require('../core/logger.js');
+        previousLog = loggerModule.log;
+        loggerModule.log = SilentLog;
+        loggerSwapped = true;
+
+        //  MenuModule reads Config() as it is built; push a minimal one
+        previousConfig = require('../core/config.js')._pushTestConfig({
+            menus: {},
+            general: {},
+            debug: { assertsEnabled: false },
+        });
+        configPushed = true;
+
+        savedModules = FreshModules.map(path => [path, require.cache[path]]);
+        FreshModules.forEach(path => delete require.cache[path]);
+
         //  required lazily: these capture Config at first require
         MenuStack = require('../core/menu_stack.js');
         MenuModule = require('../core/menu_module.js').MenuModule;
@@ -149,8 +188,33 @@ describe('MenuStack navigation guards', function () {
         };
     });
 
+    //  undoes whatever before() got to, even if it threw part-way, so a
+    //  failure here never leaves the test logger or config behind for the
+    //  rest of the run
     after(() => {
-        moduleUtil.loadModuleEx = originalLoadModuleEx;
+        try {
+            if (moduleUtil && originalLoadModuleEx) {
+                moduleUtil.loadModuleEx = originalLoadModuleEx;
+            }
+            (savedModules || []).forEach(([path, cached]) => {
+                if (cached) {
+                    require.cache[path] = cached;
+                } else {
+                    delete require.cache[path];
+                }
+            });
+        } finally {
+            if (configPushed) {
+                require('../core/config.js')._popTestConfig(previousConfig);
+                configPushed = false;
+            }
+            //  previousLog may legitimately be undefined (nothing set the
+            //  logger up yet): put back exactly what was there
+            if (loggerSwapped) {
+                require('../core/logger.js').log = previousLog;
+                loggerSwapped = false;
+            }
+        }
     });
 
     beforeEach(() => {
@@ -274,6 +338,165 @@ describe('MenuStack navigation guards', function () {
                 assert.equal(client.log.at('error').length, 0);
                 return done();
             });
+        });
+    });
+
+    describe('a menu left while the screen was covered', () => {
+        let counters;
+        let client;
+        const InputCapture = require('../core/input_capture.js');
+        const { View } = require('../core/view.js');
+        const { coverScreen } = require('../core/screen_cover.js');
+
+        beforeEach(done => {
+            counters = makeCounters();
+            fakeModules.home = defineMenu(counters, 'home');
+            fakeModules.away = defineMenu(counters, 'away');
+            client = makeClient({
+                home: menuConfig('home'),
+                away: menuConfig('away'),
+            });
+            client.menuStack.goto('home', err => {
+                assert.ifError(err);
+                settle(done);
+            });
+        });
+
+        //  the capture methods a real client has, and what a form needs
+        function giveRealInput() {
+            const { Client } = require('../core/client.js');
+            client.captureInput = Client.prototype.captureInput;
+            client.releaseInput = Client.prototype.releaseInput;
+            client.waitForKeyPress = Client.prototype.waitForKeyPress;
+            Object.assign(client.term, {
+                termWidth: 80,
+                termHeight: 25,
+                beginWrite() {},
+                commitWrite() {},
+            });
+        }
+
+        //  the next menu's form: one focused field
+        function attachForm() {
+            const { ViewController } = require('../core/view_controller.js');
+            const { EditTextView } = require('../core/edit_text_view.js');
+            const vc = new ViewController({ client });
+            const field = new EditTextView({
+                client,
+                id: 1,
+                position: { row: 20, col: 5 },
+                dimens: { width: 30 },
+                maxLength: 30,
+            });
+            vc.addView(field);
+            vc.setViewOrder();
+            vc.switchFocus(1);
+            return field;
+        }
+
+        it('drops the cover (capture and suspend); its pause hears the next key only, and nothing continues', done => {
+            giveRealInput();
+            const home = client.currentMenuModule;
+            const events = [];
+            //  a help page over |home| (as FSE / file list / WFC help): the
+            //  pause in it is a real waitForKeyPress(); afterwards the menu
+            //  repaints and carries on with prevMenu()
+            home.coverScreen(
+                { restore: cb => (events.push('restore'), cb()) },
+                finish =>
+                    client.waitForKeyPress(ch => {
+                        events.push(`pause:${ch}`);
+                        finish();
+                    }),
+                () => {
+                    events.push('cb');
+                    home.prevMenu();
+                }
+            );
+            assert.equal(View.isBackgroundDrawSuspended(client), true);
+
+            //  a sysop break-in moves the caller on
+            client.menuStack.goto('away', err => {
+                assert.ifError(err);
+                assert.equal(View.isBackgroundDrawSuspended(client), false);
+                assert.equal(InputCapture.hasInputCapture(client), false);
+                const logged = client.log
+                    .at('debug')
+                    .find(e => e.msg === 'Menu changed while the screen was covered');
+                assert.ok(logged, 'logged at debug');
+                assert.equal(logged.obj.droppedCaptures, 1);
+                assert.equal(
+                    logged.obj.passThroughCaptures,
+                    0,
+                    'the pause is no capture'
+                );
+                assert.equal(logged.obj.droppedSuspends, 1);
+
+                const field = attachForm();
+                client.emit('key press', 'a');
+                assert.deepEqual(
+                    events,
+                    ['pause:a'],
+                    'the stale pause fires, as once() did; no restore, no cb'
+                );
+                assert.equal(field.getData(), 'a', 'the new menu’s form gets the key');
+                assert.deepEqual(
+                    client.menuStack.stack.map(e => e.name),
+                    ['home', 'away'],
+                    'the gone menu did not pop the new one'
+                );
+                assert.ok(
+                    client.log
+                        .at('debug')
+                        .some(e => /cut short/.test(e.msg) && e.obj.restoreSkipped),
+                    'the skip is logged at debug'
+                );
+                assert.equal(View.isBackgroundDrawSuspended(client), false);
+                assert.equal(InputCapture.hasInputCapture(client), false);
+                return done();
+            });
+        });
+
+        it('a cover whose fn never calls done is let go by a menu change', done => {
+            giveRealInput();
+            const home = client.currentMenuModule;
+            let called = 0;
+            home.coverScreen(
+                () => {}, //  never finishes
+                () => ++called
+            );
+            client.menuStack.goto('away', err => {
+                assert.ifError(err);
+                assert.equal(InputCapture.hasInputCapture(client), false);
+                assert.equal(View.isBackgroundDrawSuspended(client), false);
+                const field = attachForm();
+                client.emit('key press', 'k');
+                assert.equal(field.getData(), 'k', 'nothing holds the keys');
+                assert.equal(called, 0);
+                return done();
+            });
+        });
+
+        it('finds nothing, and logs nothing, after a cover that ended first', done => {
+            coverScreen(
+                client,
+                finish => finish(),
+                () => {
+                    client.menuStack.goto('away', err => {
+                        assert.ifError(err);
+                        assert.ok(
+                            !client.log
+                                .at('debug')
+                                .some(
+                                    e =>
+                                        e.msg ===
+                                        'Menu changed while the screen was covered'
+                                )
+                        );
+                        return done();
+                    });
+                }
+            );
         });
     });
 

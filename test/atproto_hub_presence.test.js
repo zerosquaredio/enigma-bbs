@@ -231,6 +231,104 @@ describe('Presence reports to the hub', () => {
         });
     });
 
+    describe('busy on the hub (F20)', () => {
+        const Did = 'did:plc:alice';
+        const T = Date.parse('2026-11-23T12:00:00.000Z');
+        const alice = () => fakeUser(1, 'alice', { [UserProps.AtProtoDid]: Did });
+
+        it("passes on the hub's answer to a report", async () => {
+            HubPresence._setFetch(() =>
+                Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    text: () =>
+                        Promise.resolve(
+                            JSON.stringify({
+                                ok: true,
+                                members: 1,
+                                active: [{ did: Did }],
+                            })
+                        ),
+                })
+            );
+            const answer = await call(HubPresence.sendReport, settings(), {
+                bbs: 'coolbbs',
+                members: [],
+            });
+            assert.deepEqual(answer.active, [{ did: Did }]);
+        });
+
+        it('knows which members the hub says are busy there, until it goes stale', () => {
+            HubPresence.recordAnswer(
+                {
+                    active: [
+                        { did: Did, activeAt: new Date(T - 60000).toISOString() },
+                        { did: 'did:plc:bob', activeAt: 'not a time' },
+                        { activeAt: new Date(T).toISOString() },
+                    ],
+                },
+                T
+            );
+            assert.equal(HubPresence.hubActiveAt(alice(), T), T - 60000);
+            assert.equal(HubPresence.hubActiveAt(fakeUser(2, 'bob'), T), null);
+            assert.equal(
+                HubPresence.hubActiveAt(
+                    fakeUser(3, 'carol', { [UserProps.AtProtoDid]: 'did:plc:bob' }),
+                    T
+                ),
+                null
+            );
+            //  reports stopped reaching the hub: forget it
+            assert.equal(HubPresence.hubActiveAt(alice(), T + 4 * 60 * 1000), null);
+            //  presence reports turned off: nothing from the hub counts
+            testConfig.atProto.hub.presence.enabled = false;
+            assert.equal(HubPresence.hubActiveAt(alice(), T), null);
+        });
+
+        it('takes no time from the future, and forgets members no longer listed', () => {
+            HubPresence.recordAnswer(
+                { active: [{ did: Did, activeAt: new Date(T + 3600000).toISOString() }] },
+                T
+            );
+            assert.equal(HubPresence.hubActiveAt(alice(), T), T);
+            HubPresence.recordAnswer({ ok: true, members: 1, active: [] }, T);
+            assert.equal(HubPresence.hubActiveAt(alice(), T), null);
+            //  an older hub that sends no list
+            HubPresence.recordAnswer(null, T);
+            assert.equal(HubPresence.hubActiveAt(alice(), T), null);
+        });
+
+        it('gives busy members 30 minutes by default, or as set, or none', () => {
+            assert.equal(HubPresence.hubIdleSeconds(), 30 * 60);
+            testConfig.atProto.hub.presence.hubIdleMinutes = 45;
+            assert.equal(HubPresence.hubIdleSeconds(), 45 * 60);
+            testConfig.atProto.hub.presence.hubIdleMinutes = 0;
+            assert.equal(HubPresence.hubIdleSeconds(), 0);
+        });
+
+        it('keeps a member on while their last action, here or there, is recent enough', () => {
+            const minute = 60 * 1000;
+            const busy = (lastActivityMs, hubActiveMs, hubIdleSecs = 30 * 60) =>
+                HubPresence.isBusyOnHub({
+                    lastActivityMs,
+                    hubActiveMs,
+                    idleLogoutSeconds: 6 * 60,
+                    hubIdleSecs,
+                    nowMs: T,
+                });
+            //  idle here for 7 minutes, but spoke on the hub a minute ago
+            assert.equal(busy(T - 7 * minute, T - minute), true);
+            //  on the hub, quiet for 29 minutes: still on
+            assert.equal(busy(T - 40 * minute, T - 29 * minute), true);
+            //  quiet everywhere for 31 minutes: logged off
+            assert.equal(busy(T - 40 * minute, T - 31 * minute), false);
+            //  not on the hub at all
+            assert.equal(busy(T - 7 * minute, null), false);
+            //  turned off
+            assert.equal(busy(T - 7 * minute, T - minute, 0), false);
+        });
+    });
+
     describe("a member's setting, and the sysop's", () => {
         it('are off until turned on', async () => {
             const user = fakeUser(1, 'alice', {

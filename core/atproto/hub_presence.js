@@ -38,6 +38,10 @@ exports.setShown = setShown;
 exports.isWithheld = isWithheld;
 exports.setWithheld = setWithheld;
 exports.startup = startup;
+exports.recordAnswer = recordAnswer;
+exports.hubActiveAt = hubActiveAt;
+exports.hubIdleSeconds = hubIdleSeconds;
+exports.isBusyOnHub = isBusyOnHub;
 exports.ReportPath = '/api/bbs/presence';
 exports.ReportIntervalMs = 60 * 1000;
 
@@ -219,10 +223,80 @@ function sendReport(settings, report, cb) {
                         new Error(`The hub refused the report (${res.status}): ${reason}`)
                     );
                 }
-                return cb(null);
+                let answer = null;
+                try {
+                    answer = JSON.parse(text);
+                } catch (e) {
+                    //  an older hub, or no answer: nothing more to learn
+                }
+                return cb(null, answer);
             }),
         err => cb(err)
     );
+}
+
+//  ── Members busy on the hub (F20, hub H19) ───────────────────────────────
+//
+//  The hub's answer to each report lists the members who are in its common
+//  space now (its map, its chat, another board's door), each with when they
+//  last did something there. While it does, that counts as activity here, so
+//  a member chatting on the hub isn't logged off the board they left open.
+//  What the hub said goes stale once reports stop reaching it.
+//
+const AnswerStaleMs = 3 * 60 * 1000;
+let busy = new Map(); //  DID -> ms of their last action on the hub
+let answeredAt = 0;
+
+function recordAnswer(answer, nowMs = Date.now()) {
+    const next = new Map();
+    const active = answer && Array.isArray(answer.active) ? answer.active : [];
+    for (const a of active) {
+        const at =
+            a && _.isString(a.did) && _.isString(a.activeAt)
+                ? Date.parse(a.activeAt)
+                : NaN;
+        if (!Number.isNaN(at)) {
+            next.set(a.did, Math.min(at, nowMs)); //  never from the future
+        }
+    }
+    busy = next;
+    answeredAt = nowMs;
+}
+
+//  When this member last did something on the hub, while the hub says they
+//  are there; else null
+function hubActiveAt(user, nowMs = Date.now()) {
+    if (!isEnabled() || nowMs - answeredAt > AnswerStaleMs) {
+        return null;
+    }
+    const did = user && user.getProperty(UserProps.AtProtoDid);
+    return (did && busy.get(did)) || null;
+}
+
+//  The idle limit for a member busy on the hub, in seconds:
+//  atProto.hub.presence.hubIdleMinutes (30 by default). 0 turns this off
+function hubIdleSeconds() {
+    const minutes = _.get(Config(), 'atProto.hub.presence.hubIdleMinutes', 30);
+    return _.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60) : 0;
+}
+
+//
+//  Whether a session that looks idle by the board's own limit stays on
+//  because its member is busy on the hub: their latest action, here or
+//  there, is within the longer of the two limits.
+//
+function isBusyOnHub({
+    lastActivityMs,
+    hubActiveMs,
+    idleLogoutSeconds,
+    hubIdleSecs,
+    nowMs,
+}) {
+    if (!hubActiveMs || !(hubIdleSecs > 0)) {
+        return false;
+    }
+    const limitMs = Math.max(idleLogoutSeconds, hubIdleSecs) * 1000;
+    return nowMs - Math.max(lastActivityMs, hubActiveMs) < limitMs;
 }
 
 //  ── While the board runs ─────────────────────────────────────────────────
@@ -249,11 +323,12 @@ function reportNow() {
             sending = false;
             return reportProblem(err);
         }
-        sendReport(settings, report, err => {
+        sendReport(settings, report, (err, answer) => {
             sending = false;
             if (err) {
                 reportProblem(err);
             } else {
+                recordAnswer(answer);
                 if (lastError) {
                     Log.info('Presence reports reach the hub again');
                 }

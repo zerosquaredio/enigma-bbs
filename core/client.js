@@ -247,6 +247,25 @@ Client.prototype.setTermType = function (termType) {
     this.log.debug({ termType: termType }, 'Set terminal type');
 };
 
+//
+//  A member busy in the hub's common space (chatting there, say) is not idle
+//  here, for up to atProto.hub.presence.hubIdleMinutes from their last action
+//  on either side (F20)
+//
+Client.prototype.isBusyOnHub = function (nowMs, idleLogoutSeconds) {
+    if (!this.user || !this.user.isAuthenticated()) {
+        return false;
+    }
+    const HubPresence = require('./atproto/hub_presence.js');
+    return HubPresence.isBusyOnHub({
+        lastActivityMs: this.lastActivityTime,
+        hubActiveMs: HubPresence.hubActiveAt(this.user, nowMs),
+        idleLogoutSeconds,
+        hubIdleSecs: HubPresence.hubIdleSeconds(),
+        nowMs,
+    });
+};
+
 Client.prototype.startIdleMonitor = function () {
     //
     //  Never for a session that has ended: end() has already stopped both
@@ -312,7 +331,8 @@ Client.prototype.startIdleMonitor = function () {
 
         if (
             idleLogoutSeconds > 0 &&
-            nowMs - this.lastActivityTime >= idleLogoutSeconds * 1000
+            nowMs - this.lastActivityTime >= idleLogoutSeconds * 1000 &&
+            !this.isBusyOnHub(nowMs, idleLogoutSeconds)
         ) {
             this.emit('idle timeout', idleLogoutSeconds);
         }

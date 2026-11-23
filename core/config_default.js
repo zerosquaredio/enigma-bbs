@@ -772,6 +772,10 @@ module.exports = () => {
                     //  also members with no linked AT account, by user name
                     //  (the hub decides whether to show them, as name@board)
                     includeLocalUsers: false,
+                    //  a member busy in the hub's common space isn't logged
+                    //  off here until this long after their last action,
+                    //  here or there (0: users.idleLogoutSeconds as usual)
+                    hubIdleMinutes: 30,
                 },
             },
 

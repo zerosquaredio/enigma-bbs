@@ -1054,6 +1054,11 @@ module.exports = {
         description:
             'Also report members with no linked AT account, by user name; the hub decides whether to show them.',
     },
+    'atProto.hub.presence.hubIdleMinutes': {
+        type: 'number',
+        description:
+            "Idle limit for a member busy in the hub's common space, counted from their last action here or there; 0 logs them off by users.idleLogoutSeconds as usual.",
+    },
     'atProto.webSignIn.enabled': {
         type: 'boolean',
         description:

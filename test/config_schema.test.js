@@ -358,6 +358,7 @@ describe('config schema against config_default.js', () => {
             'atProto.enabled',
             'atProto.hub.name',
             'atProto.hub.presence.enabled',
+            'atProto.hub.presence.hubIdleMinutes',
             'atProto.hub.presence.includeLocalUsers',
             'atProto.hub.token',
             'atProto.hub.url',

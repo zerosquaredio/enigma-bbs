@@ -79,6 +79,7 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `atProto.hub.url`, `atProto.hub.name`, `atProto.hub.token` | Strings. The hub the board runs behind, its name there and its token, for [presence on the hub](#presence-on-the-hub). | (empty) |
 | `atProto.hub.presence.enabled` | Boolean. Tell the hub which members are on, for those who chose to be shown. | `false` |
 | `atProto.hub.presence.includeLocalUsers` | Boolean. Also report members with no linked AT account, by user name. | `false` |
+| `atProto.hub.presence.hubIdleMinutes` | Number. Idle limit for a member busy in the hub's common space; see [Busy on the Hub](#busy-on-the-hub). `0` turns it off. | `30` |
 | `atProto.webSignIn.enabled` | Boolean. Offer [web sign-in](#web-sign-in) at `/_enig/signin`. | `false` |
 | `atProto.webSignIn.sessionDays` | Number. How long a browser stays signed in. | `30` |
 | `atProto.webSignIn.allowedOrigins` | Array. Web origins, such as `"https://bbs.example.com"`, whose pages may use web sign-in besides the board's own web address. | `[]` |
@@ -334,6 +335,11 @@ atProto: {
 * **What is sent:** for each member who chose it, their linked AT identity (DID), their user name here, when they joined, and whether they are on now. Nothing else. The hub uses this to show them, and to know they are a member of a board on it, which by default is what lets them into its common space. It is sent to the hub only, never published, and each report is the whole list, so a member who turns it off is gone from the next one.
 * **The hub decides how to show them.** A member is shown by their user name here, as "alice via coolbbs", until they sign in at the hub and confirm this board; then they appear as their own Bluesky account. With `includeLocalUsers`, members with no linked AT account are reported by user name, and the hub shows them as `alice@coolbbs` if its admin accepts them from this board.
 * **When:** after each login and logoff, a member's change of setting, and every minute, so the hub knows the board is still up. The token is sent only over `https://`, or `http://` to `127.0.0.1` for a hub on the same machine.
+
+### Busy on the Hub
+A member doesn't need to be logged in to the board to take part in the hub's common space: the board's report is what vouches for them. But someone who has the board open and turns to the hub's page to chat looks idle to the board. So the hub, in its answer to each report, says which of the board's members are in its space now, and when they last did something there. While it does, the board counts that as activity, and gives them `atProto.hub.presence.hubIdleMinutes` (30 by default) from their last action on either side before logging them off. A window left open on the hub still frees its node in the end.
+
+The hub says this only about members the board itself reported, and only while their presence on the hub is on: the board learns that they are in the hub's space, and when they last did something there, nothing more.
 
 ### The Hub's Space as a Door
 With presence on the hub set up, members can open the hub's common space from inside the board: the `hubSpace` menu in the main menu template, behind a commented out `HS` command. It needs nothing more in `config.hjson`.

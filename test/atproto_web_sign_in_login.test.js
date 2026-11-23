@@ -62,6 +62,18 @@ describe('AT web sign-in: logging in', () => {
             ]);
         });
 
+        it('sends nobody anywhere once the caller has gone, signed in or not', () => {
+            for (const identity of [null, { did: 'did:plc:alice' }]) {
+                const client = makeClient({
+                    webSignInPending: false,
+                    webSignInIdentity: identity,
+                    clientEnded: true,
+                });
+                client._clientReady();
+                assert.deepEqual(client.readies, []);
+            }
+        });
+
         it('waits for the cookie check to finish', () => {
             const client = makeClient({ webSignInPending: true });
             client._clientReady();

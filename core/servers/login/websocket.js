@@ -243,8 +243,8 @@ class WebSocketClient extends TelnetClient {
     }
 
     _clientReady() {
-        if (this.clientReadyHandled) {
-            return;
+        if (this.clientReadyHandled || this.clientEnded) {
+            return; //  already processed, or the caller has gone (#999)
         }
         if (this.webSignInPending) {
             this.webSignInReadyWaiting = true; //  identityForConnection() calls back
@@ -256,6 +256,7 @@ class WebSocketClient extends TelnetClient {
         }
 
         //  Signed in on the web: skip the login matrix
+        clearTimeout(this.termTypeTimer);
         this.clientReadyHandled = true;
         this.emit('ready', {
             firstMenu: _.get(

@@ -119,6 +119,11 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
         return AtProtoOAuth.authorizeBoard(did, options, cb);
     }
 
+    //  The board's account is named by its handle, never a member's username
+    acceptsUsernames() {
+        return false;
+    }
+
     identityProven(identity) {
         const account = identity.handle ? `@${identity.handle}` : identity.did;
         Publishing.connectBoardAccount(identity, err => {

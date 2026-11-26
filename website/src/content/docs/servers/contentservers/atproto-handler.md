@@ -16,6 +16,7 @@ The pieces are [core/atproto/](https://github.com/NuSkooler/enigma-bbs/blob/mast
 * **No password.** The application asks for none. Users created this way get a random password nobody knows, so password login is closed to them unless they set a password of their own.
 * **Everything else is a normal login.** Account status (inactive, disabled, locked), `users.requireActivation`, groups, 2FA and "already logged in" all apply as for password logins.
 * **The login is checked against the handle the caller typed.** Whoever opens the link chooses which account approves it, so the BBS accepts the approval only if it comes from the account the caller named in the terminal.
+* **Members can type their username instead.** A member whose user is linked to an AT account may enter their username here (any case) in place of the whole handle. The board looks up the account linked to that user, and accepts the approval only from it. The request goes to that account's host without naming the account, so typing someone's username doesn't show which Bluesky account is theirs. Input with a dot is tried as a handle first, then as a username; input without one, the other way round.
 * **Secure connections only.** AT login works over SSH, `wss://` and TLS. Telnet callers who choose it are told to connect with SSH instead (`atProto.login.secureConnectionsOnly`).
 
 ## Requirements
@@ -120,7 +121,9 @@ SSH callers authenticate before they reach the matrix. To offer AT login to SSH 
 
 AT login over SSH takes a browser each time. After it, callers are offered the SSH key their client connected with, so next time they can connect as their user name with that key and skip the browser (see [Offering the Key a Caller Connected With](../loginservers/ssh.md#offering-the-key-a-caller-connected-with)). They can also add a key later with the `SSH` command from the main menu.
 
-The login screen uses the `ATPROTOLOGIN` art with two views: `ET1`, where the caller types their handle, and `MT2`, for instructions, the link to open and progress.
+The login screen uses the `ATPROTOLOGIN` art with two views: `ET1`, where the caller types their handle or username, and `MT2`, for instructions, the link to open and progress.
+
+**Making the link easy to open.** With `hyperlinks: true` on `MT2` (as in the template), the link is clickable in terminals that support OSC 8 links, enig-term among them, where tapping it on a phone asks before opening it. With `qrCode: true` in the menu's `config` (as in the template), the link is also drawn as a QR code at the bottom right of the screen, for approving on a phone from a computer's terminal. It is drawn only when the screen has room for it below the link (an 80 by 25 screen does), and cleared when the login ends.
 
 An account with no user yet is sent to the menu named by the `atprotoLogin` menu's `config.linkAccount`, if set (see [Linking Existing Accounts](#linking-existing-accounts)), and from there, or straight away without it, to the one named by `config.newUserApplication`: in the template, `atprotoApplication` in the new user menu file. It is the `nua` module with `config.atProto` set, and works as `newUserApplication` but has no password fields. It uses the `ATNUA` art, which adds `TL13` to show the caller's handle. It can only be reached from AT login; opened any other way, it returns to the previous menu. The proven account is kept for 30 minutes while the caller fills it in.
 

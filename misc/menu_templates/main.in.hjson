@@ -986,6 +986,8 @@
                             height: 6
                             focus: false
                             acceptsFocus: false
+                            //  the approval link is clickable where the terminal can
+                            hyperlinks: true
                         }
                         ET3: {
                             argName: password
@@ -1061,6 +1063,8 @@
                             height: 6
                             focus: false
                             acceptsFocus: false
+                            //  the approval link is clickable where the terminal can
+                            hyperlinks: true
                         }
                         ET3: {
                             argName: announcement

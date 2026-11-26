@@ -8,6 +8,8 @@ const Config = require('./config.js').get;
 const AtProtoOAuth = require('./atproto/oauth_client.js');
 const AtProtoLogin = require('./atproto/login.js');
 const BrowserHandoff = require('./browser_handoff.js');
+const { qrLines } = require('./atproto/handoff_qr.js');
+const { goto: ansiGoto } = require('./ansi_term.js');
 
 //  deps
 const _ = require('lodash');
@@ -33,6 +35,12 @@ exports.moduleInfo = {
 //  Other modules extend this one to prove an identity for something else
 //  (core/atproto_account_config.js): they override identityProven().
 //
+//  A member may enter their username here instead of their whole handle:
+//  the board looks up the account bound to that user, and the approval must
+//  come from it. With config.qrCode, the link is also drawn as a QR code
+//  when the screen has room, for approving on a phone. The status view's
+//  hyperlinks option makes the link clickable where the terminal can.
+//
 
 const FormIds = {
     menu: 0,
@@ -46,16 +54,23 @@ const MciViewIds = {
 const DefaultHandoffTimeoutSeconds = 5 * 60;
 
 const Messages = {
-    instructions: 'Enter your handle, e.g. alice.bsky.social, then press ENTER.',
+    instructions:
+        'Enter your Bluesky handle, e.g. alice.bsky.social, or your username here, then press ENTER.',
     notAvailable: 'AT Protocol login is not available right now.',
     insecure:
         'Bluesky login needs a secure connection. Connect with SSH instead.\r\n\r\n' +
         'Press ESC to go back.',
     resolving: 'Looking up {handle}...',
     notFound: 'Could not find that handle. Check it and try again.',
+    noBlueskyUser:
+        'No one here by that name has a Bluesky account linked. Enter a Bluesky handle, e.g. alice.bsky.social.',
     openLink:
         'Open this link in a web browser to approve the login:\r\n\r\n  {url}\r\n\r\n' +
         'Waiting for approval. Press ESC to cancel.',
+    //  the same, beside a QR code
+    openLinkOrScan:
+        'Open this link in a web browser to approve the login:\r\n\r\n  {url}\r\n\r\n' +
+        'Or scan the code with a phone.\r\nWaiting for approval.\r\nPress ESC to cancel.',
     wrongAccount:
         'That approval was for a different account than the handle you entered.',
     timedOut: 'The link expired before the login was approved. Try again.',
@@ -151,6 +166,7 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
 
     leave() {
         //  The caller hung up or moved on; stop waiting for the browser
+        this.qrShown = null;
         this.endHandoff();
         super.leave();
     }
@@ -185,60 +201,188 @@ exports.getModule = class AtProtoLoginModule extends MenuModule {
 
         const input = _.trim(_.get(formData, 'value.handle', '')).replace(/^@/, '');
         if (!input) {
-            this.showStatus(Messages.instructions);
+            this.showInitialStatus();
             return cb(null);
         }
 
         this.showStatus(Messages.resolving, { handle: input });
 
-        AtProtoOAuth.resolveIdentity(input, (err, identity) => {
-            if (err) {
-                this.client.log.info(
-                    { input, error: err.message },
-                    'AT login: could not resolve handle'
+        //  A handle has a dot; a username here may or may not. Whichever it
+        //  looks like is tried first, then the other.
+        const looksLikeHandle = input.includes('.') || input.startsWith('did:');
+        const asHandle = next =>
+            AtProtoOAuth.resolveIdentity(input, (err, identity) => {
+                if (err) {
+                    this.client.log.info(
+                        { input, error: err.message },
+                        'AT login: could not resolve handle'
+                    );
+                    return next(null);
+                }
+                return next(identity);
+            });
+        const asUsername = next => {
+            if (!this.acceptsUsernames()) {
+                return next(null);
+            }
+            return this.identityForUsername(input, next);
+        };
+        const [first, second] = looksLikeHandle
+            ? [asHandle, asUsername]
+            : [asUsername, asHandle];
+
+        first(identity => {
+            if (identity) {
+                return this.beginHandoff(identity, cb);
+            }
+            second(identity => {
+                if (identity) {
+                    return this.beginHandoff(identity, cb);
+                }
+                this.showStatus(
+                    looksLikeHandle || !this.acceptsUsernames()
+                        ? Messages.notFound
+                        : Messages.noBlueskyUser
                 );
-                this.showStatus(Messages.notFound);
+                return cb(null);
+            });
+        });
+    }
+
+    //  Whether a username here may be entered instead of a handle: for
+    //  logging in as a member, not for naming some other account
+    acceptsUsernames() {
+        return true;
+    }
+
+    //
+    //  The identity bound to the member named |username|, or null. The
+    //  approval is asked of their account host without naming the account,
+    //  so typing someone's username doesn't show which Bluesky account is
+    //  theirs; finishLogin() still requires that very account to approve.
+    //
+    identityForUsername(username, cb) {
+        AtProtoLogin.findDidByUsername(username, (err, did) => {
+            if (err || !did) {
                 return cb(null);
             }
-
-            const timeoutSeconds = _.get(
-                Config(),
-                'atProto.login.handoffTimeoutSeconds',
-                DefaultHandoffTimeoutSeconds
-            );
-
-            BrowserHandoff.create(
-                {
-                    purpose: 'atproto-login',
-                    timeoutSeconds,
-                    //  The approval request is made when the link is opened,
-                    //  as it expires within minutes. Authorizing the DID
-                    //  pins the login to the account the caller named.
-                    onOpen: (handoff, next) =>
-                        this.authorizeIdentity(identity.did, { state: handoff.id }, next),
-                },
-                (err, handoff) => {
-                    if (err) {
-                        this.client.log.warn(
-                            { error: err.message },
-                            'AT login: could not start browser handoff'
-                        );
-                        this.showStatus(Messages.failed);
-                        return cb(null);
-                    }
-
-                    this.handoff = handoff;
-                    this.showStatus(Messages.openLink, { url: handoff.url });
-
-                    handoff.wait((err, result) => {
-                        this.handoff = null;
-                        return this.finishLogin(err, result, identity);
-                    });
-
+            AtProtoOAuth.resolveIdentity(did, (err, identity) => {
+                if (err || !identity || !identity.pdsUrl) {
+                    this.client.log.info(
+                        { did, error: err && err.message },
+                        'AT login: could not resolve the DID bound to a username'
+                    );
                     return cb(null);
                 }
-            );
+                return cb(Object.assign({}, identity, { authorizeAs: identity.pdsUrl }));
+            });
         });
+    }
+
+    beginHandoff(identity, cb) {
+        const timeoutSeconds = _.get(
+            Config(),
+            'atProto.login.handoffTimeoutSeconds',
+            DefaultHandoffTimeoutSeconds
+        );
+
+        BrowserHandoff.create(
+            {
+                purpose: 'atproto-login',
+                timeoutSeconds,
+                //  The approval request is made when the link is opened, as
+                //  it expires within minutes. Authorizing the DID pins the
+                //  login to the account the caller named (for a username,
+                //  its account host, and finishLogin() checks the DID).
+                onOpen: (handoff, next) =>
+                    this.authorizeIdentity(
+                        identity.authorizeAs || identity.did,
+                        { state: handoff.id },
+                        next
+                    ),
+            },
+            (err, handoff) => {
+                if (err) {
+                    this.client.log.warn(
+                        { error: err.message },
+                        'AT login: could not start browser handoff'
+                    );
+                    this.showStatus(Messages.failed);
+                    return cb(null);
+                }
+
+                this.handoff = handoff;
+                const qr = this.qrCodeFor(handoff.url);
+                this.showStatus(qr ? Messages.openLinkOrScan : Messages.openLink, {
+                    url: handoff.url,
+                });
+                if (qr) {
+                    this.drawQrCode(qr);
+                }
+
+                handoff.wait((err, result) => {
+                    this.handoff = null;
+                    this.clearQrCode();
+                    return this.finishLogin(err, result, identity);
+                });
+
+                return cb(null);
+            }
+        );
+    }
+
+    //
+    //  The QR code for |url| and where it goes, or null when it isn't wanted
+    //  (config.qrCode) or doesn't fit: at the bottom right of the screen,
+    //  clear of the status text's link line and the screen's last column
+    //  (which would scroll some terminals)
+    //
+    qrCodeFor(url) {
+        if (true !== _.get(this, 'menuConfig.config.qrCode')) {
+            return null;
+        }
+        const status = this.getView('menu', MciViewIds.status);
+        if (!status || !status.position) {
+            return null;
+        }
+        const lines = qrLines(url);
+        const width = lines[0].length;
+        const termWidth = this.client.term.termWidth || 80;
+        const termHeight = this.client.term.termHeight || 25;
+        const row = termHeight - lines.length + 1;
+        const col = termWidth - width;
+        //  The link is the status text's third line, as wide as it is long,
+        //  so the code must start below it; the lines after it are short
+        //  (Messages.openLinkOrScan), and must stay left of the code
+        const linkRow = status.position.row + 2;
+        if (row <= linkRow || col <= 34) {
+            return null;
+        }
+        return { lines, row, col };
+    }
+
+    drawQrCode(qr) {
+        let out = '';
+        qr.lines.forEach((line, i) => {
+            out += ansiGoto(qr.row + i, qr.col) + '\x1b[0;1;37;40m' + line;
+        });
+        this.client.term.write(out + '\x1b[0m');
+        this.qrShown = qr;
+        this.repositionCursorToFocusedView('menu');
+    }
+
+    clearQrCode() {
+        const qr = this.qrShown;
+        if (!qr) {
+            return;
+        }
+        this.qrShown = null;
+        let out = '\x1b[0m';
+        qr.lines.forEach((line, i) => {
+            out += ansiGoto(qr.row + i, qr.col) + ' '.repeat(line.length);
+        });
+        this.client.term.write(out);
+        this.repositionCursorToFocusedView('menu');
     }
 
     //  The approval request for |did|; modules that need more than proof of

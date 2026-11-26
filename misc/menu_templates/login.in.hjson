@@ -233,6 +233,9 @@
                 disabled: loginAttemptAccountDisabled
                 locked: loginAttemptAccountLocked
                 loginTypeNotAllowed: loginAttemptLoginTypeNotAllowed
+                //  the approval link also as a QR code, for a phone, when
+                //  the screen has room beside the status text
+                qrCode: true
             }
             form: {
                 0: {
@@ -251,6 +254,8 @@
                             height: 8
                             focus: false
                             acceptsFocus: false
+                            //  the approval link is clickable where the terminal can
+                            hyperlinks: true
                         }
                     }
                     submit: {

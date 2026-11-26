@@ -77,6 +77,11 @@ exports.getModule = class AtProtoAccountConfigModule extends AtProtoLoginModule 
         this.showStatus(lines.join('\r\n'));
     }
 
+    //  The account to link is named by its handle, not a username here
+    acceptsUsernames() {
+        return false;
+    }
+
     identityProven(identity) {
         AtProtoLogin.linkDidToUser(this.client, identity, err => {
             if (err) {

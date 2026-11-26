@@ -36,6 +36,7 @@ const _ = require('lodash');
 
 exports.loginWithDid = loginWithDid;
 exports.findUserIdByDid = findUserIdByDid;
+exports.findDidByUsername = findDidByUsername;
 exports.checkNewUserAllowed = checkNewUserAllowed;
 exports.createUserForDid = createUserForDid;
 exports.loginLinkingExistingUser = loginLinkingExistingUser;
@@ -170,6 +171,32 @@ function findUserIdByDid(did, cb) {
             return cb(Errors.UnexpectedState(`More than one user is bound to ${did}`));
         }
         return cb(null, userIds[0] || null);
+    });
+}
+
+//
+//  Calls back with the DID bound to the user named |username| here, or null
+//  if there is no such user or none is bound. Lets a member log in with
+//  Bluesky by their username on this board, instead of their whole handle;
+//  the account that approves must still be that DID.
+//
+function findDidByUsername(username, cb) {
+    User.getUserIdAndName(username, (err, userId, foundName) => {
+        //  The lookup matches with LIKE, where % and _ are wildcards: only
+        //  the very name counts, in any case
+        if (
+            err ||
+            !_.isString(foundName) ||
+            foundName.toLowerCase() !== username.toLowerCase()
+        ) {
+            return cb(null, null);
+        }
+        User.loadProperties(userId, { names: [UserProps.AtProtoDid] }, (err, props) => {
+            if (err) {
+                return cb(err);
+            }
+            return cb(null, _.get(props, UserProps.AtProtoDid) || null);
+        });
     });
 }
 

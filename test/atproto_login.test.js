@@ -389,6 +389,40 @@ describe('AT login', () => {
         });
     });
 
+    describe('logging in by username', () => {
+        beforeEach(withRootUser);
+
+        it("finds the account bound to a member's username, in any case", async () => {
+            await applyAndLogin({ did: 'did:plc:alice', handle: 'alice.bsky.social' });
+            const find = name =>
+                new Promise((resolve, reject) =>
+                    AtProtoLogin.findDidByUsername(name, (err, did) =>
+                        err ? reject(err) : resolve(did)
+                    )
+                );
+            assert.equal(await find('alice'), 'did:plc:alice');
+            assert.equal(await find('ALICE'), 'did:plc:alice');
+            assert.equal(await find('bob'), null, 'no such user');
+            //  the lookup underneath matches with LIKE: no wildcards
+            assert.equal(await find('%'), null);
+            assert.equal(await find('al_ce'), null);
+            assert.equal(await find('ali%'), null);
+        });
+
+        it('finds nothing for a member with no Bluesky account linked', async () => {
+            const userId = db
+                .prepare("INSERT INTO user (user_name) VALUES ('carol')")
+                .run().lastInsertRowid;
+            assert.ok(userId);
+            const did = await new Promise((resolve, reject) =>
+                AtProtoLogin.findDidByUsername('carol', (err, d) =>
+                    err ? reject(err) : resolve(d)
+                )
+            );
+            assert.equal(did, null);
+        });
+    });
+
     describe('the atproto login type', () => {
         beforeEach(withRootUser);
 

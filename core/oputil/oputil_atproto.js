@@ -262,6 +262,16 @@ function boardShow() {
         );
         console.info(`Status        : ${types.status}`);
         console.info(`Last post     : ${when(account.lastPostAt)}`);
+        const missing = Publishing.missingPermissions();
+        console.info(
+            `Permissions   : ${
+                null === missing
+                    ? 'unknown'
+                    : 0 === missing.length
+                      ? 'everything the board asks for'
+                      : `missing ${missing.join(' ')}: connect the account again from the board account menu`
+            }`
+        );
         const Splash = require('../atproto/splash');
         Splash.find(found => {
             const answer =

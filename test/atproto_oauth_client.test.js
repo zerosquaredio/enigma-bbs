@@ -419,8 +419,16 @@ describe('atproto OAuth client adapter', () => {
     });
 
     describe('board account (atProto.publishing)', () => {
-        const BoardScope =
-            'atproto repo:nexus.cyberspace.dev.leaf.listing repo:nexus.cyberspace.dev.leaf.status repo:app.bsky.feed.post blob:image/*';
+        const BoardScope = [
+            'atproto',
+            'repo:nexus.cyberspace.dev.leaf.listing',
+            'repo:nexus.cyberspace.dev.leaf.status',
+            'repo:app.bsky.feed.post',
+            'repo:nexus.cyberspace.dev.asset.item',
+            'repo:nexus.cyberspace.dev.asset.catalogue',
+            'repo:nexus.cyberspace.dev.asset.view',
+            'blob:*/*',
+        ].join(' ');
 
         beforeEach(() => {
             testConfig.atProto.publishing = { enabled: true };

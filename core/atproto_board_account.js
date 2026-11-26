@@ -6,6 +6,8 @@ const AtProtoLoginModule = require('./atproto_login.js').getModule;
 const AtProtoOAuth = require('./atproto/oauth_client.js');
 const Publishing = require('./atproto/publishing.js');
 const Splash = require('./atproto/splash.js');
+const { permissionWords } = require('./atproto/const.js');
+const Config = require('./config.js').get;
 const { ErrorReasons } = require('./enig_error.js');
 
 //  deps
@@ -56,6 +58,8 @@ const Messages = {
     splashOnNone:
         "The hub may show the board's login screen, but no art was found to offer: see atProto.publishing.splash.art.",
     splashOff: "The hub won't show the board's login screen any more.",
+    reconnect:
+        'The board account was connected when the board asked for less. To let it publish {what}, connect it again: enter its handle and approve.',
     notEnabled:
         'Publishing is off: set atProto.publishing.enabled (and restart) to use a board account.',
     nowConnected:
@@ -136,12 +140,31 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
         }
         if (account) {
             lines.push(this.splashLine(account));
+            const missing = this.missingWords();
+            if (missing) {
+                lines.push(Messages.reconnect.replace('{what}', missing));
+            }
         }
         lines.push('', this.unavailableMessage() || Messages.instructions);
         if (account) {
             lines.push(Messages.actions);
         }
         this.showStatus(lines.join('\r\n'));
+    }
+
+    //  What the account doesn't allow yet, in words; null when nothing
+    missingWords() {
+        let missing = null;
+        try {
+            missing = Publishing.missingPermissions();
+        } catch (e) {
+            //  can't tell: say nothing
+        }
+        if (!missing || 0 === missing.length) {
+            return null;
+        }
+        const prefix = _.get(Config(), 'atProto.publishing.nsidPrefix');
+        return _.uniq(missing.map(scope => permissionWords(scope, prefix))).join(', ');
     }
 
     //  Whether the hub may show the splash screen, and which file it is

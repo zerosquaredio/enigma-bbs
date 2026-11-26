@@ -235,6 +235,39 @@ describe("AT publishing: the board's splash screen", () => {
             assert.equal(db.pragma('user_version', { simple: true }), 5);
         });
     });
+    describe("the account's permissions", () => {
+        const grant = scope =>
+            dbModule.dbs.atproto
+                .prepare(
+                    'REPLACE INTO oauth_board_session (did, session_json, updated_timestamp) VALUES (?, ?, 1)'
+                )
+                .run(
+                    Board.did,
+                    JSON.stringify({ tokenSet: { scope, access_token: 'secret' } })
+                );
+
+        it('says what an account connected before lacks, and nothing once it has it all', async () => {
+            await call(Publishing.connectBoardAccount, Board);
+            assert.equal(
+                Publishing.missingPermissions(),
+                null,
+                'no session: it cannot tell'
+            );
+            grant(
+                'atproto repo:nexus.cyberspace.dev.leaf.listing repo:nexus.cyberspace.dev.leaf.status repo:app.bsky.feed.post blob:image/*'
+            );
+            assert.deepEqual(Publishing.missingPermissions(), [
+                'repo:nexus.cyberspace.dev.asset.item',
+                'repo:nexus.cyberspace.dev.asset.catalogue',
+                'repo:nexus.cyberspace.dev.asset.view',
+                'blob:*/*',
+            ]);
+            const { boardScope } = require('../core/atproto/const.js');
+            grant(boardScope().split(' ').reverse().join('  '));
+            assert.deepEqual(Publishing.missingPermissions(), []);
+        });
+    });
+
     describe('the emblem', () => {
         const Emblem = Buffer.from('\x1b[1;35m<>\x1b[0m\r\n', 'latin1');
 

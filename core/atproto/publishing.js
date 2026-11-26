@@ -9,7 +9,7 @@ const { dbs } = require('../database');
 const { getBaseUrl } = require('../web_util');
 const AtProtoOAuth = require('./oauth_client');
 const Splash = require('./splash');
-const { recordTypes, DefaultNsidPrefix, PostCollection } = require('./const');
+const { recordTypes, DefaultNsidPrefix, PostCollection, boardScope } = require('./const');
 
 //  deps
 const crypto = require('crypto');
@@ -44,6 +44,7 @@ exports.publishListing = publishListing;
 exports.setStatus = setStatus;
 exports.post = post;
 exports.setSplashShown = setSplashShown;
+exports.missingPermissions = missingPermissions;
 exports.buildPost = buildPost;
 exports.startup = startup;
 exports.StatusStates = ['up', 'maintenance', 'degraded', 'down'];
@@ -167,6 +168,35 @@ function connectBoardAccount(identity, cb) {
         return setImmediate(() => cb(err));
     }
     return publishListing({ force: true }, cb);
+}
+
+//
+//  What the board account doesn't allow yet, of what the board now asks for
+//  (it was connected when the board asked for less), as permission strings:
+//  [] when it allows everything, null when it can't tell (no account, or a
+//  session that doesn't say). Only the session's granted scope is read.
+//
+function missingPermissions(config = Config()) {
+    const account = getBoardAccount();
+    if (!account) {
+        return null;
+    }
+    const row = dbs.atproto
+        .prepare('SELECT session_json FROM oauth_board_session WHERE did = ?')
+        .get(account.did);
+    let granted;
+    try {
+        granted = _.get(JSON.parse(row.session_json), 'tokenSet.scope');
+    } catch (e) {
+        return null;
+    }
+    if (!_.isString(granted)) {
+        return null;
+    }
+    const have = new Set(granted.split(/\s+/).filter(Boolean));
+    return boardScope(nsidPrefix(config))
+        .split(' ')
+        .filter(scope => !have.has(scope));
 }
 
 //

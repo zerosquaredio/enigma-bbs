@@ -25,15 +25,50 @@ exports.recordTypes = (nsidPrefix = exports.DefaultNsidPrefix) => ({
     status: `${nsidPrefix}.leaf.status`,
 });
 
+//  The board's art, as assets (assets spec §3): each piece, a catalogue of
+//  them, and the board's view
+exports.assetTypes = (nsidPrefix = exports.DefaultNsidPrefix) => ({
+    item: `${nsidPrefix}.asset.item`,
+    catalogue: `${nsidPrefix}.asset.catalogue`,
+    view: `${nsidPrefix}.asset.view`,
+});
+
+//
+//  What the board account is asked to allow. Permissions name record types
+//  exactly, so adding one, or the record names becoming final, means every
+//  board connects its account again: the list is meant to change rarely.
+//  Files of any kind may be uploaded, as a file does nothing until one of
+//  these records names it (ANSI art, pictures, and later models).
+//
 exports.boardScope = (nsidPrefix = exports.DefaultNsidPrefix) => {
     const types = exports.recordTypes(nsidPrefix);
+    const assets = exports.assetTypes(nsidPrefix);
     return [
         exports.OAuthScope,
         `repo:${types.listing}`,
         `repo:${types.status}`,
         `repo:${exports.PostCollection}`,
-        'blob:image/*',
+        `repo:${assets.item}`,
+        `repo:${assets.catalogue}`,
+        `repo:${assets.view}`,
+        'blob:*/*',
     ].join(' ');
+};
+
+//  A permission, in words, for the sysop
+exports.permissionWords = (scope, nsidPrefix = exports.DefaultNsidPrefix) => {
+    const types = exports.recordTypes(nsidPrefix);
+    const assets = exports.assetTypes(nsidPrefix);
+    const words = {
+        [`repo:${types.listing}`]: 'its listing',
+        [`repo:${types.status}`]: 'its status',
+        [`repo:${exports.PostCollection}`]: 'posts',
+        [`repo:${assets.item}`]: 'its art',
+        [`repo:${assets.catalogue}`]: 'its art',
+        [`repo:${assets.view}`]: 'its view',
+        'blob:*/*': 'files for its art',
+    };
+    return words[scope] || scope;
 };
 
 exports.ClientModes = {

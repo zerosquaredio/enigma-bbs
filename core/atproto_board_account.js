@@ -31,6 +31,7 @@ exports.moduleInfo = {
 
 const MciViewIds = {
     announcement: 3,
+    actions: 4,
 };
 
 const Messages = {
@@ -38,13 +39,14 @@ const Messages = {
     notConnected: 'No board account is connected.',
     lastListing: 'Listing last published {when}.',
     instructions:
-        "To connect one, enter the board account's handle and press ENTER, then approve it in a browser.",
+        "To connect one, enter the board account's handle and press ENTER, then approve it in a browser. ESC goes back.",
     actions: 'Type an announcement and choose "post"; "publish" updates the listing now.',
     notEnabled:
         'Publishing is off: set atProto.publishing.enabled (and restart) to use a board account.',
-    nowConnected: 'Connected {account}, and published its listing.',
+    nowConnected:
+        'Connected {account}, and published its listing. Choose an action below, or press ESC to go back.',
     connectedNotListed:
-        'Connected {account}, but the listing could not be published: {error}',
+        'Connected {account}, but the listing could not be published: {error}. Choose an action below, or press ESC to go back.',
     posted: 'Posted.',
     published: 'Listing published.',
     disconnected: 'Disconnected. Its records stay on the account until you remove them.',
@@ -132,13 +134,24 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
                     { error: err.message },
                     'Board account connected, listing not published'
                 );
-                return this.showStatus(Messages.connectedNotListed, {
+                this.showStatus(Messages.connectedNotListed, {
                     account,
                     error: err.message,
                 });
+                return this.focusActions();
             }
-            return this.showStatus(Messages.nowConnected, { account });
+            this.showStatus(Messages.nowConnected, { account });
+            return this.focusActions();
         });
+    }
+
+    //  The handle has done its job: on to the actions (post, publish,
+    //  cancel...), so the arrow keys move among them and ENTER picks one
+    focusActions() {
+        const vc = _.get(this, 'viewControllers.menu');
+        if (vc && vc.getView(MciViewIds.actions)) {
+            vc.switchFocus(MciViewIds.actions);
+        }
     }
 
     failed(err) {

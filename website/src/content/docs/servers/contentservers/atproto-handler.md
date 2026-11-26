@@ -355,7 +355,7 @@ atProto: {
 * **enig-term** can be served by the board (set `contentServers.web.wsTerm.endpoint` to the public `wss://` address), or by the proxy or hub itself at `/_enig/ws-term/`, the path web sign-in sends the browser to.
 * **The listing** (with [the board's own account](#the-boards-own-account)) gives the public address for the web. SSH and telnet aren't carried by a web proxy, so they are listed at `contentServers.web.domain`, the board's own name, and only when that is a public name: a board at home with a LAN address lists none, unless you give them in `atProto.publishing.listing.endpoints`.
 
-**Through a hub,** `overrideUrlPrefix` is the board's address on the hub (such as `https://coolbbs.hub.example`). The hub's tunnel agent runs next to the board and connects to it on `127.0.0.1`, which the default `trustedProxies` covers, and its generated config sets `X-Forwarded-Proto` for the board. The hub serves enig-term itself.
+**Through a hub,** `./oputil.js config hub --agent coolbbs-agent.toml` does all of this from the agent config the hub gave you, along with [presence on the hub](#presence-on-the-hub) and the menu entries ([oputil](../../admin/oputil.md#configuration)). By hand: `overrideUrlPrefix` is the board's address on the hub (such as `https://coolbbs.hub.example`). The hub's tunnel agent runs next to the board and connects to it on `127.0.0.1`, which the default `trustedProxies` covers, and its generated config sets `X-Forwarded-Proto` for the board. The hub serves enig-term itself.
 
 ### Presence on the Hub
 A hub can have a common space where people from all its boards see who is around. With `atProto.hub.presence.enabled`, the board tells its hub which of its members are on, **only for members who chose it**:

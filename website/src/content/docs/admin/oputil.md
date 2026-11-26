@@ -149,6 +149,9 @@ Actions:
 
   cat                      Write current configuration to stdout
 
+  hub                      Set the board up behind a Cyberspace hub, from the
+                           agent config the hub gave you
+
 cat arguments:
   --no-color               Disable color
   --no-comments            Strip any comments
@@ -158,6 +161,7 @@ cat arguments:
 |-----------|-------------------|---------------------------------------|
 | `new`     | Generates a new/initial configuration. The last three questions offer the [PETSCII starter menus and theme](../servers/loginservers/petscii.md#starter-menus-and-theme) for Commodore 64/128 callers, the [ATASCII starter menus and theme](../servers/loginservers/atascii.md#starter-menus-and-theme) for Atari 8-bit callers and the [RIP starter menus](../servers/loginservers/rip.md#starter-menus) for RIPscrip callers (each defaults to no; no to all three leaves the output exactly as before; each yes gives the connect menu a branch of its own). | `./oputil.js config new` (follow the prompts) |
 | `cat` | Pretty prints current `config.hjson` configuration to stdout. | `./oputil.js config cat` |
+| `hub` | Sets the board up to run behind a Cyberspace hub, from the agent config the hub gave you (`--agent`): the settings in [Behind a Proxy, Tunnel or Hub](../servers/contentservers/atproto-handler.md#behind-a-proxy-tunnel-or-hub) and [Presence on the Hub](../servers/contentservers/atproto-handler.md#presence-on-the-hub), the hub token in `config/security/hub_token`, and the menu entries for Bluesky login and the `AT`, `BA`, `HP` and `HS` commands. `--sysop` (your handle or DID) becomes `atProto.login.rootDid`; `--bluesky-only` turns passwords off. It asks for anything not given, unless `--yes`. Safe to run again. | `./oputil.js config hub --agent coolbbs-agent.toml --sysop you.bsky.social` |
 
 ## File Base Management
 The `fb` command provides a powerful file base management interface.

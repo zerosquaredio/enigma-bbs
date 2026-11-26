@@ -205,9 +205,24 @@ Actions:
   validate                 Check config.hjson, menu.hjson, achievements.hjson
                            and each theme for problems
 
+  hub                      Set the board up behind a Cyberspace hub, from the
+                           agent config the hub gave you: the settings, the
+                           hub token (kept in config/security/hub_token), and
+                           the menu entries for Bluesky login and the hub.
+                           Safe to run again
+
 cat arguments:
   --no-colors              Disable color
   --no-comments            Strip any comments
+
+hub arguments:
+  --agent PATH             The agent config (.toml) the hub gave you
+  --sysop HANDLE|DID       Your own Bluesky account: the board's first user
+                           and sysop (atProto.login.rootDid)
+  --bluesky-only           Bluesky login only: no passwords
+  --hub URL                The hub's address, if the agent config lacks it
+  --address URL            The board's address on the hub, likewise
+  --yes                    Ask nothing; take the above as given
 
 validate arguments:
   --check-env              Also report @environment:, @file: and @reference:

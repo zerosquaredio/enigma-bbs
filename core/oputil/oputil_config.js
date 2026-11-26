@@ -1176,6 +1176,8 @@ function handleConfigCommand() {
             return catCurrentConfig();
         case 'validate':
             return validateCurrentConfig();
+        case 'hub':
+            return require('./oputil_config_hub.js').handleHubSetup();
 
         default:
             return printUsageAndSetExitCode(getHelpFor('Config'), ExitCodes.ERROR);

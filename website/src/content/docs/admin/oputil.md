@@ -813,7 +813,7 @@ The `atproto` command manages invites and invite codes, which admit new users wh
 
 ```
 usage: oputil.js atproto <invite|invite-code> <action> [<arguments>]
-       oputil.js atproto <board|publish|status|post|splash> [<arguments>]
+       oputil.js atproto <board|publish|status|post|splash|assets> [<arguments>]
 
 Board account:
   board                        Show the connected board account
@@ -825,6 +825,8 @@ Board account:
   splash on|off                Let the hub show the board's splash screen,
                                credited to its artist, or stop it (the
                                board account menu's "splash" does the same)
+  assets                       Publish the art listed in
+                               atProto.publishing.assets now (public!)
 
 Invites:
   invite add HANDLE|DID        Invite one Bluesky account, used once when it

@@ -17,6 +17,14 @@ const call = (fn, ...args) =>
 const sha = body => crypto.createHash('sha256').update(body).digest('hex');
 
 describe("AT publishing: the board's splash screen", () => {
+    //  loaded afresh here, against the stand-in config
+    const Modules = [
+        '../core/web_util.js',
+        '../core/atproto/oauth_client.js',
+        '../core/atproto/admission/index.js',
+        '../core/atproto/splash.js',
+        '../core/atproto/publishing.js',
+    ];
     let previousConfigGet;
     let previousDb;
     let AtProtoOAuth;
@@ -38,13 +46,7 @@ describe("AT publishing: the board's splash screen", () => {
         previousConfigGet = configModule._pushTestConfig({});
         configModule.get = () => testConfig;
         previousDb = dbModule.dbs.atproto;
-        [
-            '../core/web_util.js',
-            '../core/atproto/oauth_client.js',
-            '../core/atproto/admission/index.js',
-            '../core/atproto/splash.js',
-            '../core/atproto/publishing.js',
-        ].forEach(m => delete require.cache[require.resolve(m)]);
+        Modules.forEach(m => delete require.cache[require.resolve(m)]);
         AtProtoOAuth = require('../core/atproto/oauth_client.js');
         Splash = require('../core/atproto/splash.js');
         Publishing = require('../core/atproto/publishing.js');
@@ -54,6 +56,9 @@ describe("AT publishing: the board's splash screen", () => {
     after(() => {
         Object.assign(AtProtoOAuth, saved);
         dbModule.dbs.atproto = previousDb;
+        //  loaded here against the stand-in config: loaded afresh by later
+        //  tests, not as they were here
+        Modules.forEach(m => delete require.cache[require.resolve(m)]);
         configModule._popTestConfig(previousConfigGet);
     });
 

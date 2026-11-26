@@ -726,6 +726,12 @@ module.exports = () => {
                 emblem: {
                     art: '',
                 },
+                //  the board's art, published from its account for hubs to
+                //  show: each an art name or path, or { art, name,
+                //  description, licence: { id, url, text }, rating, themes,
+                //  credit: { author, group, note } }. Public, and it must be
+                //  the board's to share
+                assets: [],
                 //  record type names: the draft "nexus.cyberspace.dev" until
                 //  the record shapes are final; published names are permanent
                 nsidPrefix: 'nexus.cyberspace.dev',

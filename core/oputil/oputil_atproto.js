@@ -299,6 +299,32 @@ function boardShow() {
     });
 }
 
+function publishArt() {
+    withBoardAccount(Publishing => {
+        const missing = Publishing.missingPermissions();
+        if (missing && missing.length) {
+            return fail(
+                `The board account doesn't allow publishing art yet (missing ${missing.join(' ')}): connect it again from the board account menu`
+            );
+        }
+        const Assets = require('../atproto/assets');
+        if (0 === Assets.pieces().length) {
+            return console.info('No art is listed: see atProto.publishing.assets.');
+        }
+        Assets.publishAssets((err, result) => {
+            if (err) {
+                return fail(`Could not publish the art: ${err.reason || err.message}`);
+            }
+            console.info(
+                `Art published: ${result.added.length} new, ${result.kept.length} unchanged, ${result.removed.length} removed.`
+            );
+            if (result.missing.length) {
+                console.info(`Not found, so left out: ${result.missing.join(', ')}`);
+            }
+        });
+    });
+}
+
 function splash(answer) {
     if (!['on', 'off'].includes(answer)) {
         return printUsageAndSetExitCode(getHelpFor('AtProto'), ExitCodes.ERROR);
@@ -377,6 +403,7 @@ function handleAtProtoCommand() {
         publish,
         status: () => (action ? status(String(action)) : usage()),
         splash: () => splash(String(action || '')),
+        assets: publishArt,
         //  the rest of the words, so quotes are optional
         post: () => {
             const text = argv._.slice(2).map(String).join(' ');

@@ -1754,6 +1754,11 @@
                             },
                             "additionalProperties": false
                         },
+                        "assets": {
+                            "description": "The board's art, published from its account as asset records for hubs to show: each an ANSI art name or path, or an object with art, name, description, licence ({ id, url, text }), rating, themes and credit. Public: list only art that is the board's to share.",
+                            "type": "array",
+                            "default": []
+                        },
                         "nsidPrefix": {
                             "description": "Prefix of the published record type names: nexus.cyberspace.dev while the record shapes are drafts. Published names are permanent.",
                             "type": "string",

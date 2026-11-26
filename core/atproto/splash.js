@@ -38,6 +38,7 @@ exports.AssetPathRe = AssetPathRe;
 exports.find = find;
 exports.findEmblem = findEmblem;
 exports.emblemNamed = emblemNamed;
+exports.findNamed = findNamed;
 exports.served = served;
 exports.lookup = lookup;
 exports.current = () => current.splash;
@@ -122,23 +123,18 @@ function read(path, cb) {
     });
 }
 
-//  The first of |wanted| that can be offered, remembered as |kind|
-function findArt(kind, wanted, config, cb) {
+//  The first of |wanted| that can be offered: { sha256, size, mediaType,
+//  body, path }, or null. Names are looked for as a menu's art is; a name
+//  with a slash is a path to an .ans file
+function resolve(wanted, config, cb) {
     const dirs = directories(config);
     const tryName = i => {
         if (i >= wanted.length) {
-            current[kind] = null;
             return cb(null);
         }
         const name = wanted[i];
         const next = () => tryName(i + 1);
-        const done = found => {
-            if (!found) {
-                return next();
-            }
-            current[kind] = found;
-            return cb(found);
-        };
+        const done = found => (found ? cb(found) : next());
         //  a path, absolute or relative to the board's directory
         if (name.includes('/')) {
             if ('.ans' !== paths.extname(name).toLowerCase()) {
@@ -158,6 +154,20 @@ function findArt(kind, wanted, config, cb) {
         return tryDir(0);
     };
     return tryName(0);
+}
+
+//  As resolve(), remembered as |kind|, for serving
+function findArt(kind, wanted, config, cb) {
+    return resolve(wanted, config, found => {
+        current[kind] = found;
+        return cb(found);
+    });
+}
+
+//  One piece of art by name or path, as resolve() finds it
+function findNamed(name, config, cb) {
+    [config, cb] = withConfig(config, cb);
+    return resolve(names(name), config, cb);
 }
 
 const withConfig = (config, cb) =>

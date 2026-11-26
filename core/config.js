@@ -84,6 +84,8 @@ exports.Config = class Config extends ConfigLoader {
             'atProto.admission.policy',
             //  nor keep the default splash art when the sysop names other art
             'atProto.publishing.splash.art',
+            //  nor keep art the sysop took off the list
+            'atProto.publishing.assets',
             //  nor keep "en" among a board's post languages
             'atProto.publishing.postLangs',
         ];

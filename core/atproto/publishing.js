@@ -176,6 +176,15 @@ function connectBoardAccount(identity, cb) {
 //  [] when it allows everything, null when it can't tell (no account, or a
 //  session that doesn't say). Only the session's granted scope is read.
 //
+//  missingPermissions(), or null on any error
+function publishMissing() {
+    try {
+        return missingPermissions();
+    } catch (e) {
+        return null;
+    }
+}
+
 function missingPermissions(config = Config()) {
     const account = getBoardAccount();
     if (!account) {
@@ -726,6 +735,20 @@ function startup(cb) {
         }
         if (account) {
             publishListing(_.noop);
+            //  the board's art, when it lists any (assets.js)
+            if (
+                require('./assets').pieces().length > 0 &&
+                !(publishMissing() || []).length
+            ) {
+                require('./assets').publishAssets(err => {
+                    if (err) {
+                        Log.warn(
+                            { error: err.message },
+                            'Could not publish the board art'
+                        );
+                    }
+                });
+            }
         }
     };
 

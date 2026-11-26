@@ -367,6 +367,7 @@ describe('config schema against config_default.js', () => {
             'atProto.login.rootDid',
             'atProto.login.secureConnectionsOnly',
             'atProto.oauth.clientMode',
+            'atProto.publishing.assets',
             'atProto.publishing.emblem.art',
             'atProto.publishing.enabled',
             'atProto.publishing.listing.deriveEndpoints',

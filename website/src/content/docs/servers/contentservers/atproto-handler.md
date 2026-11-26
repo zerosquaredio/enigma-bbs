@@ -74,6 +74,7 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `atProto.publishing.enabled` | Boolean. Let a sysop connect [the board's own account](#the-boards-own-account). | `false` |
 | `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`, `rating`. | (empty) |
 | `atProto.publishing.triggers.moved` | Object. `enabled` and `message`: post the new addresses when the listing's addresses change. | off |
+| `atProto.publishing.assets` | Array. The board's [art](#its-art), published for hubs to show: each an art name or path, or an object with `art`, `name`, `description`, `licence`, `rating`, `themes` and `credit`. | `[]` |
 | `atProto.publishing.emblem.art` | String. The board's [emblem](#its-emblem), a small logo for its hub's map: an ANSI art name or a path to an `.ans` file. Naming one offers it. | (none) |
 | `atProto.publishing.splash.art` | Array. The [splash screen](#its-splash-screen) offered to the board's hub: ANSI art names, tried in order in the pre-login theme and the general art directory, or paths to `.ans` files. | `[ "CONNECT", "MATRIX" ]` |
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
@@ -287,6 +288,27 @@ A hub can show the board's splash screen, the ANSI art callers first see, on its
 
 The emblem is a small logo that stands for the board on its hub's map, drawn in the board's place there. There is none until the sysop names one in `atProto.publishing.emblem.art`, as an art name (looked for as the splash is) or a path to an `.ans` file; naming it is the sysop's say-so to offer it. Keep it small: a few lines of a dozen or so characters suit a map. The listing names it as it names the splash (`emblem`), the board serves it at `/assets/<sha256>`, and the hub cleans, draws and credits it the same way. `./oputil.js atproto board` shows which file it is.
 
+### Its Art
+
+The board can publish ANSI art from its own account for hubs to show, in their galleries and chat, credited to it. List the pieces in `atProto.publishing.assets`, each an art name (looked for as the splash is) or a path to an `.ans` file, or an object:
+
+```hjson
+assets: [
+    "WELCOME"
+    {
+        art: "/enigma-bbs/config/art/LOGO.ANS"
+        name: "Our logo"
+        description: "The board's logo, in pink and white"
+        licence: { id: "CC-BY-4.0", url: "https://creativecommons.org/licenses/by/4.0/" }
+        credit: { author: "Ana", group: "ACiD" }
+    }
+]
+```
+
+Each piece is uploaded to the account's host and published as an asset record (`asset.item`), keyed by its file's SHA-256, with a catalogue of them (`asset.catalogue`). Unchanged art isn't uploaded again, and pieces taken off the list are deleted. Credit comes from each file's SAUCE record, which a hub reads when it draws the art; `credit` adds to it. A piece without a `licence` says it is shown with the board's consent, and to ask before any other use. It is published at startup and when the config changes, or at once with `./oputil.js atproto assets`.
+
+**Everything published is public, and must be the board's to share.** Art made for the board, or under a licence that allows it, is fine; give its licence. ENiGMA½'s own theme art belongs to its artists.
+
 **From the command line**, using the stored session, whether or not the board is running:
 
 ```shell
@@ -295,6 +317,7 @@ The emblem is a small logo that stands for the board on its hub's map, drawn in 
 ./oputil.js atproto status maintenance --message "New hardware" --until 2026-12-01T20:00Z
 ./oputil.js atproto post "Door games night this Friday!"
 ./oputil.js atproto splash off                  # stop the hub showing the splash screen (on: again)
+./oputil.js atproto assets                      # publish the listed art now
 ```
 
 Posts are plain text, up to 300 characters, with web links made clickable, and at most one per `minPostIntervalSeconds`. They are public and effectively permanent: Bluesky honors deletes, but copies may persist.

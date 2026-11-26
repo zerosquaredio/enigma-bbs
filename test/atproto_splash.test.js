@@ -138,6 +138,19 @@ describe("AT publishing: the board's splash screen", () => {
             assert.equal((await new Promise(r => Splash.find(r))).sha256, sha(Connect));
         });
 
+        it('is found again when asked for a file it has not looked up, as after oputil', async () => {
+            write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', Connect);
+            //  nothing looked up in this process yet
+            assert.equal(Splash.served(sha(Connect)), null);
+            const body = await new Promise(r => Splash.lookup(sha(Connect), r));
+            assert.deepEqual(body, Connect);
+            assert.equal(
+                await new Promise(r => Splash.lookup(sha(Matrix), r)),
+                null,
+                'only the splash'
+            );
+        });
+
         it('is none when there is no art, or only art it would not offer', async () => {
             assert.equal(await new Promise(r => Splash.find(r)), null);
             write(

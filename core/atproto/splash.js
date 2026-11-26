@@ -32,6 +32,7 @@ exports.MaxBytes = MaxBytes;
 exports.AssetPathRe = AssetPathRe;
 exports.find = find;
 exports.served = served;
+exports.lookup = lookup;
 exports.current = () => current;
 exports._reset = () => {
     current = null;
@@ -149,4 +150,23 @@ function find(config = Config(), cb) {
 //  The bytes of the splash with this hash, if it is the one offered now
 function served(sha256) {
     return current && current.sha256 === sha256 ? current.body : null;
+}
+
+//
+//  As served(), but looking for the splash again when this hash isn't the
+//  one last found: the listing may have been published by another process
+//  (oputil), or the art changed since. Calls back with the bytes or null.
+//
+function lookup(sha256, config, cb) {
+    if (!cb && _.isFunction(config)) {
+        cb = config;
+        config = Config();
+    }
+    const known = served(sha256);
+    if (known) {
+        return setImmediate(() => cb(known));
+    }
+    return find(config, found =>
+        cb(found && found.sha256 === sha256 ? found.body : null)
+    );
 }

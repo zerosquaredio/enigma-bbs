@@ -73,25 +73,13 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
         }
 
         //  the board's splash screen, for its hub (core/atproto/splash.js):
-        //  only the file the listing names, by its hash
+        //  only the file its splash is now, by its hash, and only while the
+        //  sysop lets the hub show it
         if (AtProtoOAuth.isPublishingEnabled()) {
             this.webServer.addRoute({
                 method: 'GET',
                 path: /^\/assets\/[0-9a-f]{64}$/,
-                handler: (req, resp) => {
-                    const match = Splash.AssetPathRe.exec(req.url);
-                    const body = match ? Splash.served(match[1]) : null;
-                    if (!body) {
-                        return this.webServer.fileNotFound(resp);
-                    }
-                    return this.webServer.ok(resp, body, {
-                        'Content-Type': 'text/x-ansi',
-                        'Content-Length': String(body.length),
-                        'Cache-Control': 'public, max-age=31536000, immutable',
-                        'X-Content-Type-Options': 'nosniff',
-                        'Content-Security-Policy': "default-src 'none'; sandbox",
-                    });
-                },
+                handler: (req, resp) => this._splashHandler(req, resp),
             });
         }
 
@@ -112,6 +100,36 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
         }
 
         return BrowserHandoff.registerRoutes(cb);
+    }
+
+    _splashHandler(req, resp) {
+        const match = Splash.AssetPathRe.exec(req.url);
+        let shown = false;
+        try {
+            shown =
+                true ===
+                _.get(
+                    require('../../../atproto/publishing').getBoardAccount(),
+                    'splashShown'
+                );
+        } catch (e) {
+            //  no account: nothing to offer
+        }
+        if (!match || !shown) {
+            return this.webServer.fileNotFound(resp);
+        }
+        return Splash.lookup(match[1], body => {
+            if (!body) {
+                return this.webServer.fileNotFound(resp);
+            }
+            return this.webServer.ok(resp, body, {
+                'Content-Type': 'text/x-ansi',
+                'Content-Length': String(body.length),
+                'Cache-Control': 'public, max-age=31536000, immutable',
+                'X-Content-Type-Options': 'nosniff',
+                'Content-Security-Policy': "default-src 'none'; sandbox",
+            });
+        });
     }
 
     _checkSignInRateLimit(req, resp) {

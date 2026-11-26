@@ -140,15 +140,25 @@ function enableLoginMenu(text) {
 }
 
 //
-//  The main menu with its AT, BA, HP and HS commands on: the template has
-//  them in one commented out block. Returns { text, changed }, or null if
-//  they aren't there.
+//  The main menu with its AT, BA, HP and HS commands on, and the hint line
+//  naming them: the template has them commented out. Returns { text,
+//  changed }, or null if the commands aren't there.
 //
 function enableMainMenu(text) {
     const commented =
         /\/\*((?:(?!\*\/)[\s\S])*?command:\s*"AT"(?:(?!\*\/)[\s\S])*?@menu:hubSpace\s*\})\s*\*\//;
-    if (commented.test(text)) {
-        return { text: text.replace(commented, '$1'), changed: true };
+    //  the hint line naming them under the main menu's prompt, where the
+    //  menu file has one (templates from 2026-11-26 on)
+    const hint = /\/\*\s*hub hint\n([\s\S]*?)\n\s*\*\//;
+    let out = text;
+    if (commented.test(out)) {
+        out = out.replace(commented, '$1');
+    }
+    if (hint.test(out)) {
+        out = out.replace(hint, '$1');
+    }
+    if (out !== text) {
+        return { text: out, changed: true };
     }
     return /@menu:boardAtProtoAccount/.test(stripMenuDefinitions(stripComments(text)))
         ? { text, changed: false }

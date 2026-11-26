@@ -182,6 +182,10 @@ describe('oputil config hub', () => {
             assert.equal(first.changed, true);
             const menu = hjson.parse(first.text.replace(/%INCLUDE_FILES%/g, ''));
             const commands = JSON.stringify(menu);
+            const hint = menu.prompts.mainMenuCommand.mci.TL52;
+            assert.match(hint.text, /HS around/, 'and the hint naming them');
+            assert.deepEqual(hint.position, { row: 1, col: 37 });
+            assert.equal(menu.menus.mainMenu.prompt, 'mainMenuCommand');
             for (const command of ['AT', 'BA', 'HP', 'HS']) {
                 assert.match(commands, new RegExp(`"command":"${command}"`));
                 assert.doesNotMatch(

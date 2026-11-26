@@ -186,6 +186,18 @@ to be stored outside of the running container. As such, the following volumes ar
 | /mail                   | FTN mail (for use with an external mailer)                           |
 
 
+## On a Cyberspace Hub
+A board that runs behind a [Cyberspace hub](../servers/contentservers/atproto-handler.md#behind-a-proxy-tunnel-or-hub) also runs the hub's tunnel agent. `docker/hub/compose.yml` runs both: the board, and frp's own agent image sharing the board's network, so the agent config the hub gives you works as it is and the board publishes no ports. Copy it to a folder of its own, then:
+
+```bash
+docker compose run --rm bbs        # first time: answer the questions, then Ctrl-C
+#  save the hub's agent config beside compose.yml as agent.toml, then:
+docker compose run --rm -v ./agent.toml:/agent.toml:ro --entrypoint ./oputil.js bbs     config hub --agent /agent.toml --sysop you.bsky.social
+docker compose up -d
+```
+
+`config hub` writes the settings a hub board needs (see [oputil](../admin/oputil.md#configuration)). `BBS_IMAGE` picks the image: one built from this repository (`enigma-bbs:hub`, the default) or a published one.
+
 ## Building your own image
 
 Customising the Docker image is easy!

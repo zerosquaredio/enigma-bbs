@@ -97,7 +97,8 @@
         mainMenu: {
             desc: Main Menu
             art: MMENU
-            prompt: menuCommand
+            //  its own prompt (below), so a hint line for it shows here only
+            prompt: mainMenuCommand
             config: {
                 font: cp437
                 interrupt: realtime
@@ -2107,6 +2108,36 @@
                 //          "|08■■|15■"
                 //      ]
                 //  }
+            }
+        }
+
+        //
+        //  The main menu's prompt: menuCommand's, with a hint line for the
+        //  hub's commands (HS, HP, AT), off until the board is set up for a
+        //  hub ("oputil.js config hub" turns it on, with the commands).
+        //  Placed by configuration, so the theme's art is unchanged.
+        //
+        mainMenuCommand: {
+            art: MNUPRMT
+            mci: {
+                TL1: { }
+                ET2: {
+                    argName: command
+                    width: 20
+                    maxLength: 20
+                    submit: true
+                    textStyle: upper
+                    focus: true
+                }
+                /* hub hint
+                TL52: {
+                    //  the prompt's top row, between the menu's name and
+                    //  the clock (at its right); a theme can move it
+                    position: { row: 1, col: 37 }
+                    width: 34
+                    text: "HS around  HP be shown  AT Bluesky"
+                }
+                */
             }
         }
 

@@ -1,0 +1,45 @@
+#  A board on a Cyberspace hub: ENiGMA½ and the hub's tunnel agent (frpc),
+#  side by side. Copy this file to a folder of its own (say /srv/coolbbs),
+#  and follow "Joining a Hub" (in the Cyberspace Framework's docs) or the
+#  steps below. The agent config the hub gives you goes beside this file,
+#  as agent.toml (the board's own folders belong to its container).
+#
+#  The agent shares the board's network (network_mode), so the agent
+#  config works unchanged (it reaches the board on 127.0.0.1), and the
+#  board publishes no ports at all: only the hub reaches it, through the
+#  tunnel. Add ports under "bbs" for SSH or telnet on your own address.
+#
+#    docker compose run --rm bbs               # first time: answer the
+#                                              # questions, then Ctrl-C
+#    #  save the hub's agent config here as agent.toml, then:
+#    docker compose run --rm -v ./agent.toml:/agent.toml:ro \
+#        --entrypoint ./oputil.js bbs \
+#        config hub --agent /agent.toml --sysop you.bsky.social
+#    docker compose up -d
+#
+#  BBS_IMAGE picks the board's image: one you built from the fork
+#  (docker build -t enigma-bbs:hub -f docker/Dockerfile .), the default,
+#  or a published one.
+
+services:
+  bbs:
+    image: ${BBS_IMAGE:-enigma-bbs:hub}
+    restart: unless-stopped
+    volumes:
+      - ./config:/enigma-bbs/config
+      - ./db:/enigma-bbs/db
+      - ./logs:/enigma-bbs/logs
+    mem_limit: 1g
+    #  longer than the image's PM2_KILL_TIMEOUT (20 s), for an orderly stop
+    stop_grace_period: 30s
+
+  agent:
+    #  frp's own image, by its author; the hub is tested with 0.72.0
+    image: fatedier/frpc:v0.72.0@sha256:c447f0c3572a02bd3da5677f249db3b62cb02d7367d1d5bb420678ce092d65c8
+    restart: unless-stopped
+    network_mode: service:bbs
+    depends_on:
+      - bbs
+    command: ['-c', '/etc/frp/agent.toml']
+    volumes:
+      - ./agent.toml:/etc/frp/agent.toml:ro

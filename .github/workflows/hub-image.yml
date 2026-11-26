@@ -1,0 +1,57 @@
+name: Hub board image
+
+#  The image a Cyberspace hub's sysops run (docker/hub/compose.yml), built
+#  from this branch and published to this repository's packages, only when
+#  a release is tagged (hub-v1.2.3) or someone runs it by hand. Upstream's
+#  Docker workflow (docker.yml) publishes enigmabbs/enigma-bbs and is not
+#  for this.
+
+on:
+  push:
+    tags: ['hub-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/enigma-bbs
+          #  hub-v1.2.3 gives hub-1.2.3 and hub; a run by hand, hub-<sha>
+          tags: |
+            type=match,pattern=hub-v(.*),group=1,prefix=hub-
+            type=raw,value=hub,enable=${{ startsWith(github.ref, 'refs/tags/hub-v') }}
+            type=sha,prefix=hub-
+
+      - uses: docker/build-push-action@v6
+        with:
+          file: docker/Dockerfile
+          #  a server or a VM (amd64), and a Raspberry Pi 4 or 5 (arm64)
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=hub-image
+          cache-to: type=gha,mode=max,scope=hub-image

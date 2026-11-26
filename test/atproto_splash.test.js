@@ -142,8 +142,8 @@ describe("AT publishing: the board's splash screen", () => {
             write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', Connect);
             //  nothing looked up in this process yet
             assert.equal(Splash.served(sha(Connect)), null);
-            const body = await new Promise(r => Splash.lookup(sha(Connect), r));
-            assert.deepEqual(body, Connect);
+            const found = await new Promise(r => Splash.lookup(sha(Connect), r));
+            assert.deepEqual(found, { kind: 'splash', body: Connect });
             assert.equal(
                 await new Promise(r => Splash.lookup(sha(Matrix), r)),
                 null,
@@ -233,6 +233,46 @@ describe("AT publishing: the board's splash screen", () => {
             Publishing._setStore(null);
             assert.equal(Publishing.getBoardAccount().splashShown, undefined);
             assert.equal(db.pragma('user_version', { simple: true }), 5);
+        });
+    });
+    describe('the emblem', () => {
+        const Emblem = Buffer.from('\x1b[1;35m<>\x1b[0m\r\n', 'latin1');
+
+        it('is none until the sysop names one', async () => {
+            write(paths.join(root, 'general'), 'EMBLEM.ANS', Emblem);
+            assert.equal(Splash.emblemNamed(), false);
+            assert.equal(await new Promise(r => Splash.findEmblem(r)), null);
+            await call(Publishing.connectBoardAccount, Board);
+            assert.equal(lastListing().params.record.emblem, undefined);
+        });
+
+        it('is offered once named, by name or path, whatever the splash answer', async () => {
+            write(paths.join(root, 'general'), 'EMBLEM.ANS', Emblem);
+            testConfig.atProto.publishing.emblem = { art: 'EMBLEM' };
+            await call(Publishing.connectBoardAccount, Board);
+            await call(Publishing.setSplashShown, false);
+            assert.deepEqual(lastListing().params.record.emblem, {
+                sha256: sha(Emblem),
+                size: Emblem.length,
+                mediaType: 'text/x-ansi',
+            });
+            assert.deepEqual(Splash.served(sha(Emblem)), Emblem);
+
+            write(root, 'mine.ans', Connect);
+            testConfig.atProto.publishing.emblem = { art: paths.join(root, 'mine.ans') };
+            const again = await call(Publishing.publishListing, {});
+            assert.equal(again.record.emblem.sha256, sha(Connect));
+        });
+
+        it('is told apart from the splash when looked up', async () => {
+            write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', Connect);
+            write(paths.join(root, 'general'), 'EMBLEM.ANS', Emblem);
+            testConfig.atProto.publishing.emblem = { art: 'EMBLEM' };
+            const kind = hash =>
+                new Promise(r => Splash.lookup(hash, found => r(found && found.kind)));
+            assert.equal(await kind(sha(Connect)), 'splash');
+            assert.equal(await kind(sha(Emblem)), 'emblem');
+            assert.equal(await kind(sha(Matrix)), null);
         });
     });
 });

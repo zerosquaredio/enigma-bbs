@@ -721,6 +721,11 @@ module.exports = () => {
                 splash: {
                     art: ['CONNECT', 'MATRIX'],
                 },
+                //  the board's emblem, a small logo for its hub's map: an ANSI
+                //  art name or a path to an .ans file; none until named
+                emblem: {
+                    art: '',
+                },
                 //  record type names: the draft "nexus.cyberspace.dev" until
                 //  the record shapes are final; published names are permanent
                 nsidPrefix: 'nexus.cyberspace.dev',

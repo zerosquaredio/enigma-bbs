@@ -332,8 +332,13 @@ function hoursFrom(hours) {
 //  when the board account was connected, so it doesn't change on every write.
 //
 //  |splash|: the board's splash screen (splash.js), when the sysop lets the
-//  hub show it
-function buildListing(config = Config(), account = getBoardAccount(), splash = null) {
+//  hub show it. |emblem|: the emblem the sysop names, if any
+function buildListing(
+    config = Config(),
+    account = getBoardAccount(),
+    splash = null,
+    emblem = null
+) {
     const listing = _.get(config, 'atProto.publishing.listing', {});
     const Admission = require('./admission');
 
@@ -384,12 +389,16 @@ function buildListing(config = Config(), account = getBoardAccount(), splash = n
         );
     }
     record.rating = rating;
+    const fileRef = art => ({
+        sha256: art.sha256,
+        size: art.size,
+        mediaType: art.mediaType,
+    });
     if (splash) {
-        record.splash = {
-            sha256: splash.sha256,
-            size: splash.size,
-            mediaType: splash.mediaType,
-        };
+        record.splash = fileRef(splash);
+    }
+    if (emblem) {
+        record.emblem = fileRef(emblem);
     }
     const labels = exports.RatingLabels[rating];
     if (labels.length > 0) {
@@ -423,14 +432,19 @@ function publishListing(options, cb) {
     //  the splash, found again each time, so new art is offered by itself
     const withSplash = next =>
         true === account.splashShown ? Splash.find(Config(), next) : next(null);
-    withSplash(splash => writeListing(account, splash, options, cb));
+    //  naming an emblem is the sysop's consent to offering it
+    const withEmblem = next =>
+        Splash.emblemNamed(Config()) ? Splash.findEmblem(Config(), next) : next(null);
+    withSplash(splash =>
+        withEmblem(emblem => writeListing(account, { splash, emblem }, options, cb))
+    );
 }
 
-function writeListing(account, splash, options, cb) {
+function writeListing(account, art, options, cb) {
     let record;
     let hash;
     try {
-        record = buildListing(Config(), account, splash);
+        record = buildListing(Config(), account, art.splash, art.emblem);
         hash = hashOf(record);
     } catch (err) {
         return cb(err);

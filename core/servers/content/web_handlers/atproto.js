@@ -102,23 +102,25 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
         return BrowserHandoff.registerRoutes(cb);
     }
 
+    //  The board's splash screen while the sysop lets the hub show it, or the
+    //  emblem the sysop names: only the file each is now, by its hash
     _splashHandler(req, resp) {
         const match = Splash.AssetPathRe.exec(req.url);
-        let shown = false;
+        let account = null;
         try {
-            shown =
-                true ===
-                _.get(
-                    require('../../../atproto/publishing').getBoardAccount(),
-                    'splashShown'
-                );
+            account = require('../../../atproto/publishing').getBoardAccount();
         } catch (e) {
             //  no account: nothing to offer
         }
-        if (!match || !shown) {
+        if (!match || !account) {
             return this.webServer.fileNotFound(resp);
         }
-        return Splash.lookup(match[1], body => {
+        const offered = kind =>
+            'splash' === kind
+                ? true === account.splashShown
+                : 'emblem' === kind && Splash.emblemNamed();
+        return Splash.lookup(match[1], found => {
+            const body = found && offered(found.kind) ? found.body : null;
             if (!body) {
                 return this.webServer.fileNotFound(resp);
             }

@@ -11,39 +11,61 @@ const fs = require('graceful-fs');
 const paths = require('path');
 
 //
-//  The board's splash screen: the ANSI art a caller first sees, which its
-//  hub may show on its directory and the board's own page, with the sysop's
-//  consent (publishing.js, assets spec §4.3). The board offers the file as
-//  it is, named in its listing by its SHA-256 and served at
-//  /assets/<sha256>; the hub cleans it, blanks ENiGMA½'s menu codes, draws
-//  it, and credits it from its SAUCE.
+//  The board's art for its hub (assets spec §4.3): its splash screen and its
+//  emblem. The board offers each file as it is, named in its listing by its
+//  SHA-256 and served at /assets/<sha256>; the hub cleans it, blanks
+//  ENiGMA½'s menu codes, draws it, and credits it from its SAUCE.
 //
-//  By default it is the board's CONNECT art, if its pre-login theme or the
-//  general art directory has one, otherwise its login matrix (MATRIX):
-//  atProto.publishing.splash.art names others, in order, or files by path.
+//  The splash screen is the ANSI art a caller first sees, shown on the hub's
+//  directory and the board's own page, with the sysop's consent
+//  (publishing.js). By default it is the board's CONNECT art, if its
+//  pre-login theme or the general art directory has one, otherwise its
+//  login matrix (MATRIX): atProto.publishing.splash.art names others, in
+//  order, or files by path.
+//
+//  The emblem is a small logo that stands for the board on the hub's map.
+//  There is none by default: the sysop names it in
+//  atProto.publishing.emblem.art, which is their consent to offering it.
 //
 
 //  as the hub takes ANSI art (hub/control/src/ansi.ts)
 const MaxBytes = 64 * 1024;
-const DefaultArt = ['CONNECT', 'MATRIX'];
+const DefaultSplashArt = ['CONNECT', 'MATRIX'];
 const AssetPathRe = /^\/assets\/([0-9a-f]{64})$/;
 
 exports.MaxBytes = MaxBytes;
 exports.AssetPathRe = AssetPathRe;
 exports.find = find;
+exports.findEmblem = findEmblem;
+exports.emblemNamed = emblemNamed;
 exports.served = served;
 exports.lookup = lookup;
-exports.current = () => current;
+exports.current = () => current.splash;
+exports.currentEmblem = () => current.emblem;
 exports._reset = () => {
-    current = null;
+    current = { splash: null, emblem: null };
 };
 
-//  the splash last found, served at /assets/<its sha256>
-let current = null;
+//  the art last found, by kind, served at /assets/<its sha256>
+let current = { splash: null, emblem: null };
 
-function artNames(config) {
-    const names = _.castArray(_.get(config, 'atProto.publishing.splash.art', DefaultArt));
-    return names.filter(n => _.isString(n) && n.trim()).map(n => n.trim());
+function names(value) {
+    return _.castArray(value)
+        .filter(n => _.isString(n) && n.trim())
+        .map(n => n.trim());
+}
+
+function splashNames(config) {
+    return names(_.get(config, 'atProto.publishing.splash.art', DefaultSplashArt));
+}
+
+function emblemNames(config) {
+    return names(_.get(config, 'atProto.publishing.emblem.art', []));
+}
+
+//  Whether the sysop has named an emblem
+function emblemNamed(config = Config()) {
+    return emblemNames(config).length > 0;
 }
 
 //  The theme callers see before logging in: none when it is random
@@ -100,30 +122,21 @@ function read(path, cb) {
     });
 }
 
-//
-//  The splash, as { sha256, size, mediaType, body, path }, or null when the
-//  board has none it can offer (none found, not ANSI, or too large)
-//
-function find(config = Config(), cb) {
-    if (!cb && _.isFunction(config)) {
-        cb = config;
-        config = Config();
-    }
-    const names = artNames(config);
+//  The first of |wanted| that can be offered, remembered as |kind|
+function findArt(kind, wanted, config, cb) {
     const dirs = directories(config);
-
     const tryName = i => {
-        if (i >= names.length) {
-            current = null;
+        if (i >= wanted.length) {
+            current[kind] = null;
             return cb(null);
         }
-        const name = names[i];
+        const name = wanted[i];
         const next = () => tryName(i + 1);
         const done = found => {
             if (!found) {
                 return next();
             }
-            current = found;
+            current[kind] = found;
             return cb(found);
         };
         //  a path, absolute or relative to the board's directory
@@ -147,26 +160,57 @@ function find(config = Config(), cb) {
     return tryName(0);
 }
 
-//  The bytes of the splash with this hash, if it is the one offered now
+const withConfig = (config, cb) =>
+    !cb && _.isFunction(config) ? [Config(), config] : [config || Config(), cb];
+
+//
+//  The splash, as { sha256, size, mediaType, body, path }, or null when the
+//  board has none it can offer (none found, not ANSI, or too large)
+//
+function find(config, cb) {
+    [config, cb] = withConfig(config, cb);
+    return findArt('splash', splashNames(config), config, cb);
+}
+
+//  The emblem, likewise; null when the sysop names none
+function findEmblem(config, cb) {
+    [config, cb] = withConfig(config, cb);
+    return findArt('emblem', emblemNames(config), config, cb);
+}
+
+//  Which art has this hash, of what was last found: 'splash', 'emblem' or null
+function kindOf(sha256) {
+    return _.findKey(current, found => found && found.sha256 === sha256) || null;
+}
+
+//  The bytes of the art with this hash, if it is offered now
 function served(sha256) {
-    return current && current.sha256 === sha256 ? current.body : null;
+    const kind = kindOf(sha256);
+    return kind ? current[kind].body : null;
 }
 
 //
-//  As served(), but looking for the splash again when this hash isn't the
-//  one last found: the listing may have been published by another process
-//  (oputil), or the art changed since. Calls back with the bytes or null.
+//  As served(), but looking for the art again when this hash isn't what
+//  was last found: the listing may have been published by another process
+//  (oputil), or the art changed since. Calls back with { kind, body } or
+//  null.
 //
 function lookup(sha256, config, cb) {
-    if (!cb && _.isFunction(config)) {
-        cb = config;
-        config = Config();
-    }
-    const known = served(sha256);
+    [config, cb] = withConfig(config, cb);
+    const known = kindOf(sha256);
     if (known) {
-        return setImmediate(() => cb(known));
+        return setImmediate(() => cb({ kind: known, body: current[known].body }));
     }
-    return find(config, found =>
-        cb(found && found.sha256 === sha256 ? found.body : null)
-    );
+    return find(config, splash => {
+        if (splash && splash.sha256 === sha256) {
+            return cb({ kind: 'splash', body: splash.body });
+        }
+        return findEmblem(config, emblem =>
+            cb(
+                emblem && emblem.sha256 === sha256
+                    ? { kind: 'emblem', body: emblem.body }
+                    : null
+            )
+        );
+    });
 }

@@ -1740,6 +1740,20 @@
                             },
                             "additionalProperties": false
                         },
+                        "emblem": {
+                            "type": "object",
+                            "properties": {
+                                "art": {
+                                    "description": "The board's emblem, a small logo its hub's map shows: an ANSI art name (in the pre-login theme or the general art directory) or a path to an .ans file. Naming one offers it to the hub; empty: none.",
+                                    "type": "string",
+                                    "default": ""
+                                }
+                            },
+                            "patternProperties": {
+                                "^_": true
+                            },
+                            "additionalProperties": false
+                        },
                         "nsidPrefix": {
                             "description": "Prefix of the published record type names: nexus.cyberspace.dev while the record shapes are drafts. Published names are permanent.",
                             "type": "string",

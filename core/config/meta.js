@@ -993,6 +993,11 @@ module.exports = {
         description:
             "The board's splash screen, offered to its hub when the sysop lets it (the board account menu's \"splash\"): ANSI art names tried in order in the pre-login theme and the general art directory, or paths to .ans files.",
     },
+    'atProto.publishing.emblem.art': {
+        type: 'string',
+        description:
+            "The board's emblem, a small logo its hub's map shows: an ANSI art name (in the pre-login theme or the general art directory) or a path to an .ans file. Naming one offers it to the hub; empty: none.",
+    },
     'atProto.publishing.listing.description': { type: 'string' },
     'atProto.publishing.listing.tags': {
         type: 'array',

@@ -74,6 +74,7 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `atProto.publishing.enabled` | Boolean. Let a sysop connect [the board's own account](#the-boards-own-account). | `false` |
 | `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`, `rating`. | (empty) |
 | `atProto.publishing.triggers.moved` | Object. `enabled` and `message`: post the new addresses when the listing's addresses change. | off |
+| `atProto.publishing.emblem.art` | String. The board's [emblem](#its-emblem), a small logo for its hub's map: an ANSI art name or a path to an `.ans` file. Naming one offers it. | (none) |
 | `atProto.publishing.splash.art` | Array. The [splash screen](#its-splash-screen) offered to the board's hub: ANSI art names, tried in order in the pre-login theme and the general art directory, or paths to `.ans` files. | `[ "CONNECT", "MATRIX" ]` |
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
 | `atProto.publishing.postLangs` | Array. Languages announcements are written in. | `["en"]` |
@@ -282,6 +283,10 @@ A hub can show the board's splash screen, the ANSI art callers first see, on its
 
 **The art must be the sysop's to share.** Agreeing covers the board; it can't give away an artist's rights. Art made for the board, or under a licence that allows it, is fine. A hub may also refuse art it hasn't cleared, such as ENiGMA½'s stock themes.
 
+### Its Emblem
+
+The emblem is a small logo that stands for the board on its hub's map, drawn in the board's place there. There is none until the sysop names one in `atProto.publishing.emblem.art`, as an art name (looked for as the splash is) or a path to an `.ans` file; naming it is the sysop's say-so to offer it. Keep it small: a few lines of a dozen or so characters suit a map. The listing names it as it names the splash (`emblem`), the board serves it at `/assets/<sha256>`, and the hub cleans, draws and credits it the same way. `./oputil.js atproto board` shows which file it is.
+
 **From the command line**, using the stored session, whether or not the board is running:
 
 ```shell
@@ -379,6 +384,6 @@ With presence on the hub set up, members can open the hub's common space from in
 | `/_enig/atproto/jwks.json` | Public mode only: the public half of the signing key. |
 | `/_enig/signin` | [Web sign-in](#web-sign-in) only: the start page (`GET`) and its form (`POST`). |
 | `/_enig/signout` | Web sign-in only: signs the browser out (`POST`). |
-| `/assets/<sha256>` | With publishing on: the [splash screen](#its-splash-screen) the listing names, and nothing else. |
+| `/assets/<sha256>` | With publishing on: the [splash screen](#its-splash-screen) and [emblem](#its-emblem) the listing names, and nothing else. |
 
 Behind a reverse proxy, forward `/_enig/handoff/` and `/_enig/atproto/`, for web sign-in `/_enig/signin` and `/_enig/signout`, and for the splash screen `/assets/`.

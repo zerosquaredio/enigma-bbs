@@ -274,6 +274,17 @@ function boardShow() {
             console.info(
                 `Splash art    : ${found ? `${found.path} (${found.sha256.slice(0, 12)})` : 'none found'}`
             );
+            Splash.findEmblem(emblem =>
+                console.info(
+                    `Emblem        : ${
+                        emblem
+                            ? `${emblem.path} (${emblem.sha256.slice(0, 12)})`
+                            : Splash.emblemNamed()
+                              ? 'named, but not found'
+                              : 'none (atProto.publishing.emblem.art)'
+                    }`
+                )
+            );
         });
     });
 }

@@ -148,6 +148,40 @@ describe('the board account screen, once an account is connected', () => {
         assert.equal(form.mci.HM4.items[3], 'splash');
     });
 
+    it('shows the approval link as a QR code too, clear of the handle and the action bar', () => {
+        //  as the board account art lays it out: status (MT2) from row 6
+        const qr = Module.prototype.qrCodeFor.call(
+            {
+                menuConfig: { config: { qrCode: true } },
+                getView: () => ({ position: { row: 6, col: 1 } }),
+                client: { term: { termWidth: 80, termHeight: 25 } },
+            },
+            'https://test2.hub.cyberspace.nexus/_enig/handoff/7F3K-9QXM'
+        );
+        assert.deepEqual(
+            [qr.row, qr.col],
+            [10, 49],
+            'below the link line, right of the actions'
+        );
+    });
+
+    it('draws its fields again once the QR code is cleared, and only then', () => {
+        const writes = [];
+        let redrawn = 0;
+        const s = {
+            client: { term: { write: out => writes.push(out) } },
+            repositionCursorToFocusedView: () => {},
+            viewControllers: { menu: { redrawAll: () => redrawn++ } },
+            qrShown: { row: 10, col: 49, lines: ['ab', 'cd'] },
+        };
+        Module.prototype.clearQrCode.call(s);
+        assert.equal(redrawn, 1);
+        assert.equal(s.qrShown, null);
+        assert.match(writes[0], /\x1b\[10;49H {2}/);
+        Module.prototype.clearQrCode.call(s);
+        assert.equal(redrawn, 1, 'nothing shown, nothing to draw again');
+    });
+
     it('"splash" needs a connected account', async () => {
         Publishing.getBoardAccount = () => null;
         const s = screen();

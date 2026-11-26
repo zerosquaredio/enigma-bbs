@@ -234,6 +234,19 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
         });
     }
 
+    //  The QR code (config.qrCode) covers the end of the announcement
+    //  field while the sysop approves; once it's gone, the fields are drawn
+    //  again
+    clearQrCode() {
+        const shown = this.qrShown;
+        super.clearQrCode();
+        const vc = _.get(this, 'viewControllers.menu');
+        if (shown && vc) {
+            vc.redrawAll();
+            this.repositionCursorToFocusedView('menu');
+        }
+    }
+
     //  The handle has done its job: on to the actions (post, publish,
     //  cancel...), so the arrow keys move among them and ENTER picks one
     focusActions() {

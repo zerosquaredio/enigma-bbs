@@ -1045,6 +1045,8 @@
                 //  Only core/acs.js hasMenuModuleAccess() gates a menu, and it
                 //  reads config.acs -- a menu level "acs" is never consulted.
                 acs: GM[sysops]
+                //  the approval link as a QR code too, for a phone
+                qrCode: true
             }
             form: {
                 0: {

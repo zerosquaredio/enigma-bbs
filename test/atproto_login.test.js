@@ -443,7 +443,18 @@ describe('AT login', () => {
         });
 
         it('refuses a user with no DID bound', async () => {
-            db.prepare('INSERT INTO user (user_name) VALUES (?)').run('carol');
+            //  active, so it is the DID that refuses (an account that is
+            //  not is refused before anything else is looked at)
+            const { lastInsertRowid } = db
+                .prepare('INSERT INTO user (user_name) VALUES (?)')
+                .run('carol');
+            db.prepare(
+                'INSERT INTO user_property (user_id, prop_name, prop_value) VALUES (?, ?, ?)'
+            ).run(
+                lastInsertRowid,
+                UserProps.AccountStatus,
+                String(User.AccountStatus.active)
+            );
             const other = new User();
             await assert.rejects(
                 call(other.authenticateFactor1.bind(other), {

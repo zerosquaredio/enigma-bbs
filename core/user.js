@@ -25,6 +25,14 @@ const AvatarGenerator = require('avatar-generator');
 const paths = require('path');
 const fse = require('fs-extra');
 
+//  what decides whether an account is locked, and whether a lock runs out
+const LockPropertyNames = [
+    UserProps.AccountStatus,
+    UserProps.AccountLockedTs,
+    UserProps.AccountLockedPrevStatus,
+    UserProps.FailedLoginAttempts,
+];
+
 module.exports = class User {
     constructor() {
         this.userId = 0;
@@ -99,6 +107,23 @@ module.exports = class User {
 
     isAuthenticated() {
         return true === this.authenticated;
+    }
+
+    //
+    //  Back to nobody, as constructed: for a login that filled this User in
+    //  but is not to be one (see userLogin()). In place, so whatever holds
+    //  this User (the client's ACS, say) holds the reset one, not a stale
+    //  copy of the login's.
+    //
+    reset() {
+        this.userId = 0;
+        this.username = '';
+        this.properties = {};
+        this.groups = [];
+        this.authFactor = User.AuthFactors.None;
+        this.statusFlags = User.StatusFlags.None;
+        delete this.authenticated;
+        delete this.sessionId;
     }
 
     isValid() {
@@ -196,67 +221,455 @@ module.exports = class User {
         return 10; //  :TODO: Is this what we want?
     }
 
+    //
+    //  A failed login for |userId|: count it, and lock the account once
+    //  users.failedLogin.lockAccount is reached. Only an active account is
+    //  locked; a disabled or inactive one keeps its status (it cannot log in
+    //  anyway, and an unlock would otherwise "restore" it to active).
+    //
+    //  An account already locked only gets here once its lock has run out
+    //  (one in force refuses before the password is checked; see
+    //  authenticateFactor1()): the lock starts again from now, so guessing
+    //  stays limited.
+    //
+    //  The UserStatIncrement event for the count is sent once it is stored
+    //  (the transaction has committed), and not at all if it is not: a
+    //  listener runs outside the transaction, so what it does (or throws)
+    //  cannot undo the count, nor be undone with it.
+    //
     processFailedLogin(userId, cb) {
-        async.waterfall(
-            [
-                callback => {
-                    return User.getUser(userId, callback);
-                },
-                (tempUser, callback) => {
-                    return StatLog.incrementUserStat(
-                        tempUser,
-                        UserProps.FailedLoginAttempts,
-                        1,
-                        (err, failedAttempts) => {
-                            return callback(null, tempUser, failedAttempts);
-                        }
+        let statEventInfo;
+        const afterCommit = err => {
+            //  committed: the count is stored, so the event may go
+            if (!err && statEventInfo) {
+                try {
+                    StatLog.emitUserStatIncrement(statEventInfo);
+                } catch (e) {
+                    Log.warn(
+                        { error: e.message, userId },
+                        'A failed login stat event listener threw'
                     );
-                },
-                (tempUser, failedAttempts, callback) => {
-                    const lockAccount = _.get(Config(), 'users.failedLogin.lockAccount');
-                    if (lockAccount > 0 && failedAttempts >= lockAccount) {
-                        const props = {
-                            [UserProps.AccountStatus]: User.AccountStatus.locked,
-                            [UserProps.AccountLockedTs]: StatLog.now,
-                        };
+                }
+            }
+            return cb(err);
+        };
+
+        return User.inLockTransaction(cb => {
+            async.waterfall(
+                [
+                    callback => {
+                        //  as stored now: other logins may have just counted, or
+                        //  locked the account
+                        return User.getUser(userId, callback);
+                    },
+                    (tempUser, callback) => {
+                        //  a lock in force: nothing more to count, nor to move
                         if (
-                            !_.has(tempUser.properties, UserProps.AccountLockedPrevStatus)
+                            User.LockState.InForce ===
+                            User.getLockState(tempUser.properties)
                         ) {
-                            props[UserProps.AccountLockedPrevStatus] =
-                                tempUser.getProperty(UserProps.AccountStatus);
+                            return callback(null, tempUser, null);
                         }
+                        return StatLog.incrementUserStatWithOptions(
+                            tempUser,
+                            UserProps.FailedLoginAttempts,
+                            1,
+                            { noEvent: true },
+                            (err, failedAttempts, eventInfo) => {
+                                statEventInfo = eventInfo;
+                                return callback(err, tempUser, failedAttempts);
+                            }
+                        );
+                    },
+                    (tempUser, failedAttempts, callback) => {
+                        const lockAccount = _.get(
+                            Config(),
+                            'users.failedLogin.lockAccount'
+                        );
+                        if (!(lockAccount > 0) || null === failedAttempts) {
+                            return callback(null);
+                        }
+
+                        const status = tempUser.getPropertyAsNumber(
+                            UserProps.AccountStatus
+                        );
+                        if (User.AccountStatus.locked === status) {
+                            //  only a lock that has run out gets here
+                            Log.info(
+                                { userId, failedAttempts },
+                                'Locking account again due to a failed login after its lock ran out'
+                            );
+                            return tempUser.persistProperty(
+                                UserProps.AccountLockedTs,
+                                StatLog.now,
+                                callback
+                            );
+                        }
+                        if (
+                            User.AccountStatus.active !== status ||
+                            !(failedAttempts >= lockAccount)
+                        ) {
+                            return callback(null);
+                        }
+
                         Log.info(
                             { userId, failedAttempts },
-                            '(Re)setting account to locked due to failed logins'
+                            'Locking account due to failed logins'
                         );
-                        return tempUser.persistProperties(props, callback);
-                    }
+                        return tempUser.persistProperties(
+                            {
+                                [UserProps.AccountStatus]: User.AccountStatus.locked,
+                                [UserProps.AccountLockedTs]: StatLog.now,
+                                [UserProps.AccountLockedPrevStatus]: status,
+                            },
+                            callback
+                        );
+                    },
+                ],
+                err => {
+                    return cb(err);
+                }
+            );
+        }, afterCommit);
+    }
 
-                    return cb(null);
-                },
-            ],
-            err => {
-                return cb(err);
-            }
+    //
+    //  A status set by a sysop (oputil 'user activate', 'lock', ...). Activating
+    //  clears any lock and the failed login count. Any other status sticks: a
+    //  lock left from failed logins is dropped with it, so a sysop's lock does
+    //  not run out (autoUnlockMinutes) nor go with a password reset, and a
+    //  status they set over a lock is not "restored" away.
+    //
+    setAccountStatusBySysop(status, cb) {
+        return User.inLockTransaction(
+            cb => this._setAccountStatusBySysop(status, cb),
+            cb
         );
     }
 
+    _setAccountStatusBySysop(status, cb) {
+        this.persistProperty(UserProps.AccountStatus, status, err => {
+            if (err) {
+                return cb(err);
+            }
+
+            if (User.AccountStatus.active === status) {
+                return this.unlockAccount(err => {
+                    if (err) {
+                        return cb(err);
+                    }
+                    return this.removeProperty(UserProps.FailedLoginAttempts, cb);
+                });
+            }
+
+            return this.removeProperties(
+                [UserProps.AccountLockedTs, UserProps.AccountLockedPrevStatus],
+                cb
+            );
+        });
+    }
+
+    //
+    //  Clear a lock: a locked account gets back the status it had before (see
+    //  processFailedLogin()), or active if none was kept, and the failed login
+    //  count starts again. A status set since (by a sysop, say) is left
+    //  alone; only the lock's leftovers go. A lock with neither (oputil's
+    //  'user lock') is the sysop's to clear, with 'user activate'.
+    //
     unlockAccount(cb) {
+        return User.inLockTransaction(cb => {
+            //  decided on the account as stored now, not as loaded earlier
+            const fresh = User.refreshLockProperties(this.userId, this.properties);
+            if (fresh instanceof Error) {
+                return cb(fresh);
+            }
+            return this._unlockAccount(cb);
+        }, cb);
+    }
+
+    //
+    //  A login is complete (every factor checked out): the failed login count
+    //  starts again, and a lock (one that has run out, or the login would
+    //  have been refused) is cleared, back to the status from before it (see
+    //  unlockAccount()).
+    //
+    clearFailedLogins(cb) {
+        return User.inLockTransaction(cb => {
+            //  decided on the account as stored now, not as loaded earlier
+            const fresh = User.refreshLockProperties(this.userId, this.properties);
+            if (fresh instanceof Error) {
+                return cb(fresh);
+            }
+            return this.removeProperty(UserProps.FailedLoginAttempts, err => {
+                if (err) {
+                    return cb(err);
+                }
+                return this._unlockAccount(cb);
+            });
+        }, cb);
+    }
+
+    _unlockAccount(cb) {
         const prevStatus = this.getProperty(UserProps.AccountLockedPrevStatus);
-        if (!prevStatus) {
+        const isLocked =
+            User.AccountStatus.locked ===
+            this.getPropertyAsNumber(UserProps.AccountStatus);
+
+        if (!prevStatus && !_.has(this.properties, UserProps.AccountLockedTs)) {
             return cb(null); //  nothing to do
         }
 
-        this.persistProperty(UserProps.AccountStatus, prevStatus, err => {
+        const restore = callback => {
+            if (!isLocked) {
+                return callback(null);
+            }
+            return this.persistProperty(
+                UserProps.AccountStatus,
+                prevStatus || User.AccountStatus.active,
+                callback
+            );
+        };
+
+        restore(err => {
             if (err) {
                 return cb(err);
             }
 
             return this.removeProperties(
-                [UserProps.AccountLockedPrevStatus, UserProps.AccountLockedTs],
+                [
+                    UserProps.AccountLockedPrevStatus,
+                    UserProps.AccountLockedTs,
+                    UserProps.FailedLoginAttempts,
+                ],
                 cb
             );
         });
+    }
+
+    //
+    //  Is |offeredKey| ({ algo, data } as ssh2 hands it over: the key type
+    //  and the public key blob) the SSH public key in |storedKey| (OpenSSH
+    //  format)? A comparison of public keys only: it proves nothing about
+    //  who offered it.
+    //
+    static sshPubKeyMatches(storedKey, offeredKey) {
+        if (!storedKey || !offeredKey || !Buffer.isBuffer(offeredKey.data)) {
+            return false;
+        }
+
+        const parsedKey = ssh2.utils.parseKey(storedKey);
+        if (!parsedKey || parsedKey instanceof Error) {
+            return false;
+        }
+
+        const pubKeyActual = Array.isArray(parsedKey) ? parsedKey[0] : parsedKey;
+        if (!pubKeyActual || !pubKeyActual.getPublicSSH) {
+            return false;
+        }
+
+        const parts = storedKey.trim().split(/\s+/);
+        if (parts.length < 2) {
+            return false;
+        }
+
+        const storedKeyData = Buffer.from(parts[1], 'base64');
+
+        if (offeredKey.algo !== pubKeyActual.type) {
+            return false;
+        }
+
+        //  timingSafeEqual() throws on buffers of different lengths (an RSA
+        //  key of another size, say)
+        if (
+            offeredKey.data.length !== storedKeyData.length ||
+            !crypto.timingSafeEqual(offeredKey.data, storedKeyData)
+        ) {
+            Log.warn(
+                {
+                    expected: parts[1],
+                    provided: offeredKey.data.toString('base64'),
+                    algo: offeredKey.algo,
+                },
+                'SSH public key mismatch'
+            );
+            return false;
+        }
+
+        return true;
+    }
+
+    //
+    //  An SSH client may ask whether a public key would be accepted before
+    //  it signs with it (RFC 4252 section 7). This answers that: is
+    //  |offeredKey| (see sshPubKeyMatches()) the key stored for |username|?
+    //  It proves nothing, as anyone may know a public key, so it is not a
+    //  login: nothing on this User changes, and there are none of a login's
+    //  side effects.
+    //
+    //  Nor does a key that does not match count toward locking the account
+    //  (see processFailedLogin()): an SSH client offers each key it has in
+    //  turn (OpenSSH, every key in its agent), so the user's own client would
+    //  lock them out. It is still a failed attempt for the connection, to
+    //  users.failedLogin.disconnect (see checkSSHPubKey() in user_login.js).
+    //
+    checkSSHPubKey(username, offeredKey, cb) {
+        let userId;
+        async.waterfall(
+            [
+                callback => {
+                    User.getUserIdAndName(username, (err, uid) => {
+                        userId = uid;
+                        return callback(err);
+                    });
+                },
+                callback => {
+                    User.loadProperties(
+                        userId,
+                        { names: User.StandardPropertyGroups.auth },
+                        callback
+                    );
+                },
+                (props, callback) => {
+                    if (!User.sshPubKeyMatches(props[UserProps.SSHPubKey], offeredKey)) {
+                        return callback(Errors.AccessDenied('Invalid public key'));
+                    }
+                    return callback(null);
+                },
+            ],
+            err => {
+                return cb(err || null);
+            }
+        );
+    }
+
+    //
+    //  Run |work(cb)|, which reads and writes an account's status and lock
+    //  properties, in one IMMEDIATE transaction: another process (oputil, say)
+    //  cannot change them between the read and the write. Every step of such
+    //  work is better-sqlite3, so it calls back before the transaction ends;
+    //  |cb| is called after it commits (or rolls back), outside it.
+    //
+    static inLockTransaction(work, cb) {
+        let result;
+        try {
+            userDb
+                .transaction(() => {
+                    work((...args) => (result = args));
+                    if (!result) {
+                        throw new Error('Account lock update did not complete in step');
+                    }
+                    if (result[0]) {
+                        throw result[0]; //  roll back
+                    }
+                })
+                .immediate();
+        } catch (err) {
+            return cb(err);
+        }
+        return cb(...result);
+    }
+
+    //
+    //  cb-less: the account status and lock properties of |userId| as stored
+    //  now, or an Error
+    //
+    static loadLockProperties(userId) {
+        let props;
+        User.loadProperties(userId, { names: LockPropertyNames }, (err, p) => {
+            props = err || p;
+        });
+        return props;
+    }
+
+    //
+    //  cb-less: update |properties| (of |userId|) with the status and lock
+    //  properties as stored now. Returns |properties|, or an Error.
+    //
+    static refreshLockProperties(userId, properties) {
+        const fresh = User.loadLockProperties(userId);
+        if (fresh instanceof Error) {
+            return fresh;
+        }
+        LockPropertyNames.forEach(name => {
+            if (_.has(fresh, name)) {
+                properties[name] = fresh[name];
+            } else {
+                delete properties[name];
+            }
+        });
+        return properties;
+    }
+
+    static get LockState() {
+        return {
+            None: 'none', //  not locked
+            InForce: 'inForce',
+            Expired: 'expired', //  past users.failedLogin.autoUnlockMinutes
+        };
+    }
+
+    //
+    //  Is the account with |props| locked, and is the lock still in force? A
+    //  lock with no time (oputil's 'user lock'), or with autoUnlockMinutes
+    //  off, stays until a sysop clears it.
+    //
+    static getLockState(props) {
+        if (User.AccountStatus.locked !== parseInt(props[UserProps.AccountStatus], 10)) {
+            return User.LockState.None;
+        }
+
+        const autoUnlockMinutes = _.get(Config(), 'users.failedLogin.autoUnlockMinutes');
+        const lockedTsProp = props[UserProps.AccountLockedTs];
+        const lockedTs = moment(lockedTsProp);
+        if (
+            autoUnlockMinutes > 0 &&
+            lockedTsProp &&
+            lockedTs.isValid() &&
+            moment().diff(lockedTs, 'minutes') >= autoUnlockMinutes
+        ) {
+            return User.LockState.Expired;
+        }
+
+        return User.LockState.InForce;
+    }
+
+    //
+    //  The status a login for the account with |props| is judged on: the
+    //  stored one, except for a lock that has run out, which is cleared once
+    //  the login succeeds (see unlockAccount()): then the status the account
+    //  had before it was locked (active, if none was kept).
+    //
+    static getEffectiveAccountStatus(props) {
+        if (User.LockState.Expired === User.getLockState(props)) {
+            const prevStatus = parseInt(props[UserProps.AccountLockedPrevStatus], 10);
+            return isNaN(prevStatus) ? User.AccountStatus.active : prevStatus;
+        }
+        return parseInt(props[UserProps.AccountStatus], 10);
+    }
+
+    //
+    //  The refusal for a login on the account with |props|, by its status
+    //  (see getEffectiveAccountStatus()), or null if it is active
+    //
+    static accountStatusError(props) {
+        if (User.LockState.InForce === User.getLockState(props)) {
+            return Errors.AccessDenied('Account is locked', ErrorReasons.Locked);
+        }
+
+        const accountStatus = User.getEffectiveAccountStatus(props);
+        switch (accountStatus) {
+            case User.AccountStatus.active:
+                return null;
+            case User.AccountStatus.disabled:
+                return Errors.AccessDenied('Account disabled', ErrorReasons.Disabled);
+            case User.AccountStatus.inactive:
+                return Errors.AccessDenied('Account inactive', ErrorReasons.Inactive);
+            case User.AccountStatus.locked:
+                return Errors.AccessDenied('Account is locked', ErrorReasons.Locked);
+            default:
+                //  anything else besides active is still not allowed
+                return Errors.AccessDenied('Account is not active');
+        }
     }
 
     static get AuthFactor1Types() {
@@ -308,110 +721,79 @@ module.exports = class User {
                         return callback(Errors.AccessDenied('Invalid password'));
                     }
 
-                    //  Upgrade legacy hashes transparently on successful login.
-                    //  setImmediate defers past the current call stack — loadProperties
-                    //  is synchronous (better-sqlite3), so without deferral async's
-                    //  waterfall double-call guard trips on the initProps step.
-                    if (User.needsRehash(props)) {
-                        const oldParams = User.getHashParams(props);
-                        Log.info(
-                            {
-                                userId: tempAuthInfo.userId,
-                                username: tempAuthInfo.username,
-                                fromParams: {
-                                    digest: oldParams.digest,
-                                    iterations: oldParams.iterations,
-                                    keyLen: oldParams.keyLen,
-                                },
-                                toParams: {
-                                    digest: User.PBKDF2.digest,
-                                    iterations: User.PBKDF2.iterations,
-                                    keyLen: User.PBKDF2.keyLen,
-                                },
-                            },
-                            'Upgrading password hash to current parameters'
-                        );
-                        setImmediate(() => {
-                            User.rehashPassword(
-                                tempAuthInfo.userId,
-                                authInfo.password,
-                                rehashErr => {
-                                    if (rehashErr) {
-                                        Log.warn(
-                                            {
-                                                error: rehashErr.message,
-                                                userId: tempAuthInfo.userId,
-                                                username: tempAuthInfo.username,
-                                            },
-                                            'Failed to upgrade password hash; will retry on next login'
-                                        );
-                                    } else {
-                                        Log.info(
-                                            {
-                                                userId: tempAuthInfo.userId,
-                                                username: tempAuthInfo.username,
-                                            },
-                                            'Password hash upgrade complete'
-                                        );
-                                    }
-                                }
-                            );
-                        });
-                    }
+                    //  a legacy hash is upgraded once the login is accepted
+                    //  (see upgradePasswordHash()), never for a refused one
+                    tempAuthInfo.needsRehash = User.needsRehash(props);
 
                     return callback(null);
                 }
             );
         };
 
-        const validatePubKey = (props, callback) => {
-            const storedKey = props[UserProps.SSHPubKey];
-            if (!storedKey) {
-                return callback(Errors.AccessDenied('Invalid public key'));
-            }
-
-            const parsedKey = ssh2.utils.parseKey(storedKey);
-            if (!parsedKey || parsedKey instanceof Error) {
-                return callback(Errors.AccessDenied('Invalid public key'));
-            }
-
-            const pubKeyActual = Array.isArray(parsedKey) ? parsedKey[0] : parsedKey;
-            if (!pubKeyActual || !pubKeyActual.getPublicSSH) {
-                return callback(Errors.AccessDenied('Invalid public key'));
-            }
-
-            const parts = storedKey.trim().split(/\s+/);
-            if (parts.length < 2) {
-                return callback(Errors.AccessDenied('Invalid public key'));
-            }
-
-            let storedKeyData;
-            try {
-                storedKeyData = Buffer.from(parts[1], 'base64');
-            } catch (err) {
-                Log.warn(
-                    { error: err.message, username: this.username },
-                    'Failed to parse stored SSH public key'
-                );
-                return callback(Errors.AccessDenied('Invalid public key'));
-            }
-
-            if (authInfo.pubKey.key.algo !== pubKeyActual.type) {
-                return callback(Errors.AccessDenied('Invalid public key'));
-            }
-
-            if (!crypto.timingSafeEqual(authInfo.pubKey.key.data, storedKeyData)) {
-                Log.warn(
-                    {
-                        expected: parts[1],
-                        provided: authInfo.pubKey.key.data.toString('base64'),
-                        algo: authInfo.pubKey.key.algo,
+        //
+        //  Upgrade a legacy password hash to the current parameters, in the
+        //  background: only for a login that was accepted, so a refused one
+        //  (a lock, say) leaves nothing behind to time. setImmediate defers
+        //  past the current call stack.
+        //
+        const upgradePasswordHash = () => {
+            const oldParams = User.getHashParams(tempAuthInfo.properties);
+            Log.info(
+                {
+                    userId: tempAuthInfo.userId,
+                    username: tempAuthInfo.username,
+                    fromParams: {
+                        digest: oldParams.digest,
+                        iterations: oldParams.iterations,
+                        keyLen: oldParams.keyLen,
                     },
-                    'SSH public key mismatch'
-                );
+                    toParams: {
+                        digest: User.PBKDF2.digest,
+                        iterations: User.PBKDF2.iterations,
+                        keyLen: User.PBKDF2.keyLen,
+                    },
+                },
+                'Upgrading password hash to current parameters'
+            );
+            setImmediate(() => {
+                User.rehashPassword(tempAuthInfo.userId, authInfo.password, rehashErr => {
+                    if (rehashErr) {
+                        Log.warn(
+                            {
+                                error: rehashErr.message,
+                                userId: tempAuthInfo.userId,
+                                username: tempAuthInfo.username,
+                            },
+                            'Failed to upgrade password hash; will retry on next login'
+                        );
+                    } else {
+                        Log.info(
+                            {
+                                userId: tempAuthInfo.userId,
+                                username: tempAuthInfo.username,
+                            },
+                            'Password hash upgrade complete'
+                        );
+                    }
+                });
+            });
+        };
+
+        //
+        //  Only that the offered key is the one stored for this user. The
+        //  caller (the SSH server) has already verified the signature made
+        //  with it; a key alone proves nothing.
+        //
+        //  A key that is not the user's does not count toward locking the
+        //  account (see checkSSHPubKey()), signed or not: a client may sign
+        //  with each key it has in turn without asking first.
+        //
+        const validatePubKey = (props, callback) => {
+            const offeredKey = _.get(authInfo, 'pubKey.key');
+            if (!User.sshPubKeyMatches(props[UserProps.SSHPubKey], offeredKey)) {
+                tempAuthInfo.notCounted = true;
                 return callback(Errors.AccessDenied('Invalid public key'));
             }
-
             return callback(null);
         };
 
@@ -443,14 +825,6 @@ module.exports = class User {
             return validatePassword(props, callback);
         };
 
-        //  Reasons that are not failed logins: the password was right, or
-        //  was never checked
-        const NotFailedLoginReasons = [
-            ErrorReasons.Disabled,
-            ErrorReasons.Inactive,
-            ErrorReasons.TwoFactorEnabled,
-        ];
-
         async.waterfall(
             [
                 function fetchUserId(callback) {
@@ -462,25 +836,6 @@ module.exports = class User {
                         return callback(err);
                     });
                 },
-                function getRequiredAuthProperties(callback) {
-                    //  fetch properties required for authentication
-                    User.loadProperties(
-                        tempAuthInfo.userId,
-                        { names: User.StandardPropertyGroups.auth },
-                        (err, props) => {
-                            return callback(err, props);
-                        }
-                    );
-                },
-                function validatePassOrPubKey(props, callback) {
-                    if (User.AuthFactor1Types.SSHPubKey === authInfo.type) {
-                        return validatePubKey(props, callback);
-                    }
-                    if (User.AuthFactor1Types.AtProto === authInfo.type) {
-                        return validateAtProtoDid(props, callback);
-                    }
-                    return validatePassword(props, callback);
-                },
                 function initProps(callback) {
                     User.loadProperties(tempAuthInfo.userId, (err, allProps) => {
                         if (!err) {
@@ -490,66 +845,61 @@ module.exports = class User {
                         return callback(err);
                     });
                 },
-                function checkAccountStatus(callback) {
-                    const accountStatus = parseInt(
-                        tempAuthInfo.properties[UserProps.AccountStatus],
-                        10
-                    );
-                    if (User.AccountStatus.disabled === accountStatus) {
-                        return callback(
-                            Errors.AccessDenied('Account disabled', ErrorReasons.Disabled)
-                        );
-                    }
-                    if (User.AccountStatus.inactive === accountStatus) {
-                        return callback(
-                            Errors.AccessDenied('Account inactive', ErrorReasons.Inactive)
-                        );
-                    }
-
-                    if (User.AccountStatus.locked === accountStatus) {
-                        const autoUnlockMinutes = _.get(
-                            Config(),
-                            'users.failedLogin.autoUnlockMinutes'
-                        );
-                        const lockedTs = moment(
-                            tempAuthInfo.properties[UserProps.AccountLockedTs]
-                        );
-                        if (autoUnlockMinutes && lockedTs.isValid()) {
-                            const minutesSinceLocked = moment().diff(lockedTs, 'minutes');
-                            if (minutesSinceLocked >= autoUnlockMinutes) {
-                                //  allow the login - we will clear any lock there
-                                Log.info(
-                                    {
-                                        username,
-                                        userId: tempAuthInfo.userId,
-                                        lockedAt: lockedTs.format(),
-                                    },
-                                    'Locked account will now be unlocked due to auto-unlock minutes policy'
-                                );
-                                return callback(null);
-                            }
-                        }
+                function checkLock(callback) {
+                    //
+                    //  A lock in force refuses before the password or key is
+                    //  looked at: the answer is the same either way, so it
+                    //  tells nothing about them, and the attempt is not
+                    //  counted.
+                    //
+                    if (
+                        User.LockState.InForce ===
+                        User.getLockState(tempAuthInfo.properties)
+                    ) {
+                        tempAuthInfo.notCounted = true;
                         return callback(
                             Errors.AccessDenied('Account is locked', ErrorReasons.Locked)
                         );
                     }
-
-                    //  anything else besides active is still not allowed
-                    if (User.AccountStatus.active !== accountStatus) {
-                        return callback(Errors.AccessDenied('Account is not active'));
-                    }
-
                     return callback(null);
+                },
+                function checkStatus(callback) {
+                    //
+                    //  Likewise an account that is not active (disabled, or
+                    //  waiting for activation), judged as a login would be
+                    //  (see getEffectiveAccountStatus(): a lock that has run
+                    //  out, by the status from before it): it is refused
+                    //  before the password or key is looked at, with the
+                    //  same answer whether or not they are right, and the
+                    //  attempt is not counted.
+                    //
+                    const statusErr = User.accountStatusError(tempAuthInfo.properties);
+                    if (statusErr) {
+                        tempAuthInfo.notCounted = true;
+                        return callback(statusErr);
+                    }
+                    return callback(null);
+                },
+                function validatePassOrPubKey(callback) {
+                    if (User.AuthFactor1Types.SSHPubKey === authInfo.type) {
+                        return validatePubKey(tempAuthInfo.properties, callback);
+                    }
+                    if (User.AuthFactor1Types.AtProto === authInfo.type) {
+                        return validateAtProtoDid(tempAuthInfo.properties, callback);
+                    }
+                    return validatePassword(tempAuthInfo.properties, callback);
                 },
                 function checkLinkWithout2FA(callback) {
                     //  A password alone must not link an account that also
                     //  needs a second factor: the link would be saved before
                     //  that factor is checked. Such users link from their
-                    //  settings once logged in.
+                    //  settings once logged in. The password was right: not
+                    //  a failed login.
                     if (
                         authInfo.linkWithPassword &&
                         tempAuthInfo.properties[UserProps.AuthFactor2OTP]
                     ) {
+                        tempAuthInfo.notCounted = true;
                         return callback(
                             Errors.AccessDenied(
                                 'Account has 2FA enabled',
@@ -568,17 +918,93 @@ module.exports = class User {
                         return callback(err);
                     });
                 },
+                function checkAccountStatus(callback) {
+                    //
+                    //  The account as it is now, not as it was before the
+                    //  password check (asynchronous; other logins may have
+                    //  locked the account meanwhile, or a sysop changed its
+                    //  status). From here to the end (the count reset and
+                    //  any unlock) nothing is asynchronous, so nothing can
+                    //  change it in between.
+                    //
+                    const fresh = User.refreshLockProperties(
+                        tempAuthInfo.userId,
+                        tempAuthInfo.properties
+                    );
+                    if (fresh instanceof Error) {
+                        return callback(fresh);
+                    }
+
+                    const statusErr = User.accountStatusError(tempAuthInfo.properties);
+                    if (statusErr) {
+                        //  the right password or key: not a failed login
+                        tempAuthInfo.notCounted = true;
+                        return callback(statusErr);
+                    }
+
+                    if (
+                        User.LockState.Expired ===
+                        User.getLockState(tempAuthInfo.properties)
+                    ) {
+                        Log.info(
+                            {
+                                username,
+                                userId: tempAuthInfo.userId,
+                                lockedAt:
+                                    tempAuthInfo.properties[UserProps.AccountLockedTs],
+                                prevStatus:
+                                    tempAuthInfo.properties[
+                                        UserProps.AccountLockedPrevStatus
+                                    ],
+                            },
+                            tempAuthInfo.properties[UserProps.AuthFactor2OTP]
+                                ? 'Locked account will be unlocked once its second factor (2FA/OTP) checks out, due to auto-unlock minutes policy'
+                                : 'Locked account will now be unlocked due to auto-unlock minutes policy'
+                        );
+                    }
+
+                    return callback(null);
+                },
             ],
             err => {
                 if (err) {
+                    const isAccountStatusErr = [
+                        ErrorReasons.Disabled,
+                        ErrorReasons.Inactive,
+                        ErrorReasons.Locked,
+                    ].includes(err.reasonCode);
+
                     //
-                    //  If we failed login due to something besides an inactive or disabled account,
-                    //  we need to update failure status and possibly lock the account.
+                    //  Once the account is locked, or a sysop has disabled it
+                    //  (or set it to wait for activation), every refused
+                    //  login gets the same answer as the right password does:
+                    //  a wrong one under way when that happened (or the one
+                    //  that set the lock) must not answer otherwise, or the
+                    //  right one stands out among them.
                     //
-                    //  If locked already, update the lock timestamp -- ie, extend the lockout period.
+                    const answer = () => {
+                        if (!isAccountStatusErr && tempAuthInfo.userId) {
+                            const fresh = User.loadLockProperties(tempAuthInfo.userId);
+                            if (!(fresh instanceof Error)) {
+                                const statusErr = User.accountStatusError(fresh);
+                                if (statusErr) {
+                                    return cb(statusErr);
+                                }
+                            }
+                        }
+                        return cb(err);
+                    };
+
+                    //
+                    //  A wrong password counts as a failed login (see
+                    //  processFailedLogin(): it may lock the account, or
+                    //  re-arm a lock that had run out). A refusal by the
+                    //  account's status (a lock in force, disabled, inactive)
+                    //  does not, nor does a key that is not the user's.
                     //
                     if (
-                        !NotFailedLoginReasons.includes(err.reasonCode) &&
+                        !isAccountStatusErr &&
+                        !tempAuthInfo.notCounted &&
                         tempAuthInfo.userId
                     ) {
                         self.processFailedLogin(tempAuthInfo.userId, persistErr => {
@@ -588,8 +1014,10 @@ module.exports = class User {
                                     'Failed to persist failed login information'
                                 );
                             }
-                            return cb(err); //  pass along original error
+                            return answer();
                         });
+                    } else if (!isAccountStatusErr) {
+                        return answer();
                     } else {
                         return cb(err);
                     }
@@ -608,20 +1036,32 @@ module.exports = class User {
                         ? true
                         : false);
 
-                    self.removeProperty(UserProps.FailedLoginAttempts);
+                    const done = () => {
+                        if (tempAuthInfo.needsRehash) {
+                            upgradePasswordHash();
+                        }
+                        return cb(null);
+                    };
 
                     //
-                    //  We need to *revert* any locked status back to
-                    //  the user's previous status & clean up props.
+                    //  The failed login count, and a lock that has run out,
+                    //  are cleared once the login is complete: with a second
+                    //  factor still to come, that is after it (see
+                    //  loginFactor2_OTP()), so wrong codes count toward the
+                    //  lock as wrong passwords do.
                     //
-                    self.unlockAccount(unlockErr => {
-                        if (unlockErr) {
+                    if (!self.authenticated) {
+                        return done();
+                    }
+
+                    self.clearFailedLogins(clearErr => {
+                        if (clearErr) {
                             Log.warn(
-                                { error: unlockErr.message },
+                                { error: clearErr.message },
                                 'Failed to unlock account'
                             );
                         }
-                        return cb(null);
+                        return done();
                     });
                 }
             }
@@ -1091,15 +1531,44 @@ module.exports = class User {
         return User.RootUserID === userId;
     }
 
+    //
+    //  User name and real name lookups are exact, but case-insensitive as
+    //  LIKE was (ASCII letters only, as SQLite's NOCASE): LIKE would also
+    //  take '%' and '_' in what was looked up as wildcards, so "%" found the
+    //  first user there is.
+    //
     static getUserIdAndName(username, cb) {
         try {
             const row = userDb
-                .prepare(`SELECT id, user_name FROM user WHERE user_name LIKE ?;`)
+                .prepare(
+                    `SELECT id, user_name FROM user WHERE user_name = ? COLLATE NOCASE;`
+                )
                 .get(username);
             if (row) {
                 return cb(null, row.id, row.user_name);
             }
             return cb(Errors.DoesNotExist('No matching username'));
+        } catch (err) {
+            return cb(err);
+        }
+    }
+
+    //
+    //  cb(err, [ { userId, userName } ]) for user names LIKE |pattern|, which
+    //  may use '\\' to escape '%' and '_'. For narrowing a search down only:
+    //  check each name found exactly.
+    //
+    static getUserIdsAndNamesLike(pattern, cb) {
+        try {
+            const rows = userDb
+                .prepare(
+                    `SELECT id, user_name FROM user WHERE user_name LIKE ? ESCAPE '\\';`
+                )
+                .all(pattern);
+            return cb(
+                null,
+                rows.map(row => ({ userId: row.id, userName: row.user_name }))
+            );
         } catch (err) {
             return cb(err);
         }
@@ -1123,7 +1592,7 @@ module.exports = class User {
                     WHERE id = (
                         SELECT user_id
                         FROM user_property
-                        WHERE prop_name='${UserProps.RealName}' AND prop_value LIKE ?
+                        WHERE prop_name='${UserProps.RealName}' AND prop_value = ? COLLATE NOCASE
                     );`
                 )
                 .get(realName);
@@ -1149,17 +1618,18 @@ module.exports = class User {
     }
 
     static getUserName(userId, cb) {
+        //  the callback runs outside the try: a throw in it is not caught
+        //  here and passed to it again as a lookup error
+        let row;
         try {
-            const row = userDb
-                .prepare(`SELECT user_name FROM user WHERE id = ?;`)
-                .get(userId);
-            if (row) {
-                return cb(null, row.user_name);
-            }
-            return cb(Errors.DoesNotExist('No matching user ID'));
+            row = userDb.prepare(`SELECT user_name FROM user WHERE id = ?;`).get(userId);
         } catch (err) {
             return cb(err);
         }
+        if (row) {
+            return cb(null, row.user_name);
+        }
+        return cb(Errors.DoesNotExist('No matching user ID'));
     }
 
     static loadProperties(userId, options, cb) {

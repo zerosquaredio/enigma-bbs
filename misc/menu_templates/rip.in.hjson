@@ -145,6 +145,13 @@
             desc: 2FA
             art: 2FAOTP
             next: ripMain
+            //  a locked, disabled or inactive account is told so,
+            //  whatever code is entered
+            config: {
+                locked: loginAttemptAccountLocked
+                disabled: loginAttemptAccountDisabled
+                inactive: loginAttemptAccountInactive
+            }
             form: {
                 0: {
                     mci: {

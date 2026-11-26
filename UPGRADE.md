@@ -20,7 +20,37 @@ Refer to [Upgrading](./website/src/content/docs/admin/upgrading.md) for details 
 # Version to Version Notes
 > :warning: Be sure to inspect these notes during any upgrades!
 
+## 0.6.2-beta to 0.6.3-beta
+
+* **Sysops: a disabled or inactive account is answered before the password is checked.** Nothing in your configuration, menus, art or themes needs to change.
+
+  **What changes by itself:** a login for an account that is disabled, or inactive (waiting for activation), is refused before its password or SSH key is looked at, with the same answer whether it is right or wrong. On the menus a wrong password now goes to the menu's `config.disabled` / `config.inactive` (ACCOUNTDISABLED / ACCOUNTINACTIVE art in the stock templates), or logs off, as the right one always did; before, it went back to the login prompt. Over SSH a wrong password or key now gets the status message and a disconnect instead of a plain failure. Anyone who knows a user name can therefore tell that the account is disabled or awaiting activation, as they already could for a locked one; in exchange, trying passwords on such an account tells nothing about them. These logins are no longer counted in `failed_login_attempts`, and the log shows "Account disabled" / "Account inactive" for them instead of "Invalid password". A lock that has run out over an account that was disabled or inactive before it is answered by that status. The REST API and NNTP answer as before.
+
+  **Action:** none.
+
+* **Sysops: wrong one-time password (2FA/OTP) codes can lock an account.** Nothing in your configuration needs to change.
+
+  **What changes by itself:** a wrong code or backup code at the 2FA prompt counts toward `users.failedLogin.lockAccount` (default 9) together with wrong passwords, so a user who mistypes their code that many times in a row is locked, as with passwords; before, codes counted only toward `disconnect`. While an account is locked the prompt refuses every code, right or wrong, without checking it. For accounts with 2FA, the right password alone no longer clears the failed login count or a lock that has run out (this applies to every login path, the REST API and NNTP included, though those refuse 2FA accounts anyway); the right code does. A 2FA user who mistypes their password and then disconnects at the code prompt keeps the count. An email password reset no longer clears the count or the lock of a 2FA account (`unlockAtEmailPwReset` applies only to accounts without 2FA); non-2FA accounts are reset as before.
+
+  **Action:** if you have customised the 2FA menu (`loginTwoFactorAuthOTP`, or the `petscii`, `rip` or `atascii` versions), add `locked`, `disabled` and `inactive` to its `config`, with the same targets as your login menu's, as the stock templates now do; without them, a locked, disabled or inactive account at the code prompt is logged off instead of shown the ACCOUNTLOCKED, ACCOUNTDISABLED or ACCOUNTINACTIVE screen. To unlock an account by hand: `./oputil.js user activate USERNAME`.
+
 ## 0.6.1-beta to 0.6.2-beta
+
+* **Sysops: SSH public key logins are checked more strictly.** Nothing in your configuration, menus, art or themes needs to change.
+
+  **Action:** none required. Concerned sysops should review accounts with SSH keys registered: their recent logins, and that the stored key, password and email are still the owner's.
+
+* **Sysops: failed logins now lock accounts.** Nothing in your configuration, menus, art or themes needs to change.
+
+  **What changes by itself:** `users.failedLogin.lockAccount` (default 9) now takes effect; before, no account was ever locked automatically. Wrong passwords count on every login path (telnet, SSH, WebSocket, the web/REST API, NNTP); a wrong second-factor (OTP) code counts only toward `disconnect`. An active account is locked after that many failed logins since its last successful one. A locked account refuses every login, even with the right password or key, until `users.failedLogin.autoUnlockMinutes` (default 360) have passed; then the right password or key lets the user in again, and a wrong one locks the account again from that moment. While it is locked, its REST API keys and refresh tokens are refused too; once the lock has run out they work again only after the user logs in, or the sysop activates the account. Counts already stored carry over: a user with 9 or more failures since their last successful login is locked at their next failure. Anyone who knows a user name, the sysop's included, can lock that account by failing to log in as it. A lock set with `oputil.js user lock` does not run out.
+
+  **Action:** review `users.failedLogin`; set `lockAccount: 0` to keep today's behaviour (no locking). To unlock an account by hand (this also clears its failed login count): `./oputil.js user activate USERNAME`.
+
+* **Sysops: user names are looked up exactly.** Nothing in your configuration, menus, art or themes needs to change.
+
+  **What changes by itself:** a user name or real name is matched exactly, ignoring case as before. Mail, netmail and anything else addressed with `_` or `%` standing in for other characters no longer finds a user, except internet mail sent to the address ENiGMA½ derives from a user name (`John_Doe@` for "John Doe"), which is mapped back. A new user name whose derived mail address would be an existing user's (`John_Doe` when "John Doe" exists) is refused at signup.
+
+  **Action:** none.
 
 * **Mod authors: covers pause background drawing** ([#1136](https://github.com/NuSkooler/enigma-bbs/issues/1136), [#1137](https://github.com/NuSkooler/enigma-bbs/issues/1137)). Nothing in your configuration, menus, art or themes needs to change, and `client.waitForKeyPress()` works as before.
 

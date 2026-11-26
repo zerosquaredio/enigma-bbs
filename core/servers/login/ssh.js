@@ -6,14 +6,15 @@ const Config = require('../../config.js').get;
 const baseClient = require('../../client.js');
 const Log = require('../../logger.js').log;
 const LoginServerModule = require('../../login_server_module.js');
-const userLogin = require('../../user_login.js').userLogin;
+const { userLogin, checkSSHPubKey } = require('../../user_login.js');
 const enigVersion = require('../../../package.json').version;
 const theme = require('../../theme.js');
 const stringFormat = require('../../string_format.js');
 const { Errors, ErrorReasons } = require('../../enig_error.js');
 const { listenServer } = require('../../server_listen.js');
 const User = require('../../user.js');
-const UserProps = require('../../user_property.js');
+const ACS = require('../../acs.js');
+const { stripAllControlCodes } = require('../../string_util.js');
 
 //  deps
 const ssh2 = require('ssh2');
@@ -123,6 +124,14 @@ function SSHClient(clientConn, connInfo) {
             'SSH authentication attempt'
         );
 
+        //
+        //  The connection is being ended (see slowTerminateConnection()):
+        //  no request is looked at any more, and none is answered.
+        //
+        if (self.authEnded) {
+            return;
+        }
+
         const safeContextReject = param => {
             try {
                 return ctx.reject(param);
@@ -133,22 +142,57 @@ function SSHClient(clientConn, connInfo) {
         };
 
         const terminateConnection = () => {
+            //  before the reject: ssh2 hands over the next queued request
+            //  from within it, and that one is not to be looked at
+            self.authEnded = true;
             safeContextReject();
             return clientConn.end();
         };
 
         //
-        //  A caller refused at connect time (see refuseConnection()) is shown
-        //  why during authentication, the only point before a shell where an
-        //  SSH server can put text in front of the user: keyboard-interactive
-        //  with no prompts, the message as its instruction, then a disconnect.
+        //  ssh2 can refuse to send an accept: it keeps the methods of the
+        //  requests it has seen in order, and a keyboard-interactive request
+        //  the client replaced stays first, so a publickey query answered
+        //  after it (a held one, say) throws. Here that is outside ssh2's
+        //  own handling, which would otherwise close the connection for it:
+        //  the connection is ended instead.
+        //
+        const safeContextAccept = () => {
+            try {
+                return ctx.accept();
+            } catch (err) {
+                self.log.warn(
+                    { error: err.message, method: ctx.method, username },
+                    'SSH authentication answer could not be sent; ending the connection'
+                );
+                return terminateConnection();
+            }
+        };
+
+        //
+        //  A refused caller (see refuseConnection()) is shown why during
+        //  authentication, the only point before a shell where an SSH server
+        //  can put text in front of the user: keyboard-interactive with no
+        //  prompts, the message as its instruction, then a disconnect once
+        //  the client answers. OpenSSH shows the text and needs no key press.
         //  Other methods are steered to keyboard-interactive (a client may
         //  try a few before it gets there), then ended.
-        //  Checked before anything else, so a refused new user is not
-        //  accepted either.
         //
-        if (self.refusalMessage) {
+        //
+        //  A keyboard-interactive request the client gave up on (it sent
+        //  another request; ssh2 emits 'abort') is no longer answered: the
+        //  client would read an answer as one to its current request.
+        //
+        let ctxAborted = false;
+        if (_.isFunction(ctx.once)) {
+            ctx.once('abort', () => (ctxAborted = true));
+        }
+
+        const showRefusal = () => {
             if ('keyboard-interactive' === ctx.method) {
+                if (ctxAborted) {
+                    return; //  the request the client sent instead is answered
+                }
                 return ctx.prompt([], '', self.refusalMessage, () => clientConn.end());
             }
 
@@ -158,50 +202,106 @@ function SSHClient(clientConn, connInfo) {
             }
 
             return terminateConnection();
-        }
-
-        //  slow version to thwart brute force attacks
-        const slowTerminateConnection = () => {
-            setTimeout(() => {
-                return terminateConnection();
-            }, 2000);
         };
 
-        const promptAndTerm = (msg, method = 'standard') => {
-            if ('keyboard-interactive' === ctx.method) {
-                ctx.prompt(msg);
+        //
+        //  Checked before anything else, so a refused new user is not
+        //  accepted either, and a caller refused at login cannot try again.
+        //
+        if (self.refused) {
+            return showRefusal();
+        }
+
+        //
+        //  One login at a time per connection (RFC 4252 section 5: each
+        //  request is processed completely before the next). ssh2 queues a
+        //  request that comes before the current one is answered, except
+        //  after a keyboard-interactive prompt: there it drops the current
+        //  request (its 'abort') and hands over the new one at once, while
+        //  the password already sent for the old one may still be checked.
+        //  Such a request is held here until that login is done, then
+        //  answered as any (see endLogin()), or never, if the connection is
+        //  ended meanwhile. At most one is held: the held request has no
+        //  answer yet, so ssh2 queues any after it itself.
+        //
+        if (self.authInFlight) {
+            self.authInFlight.abandoned = true;
+            self.heldAuthCtx = ctx;
+            return;
+        }
+
+        //
+        //  The slow refusal: the answer waits SlowRefusalMs, but the decision
+        //  is made now. From here on no request is looked at (see
+        //  self.authEnded above), so none starts a login while the answer
+        //  waits.
+        //
+        const slowTerminateConnection = () => {
+            self.authEnded = true;
+            setTimeout(() => {
+                return terminateConnection();
+            }, SSHClient.SlowRefusalMs);
+        };
+
+        //
+        //  A login refused for the account's state (already connected,
+        //  disabled, inactive, locked) is shown the same way as a refusal at
+        //  connect time: see showRefusal(). A password or public key login
+        //  cannot carry text, so it is steered to keyboard-interactive, where
+        //  the next attempt shows it (#1081). 'slow' holds the answer back as
+        //  slowTerminateConnection() does.
+        //
+        //  The connection is refused at once, so any request that arrives
+        //  while a slow answer waits is refused too; only this request's
+        //  answer waits.
+        //
+        //  The caller is no longer anyone: an already connected refusal
+        //  comes after the password or key checked out, with this client's
+        //  User loaded, and until the connection closes (up to
+        //  RefusalTimeoutMs) the client is still tracked. With that User it
+        //  would count as the user online (userLogin()'s already connected
+        //  check, the who's online list) and be logged off as them when it
+        //  ends. It gets a fresh, unauthenticated User instead. Nothing the
+        //  login stored is undone.
+        //
+        const refuseLogin = (msg, method = 'standard') => {
+            self.user = new User();
+            self.acs = new ACS({ client: self, user: self.user });
+            self.refuseConnection(msg);
+            if ('slow' !== method) {
+                return showRefusal();
             }
-            return 'slow' === method ? slowTerminateConnection() : terminateConnection();
+
+            setTimeout(() => {
+                if (self.clientEnded) {
+                    return; //  gone while the answer waited
+                }
+                return showRefusal();
+            }, SSHClient.SlowRefusalMs);
         };
 
         const accountAlreadyLoggedIn = username => {
-            return promptAndTerm(
-                `${username} is already connected to the system. Terminating connection.\n(Press any key to continue)`
+            return refuseLogin(
+                `${username} is already connected to the system. Terminating connection.`
             );
         };
 
         const accountDisabled = username => {
-            return promptAndTerm(`${username} is disabled.\n(Press any key to continue)`);
+            return refuseLogin(`${username} is disabled.`);
         };
 
         const accountInactive = username => {
-            return promptAndTerm(
-                `${username} is waiting for +op activation.\n(Press any key to continue)`
-            );
+            return refuseLogin(`${username} is waiting for +op activation.`);
         };
 
         const accountLocked = username => {
-            return promptAndTerm(
-                `${username} is locked.\n(Press any key to continue)`,
-                'slow'
-            );
+            return refuseLogin(`${username} is locked.`, 'slow');
         };
 
-        //  users.allowedAuthFactor1Types leaves out "password"
+        //  users.allowedAuthFactor1Types leaves out "password": the caller
+        //  is told as any other refusal is (see refuseLogin())
         const passwordLoginNotAllowed = () => {
-            return promptAndTerm(
-                'Password logins are not available on this system.\n(Press any key to continue)'
-            );
+            return refuseLogin('Password logins are not available on this system.');
         };
 
         //  the connection ended while the login was under way (see
@@ -232,49 +332,185 @@ function SSHClient(clientConn, connInfo) {
             }
         };
 
-        const authWithPasswordOrPubKey = authType => {
-            if (
-                User.AuthFactor1Types.SSHPubKey !== authType ||
-                !self.user.isAuthenticated() ||
-                !ctx.signature
-            ) {
-                //  step 1: login/auth using PubKey
-                userLogin(self, ctx.username, ctx.password, { authType, ctx }, err => {
-                    if (err) {
-                        if (isClientEnded(err)) {
-                            return;
-                        }
-
-                        if (isSpecialHandleError(err)) {
-                            return handleSpecialError(err, username);
-                        }
-
-                        if (Errors.BadLogin().code === err.code) {
-                            return slowTerminateConnection();
-                        }
-
-                        return safeContextReject(SSHClient.ValidAuthMethods);
-                    }
-
-                    ctx.accept();
-                });
-            } else {
-                //  step 2: verify signature
-                const storedKey = self.user.getProperty(UserProps.SSHPubKey);
-                if (!storedKey) {
-                    return slowTerminateConnection();
-                }
-
-                const pubKeyActual = ssh2.utils.parseKey(storedKey);
-                if (
-                    !pubKeyActual ||
-                    pubKeyActual instanceof Error ||
-                    !pubKeyActual.verify(ctx.blob, ctx.signature)
-                ) {
-                    return slowTerminateConnection();
-                }
-                return ctx.accept();
+        //
+        //  A login that checked out, unless the connection was refused
+        //  meanwhile: a keyboard-interactive request the client abandons for
+        //  another is still being checked while the other is handled, and
+        //  the other can be refused first.
+        //
+        const acceptLogin = () => {
+            if (self.refused) {
+                return showRefusal();
             }
+            return safeContextAccept();
+        };
+
+        //  a failed userLogin() or checkSSHPubKey()
+        const handleLoginError = err => {
+            if (isClientEnded(err)) {
+                return;
+            }
+
+            if (isSpecialHandleError(err)) {
+                return handleSpecialError(err, username);
+            }
+
+            if (Errors.BadLogin().code === err.code) {
+                return slowTerminateConnection();
+            }
+
+            return safeContextReject(SSHClient.ValidAuthMethods);
+        };
+
+        //
+        //  A login in flight (see the hold above). endLogin() is called once
+        //  its request has been answered: a keyboard-interactive failure
+        //  only after the prompt to try again is sent, so a request that
+        //  comes meanwhile is held, not answered alongside it. It then
+        //  answers a held request, unless the connection is being ended.
+        //
+        const endLogin = attempt => {
+            if (self.authInFlight !== attempt) {
+                return;
+            }
+            self.authInFlight = null;
+            const held = self.heldAuthCtx;
+            self.heldAuthCtx = null;
+            if (held && !self.authEnded && !self.clientEnded) {
+                return authAttempt(held);
+            }
+        };
+
+        //
+        //  A login whose request the client replaced (another request came
+        //  while it was checked): there is nobody to answer on it, but what
+        //  it means for the connection still holds. Its failure is counted
+        //  (userLogin()), toward the account lock and toward
+        //  users.failedLogin.disconnect.
+        //
+        const finishAbandonedLogin = (attempt, err) => {
+            if (!err) {
+                //  the login went through all the same (the request was
+                //  replaced after userLogin() last looked): the connection
+                //  is ended, as nobody asked for it any more
+                self.log.warn(
+                    { username, ip: self.remoteAddress },
+                    'Login completed for a request the client had replaced; ending the connection'
+                );
+                return terminateConnection();
+            }
+
+            if (isClientEnded(err)) {
+                //  gone, or a success given up on (see userLogin())
+                return endLogin(attempt);
+            }
+
+            if (isSpecialHandleError(err)) {
+                //  refused for the account: the held request is shown why
+                handleSpecialError(err, username);
+                return endLogin(attempt);
+            }
+
+            if (Errors.BadLogin().code === err.code) {
+                //  too many failures: the held request is never answered
+                return slowTerminateConnection();
+            }
+
+            return endLogin(attempt);
+        };
+
+        //
+        //  userLogin() as one login in flight: |onResult(err, done)| answers
+        //  the request and calls |done| once it has, unless the request was
+        //  replaced meanwhile.
+        //
+        const loginOnce = (loginUsername, password, options, onResult) => {
+            const attempt = { abandoned: false };
+            self.authInFlight = attempt;
+            const isAbandoned = () => attempt.abandoned || true === self.authEnded;
+            userLogin(
+                self,
+                loginUsername,
+                password,
+                Object.assign({}, options, { isAbandoned }),
+                err => {
+                    if (isAbandoned()) {
+                        return finishAbandonedLogin(attempt, err);
+                    }
+                    return onResult(err, () => endLogin(attempt));
+                }
+            );
+        };
+
+        const authWithPassword = () => {
+            //
+            //  A password change request (RFC 4252 section 8) carries the old
+            //  and new passwords, an object here. Changing a password this
+            //  way is not supported: refused, as no attempt at a login.
+            //
+            if (!_.isString(ctx.password)) {
+                return safeContextReject(SSHClient.ValidAuthMethods);
+            }
+
+            const authType = User.AuthFactor1Types.Password;
+            loginOnce(ctx.username, ctx.password, { authType, ctx }, (err, done) => {
+                if (err) {
+                    handleLoginError(err);
+                } else {
+                    acceptLogin();
+                }
+                return done();
+            });
+        };
+
+        //
+        //  A publickey request comes in two kinds (RFC 4252 section 7):
+        //
+        //  - Without a signature, a query: would this key do? Anyone may know
+        //    a public key, so this is not a login. The key is only compared
+        //    with the one stored for the user, and accept() answers "yes"
+        //    (SSH_MSG_USERAUTH_PK_OK).
+        //
+        //  - With a signature, made with the key's private half over the
+        //    session: that, once verified, is the proof. Only then is the
+        //    user logged in (the key compared again, account status, and so
+        //    on), and accept() lets them in. A client need not have asked
+        //    first.
+        //
+        //  ssh2 verifies nothing itself: accept() on a signed request lets
+        //  the caller in whatever the signature is.
+        //
+        const authWithPubKey = () => {
+            if (!ctx.signature) {
+                return checkSSHPubKey(self, ctx.username, ctx, err => {
+                    if (err) {
+                        return handleLoginError(err);
+                    }
+                    return acceptLogin();
+                });
+            }
+
+            if (!SSHClient.isValidPubKeySignature(ctx)) {
+                self.log.warn(
+                    {
+                        username,
+                        algo: _.get(ctx, 'key.algo'),
+                        ip: self.remoteAddress,
+                    },
+                    'SSH public key signature did not verify'
+                );
+                return slowTerminateConnection();
+            }
+
+            const authType = User.AuthFactor1Types.SSHPubKey;
+            loginOnce(ctx.username, ctx.password, { authType, ctx }, (err, done) => {
+                if (err) {
+                    handleLoginError(err);
+                } else {
+                    acceptLogin();
+                }
+                return done();
+            });
         };
 
         const authKeyboardInteractive = () => {
@@ -288,24 +524,41 @@ function SSHClient(clientConn, connInfo) {
             };
 
             ctx.prompt(interactivePrompt, function retryPrompt(answers) {
-                userLogin(self, username, answers[0] || '', err => {
+                //
+                //  ssh2 calls back with an Error, not answers, when the
+                //  client abandons the prompt for another request: there is
+                //  no password, so no login attempt, and nothing to answer.
+                //
+                if (!Array.isArray(answers)) {
+                    return;
+                }
+
+                loginOnce(username, answers[0] || '', {}, (err, done) => {
                     if (err) {
                         if (isClientEnded(err)) {
-                            return;
+                            return done();
                         }
 
                         //  only here: a refused key or "password" method falls
                         //  through to this prompt, where the caller is told
                         if (ErrorReasons.LoginTypeNotAllowed === err.reasonCode) {
-                            return passwordLoginNotAllowed();
+                            passwordLoginNotAllowed();
+                            return done();
                         }
 
                         if (isSpecialHandleError(err)) {
-                            return handleSpecialError(err, username);
+                            handleSpecialError(err, username);
+                            return done();
                         }
 
                         if (Errors.BadLogin().code === err.code) {
-                            return slowTerminateConnection();
+                            slowTerminateConnection();
+                            return done();
+                        }
+
+                        //  abandoned by the client: nobody to ask again
+                        if (ctxAborted) {
+                            return done();
                         }
 
                         const artOpts = {
@@ -331,10 +584,16 @@ function SSHClient(clientConn, connInfo) {
                                     { newUserNames: newUserNameList }
                                 )}\n${ctx.username}'s password:`;
                             }
-                            return ctx.prompt(interactivePrompt, retryPrompt);
+                            //  replaced while the art was read: the request
+                            //  sent instead is answered, not this one
+                            if (!ctxAborted) {
+                                ctx.prompt(interactivePrompt, retryPrompt);
+                            }
+                            return done();
                         });
                     } else {
-                        ctx.accept();
+                        acceptLogin();
+                        return done();
                     }
                 });
             });
@@ -357,17 +616,15 @@ function SSHClient(clientConn, connInfo) {
                 return safeContextReject(SSHClient.ValidAuthMethods);
             }
             self.provenPublicKey = provenPublicKey(ctx) || self.provenPublicKey;
-            return ctx.accept();
+            return safeContextAccept();
         }
 
         switch (ctx.method) {
             case 'password':
-                return authWithPasswordOrPubKey(User.AuthFactor1Types.Password);
-            //return authWithPassword();
+                return authWithPassword();
 
             case 'publickey':
-                return authWithPasswordOrPubKey(User.AuthFactor1Types.SSHPubKey);
-            //return authWithPubKey();
+                return authWithPubKey();
 
             case 'keyboard-interactive':
                 return authKeyboardInteractive();
@@ -383,8 +640,11 @@ function SSHClient(clientConn, connInfo) {
 
     this.updateTermInfo = function (info) {
         //
-        //  From ssh2 docs:
-        //  "rows and cols override width and height when rows and cols are non-zero."
+        //  The size in characters is rows and cols. ssh2 also passes width
+        //  and height, but those are the window in pixels (RFC 4254 6.2;
+        //  ssh2's own client sends 640x480), not a size in characters, so
+        //  they are not used: a client that sends 0 rows and cols leaves the
+        //  size alone, and connect.js finds it (see below) (#1081).
         //
         let termHeight;
         let termWidth;
@@ -392,9 +652,6 @@ function SSHClient(clientConn, connInfo) {
         if (info.rows > 0 && info.cols > 0) {
             termHeight = info.rows;
             termWidth = info.cols;
-        } else if (info.width > 0 && info.height > 0) {
-            termHeight = info.height;
-            termWidth = info.width;
         }
 
         assert(_.isObject(self.term));
@@ -417,7 +674,7 @@ function SSHClient(clientConn, connInfo) {
 
         //
         //  Note that if we fail here, connect.js attempts some non-standard
-        //  queries/etc., and ultimately will default to 80x24 if all else fails
+        //  queries/etc., and ultimately will default to 80x25 if all else fails
         //
         if (termHeight > 0 && termWidth > 0) {
             self.term.termHeight = termHeight;
@@ -437,10 +694,17 @@ function SSHClient(clientConn, connInfo) {
     //  Until the shell is open there is no terminal to apply pty or
     //  window-change info to, so it is kept for then. Merged, not replaced: a
     //  window-change carries only the size, and must not throw away the
-    //  terminal type an earlier pty request brought (#1017).
+    //  terminal type an earlier pty request brought (#1017). Nor does a size
+    //  of 0, which says nothing (see updateTermInfo()), replace an earlier
+    //  one (#1081).
     //
     this.cacheTermInfo = function (info) {
-        self.cachedTermInfo = Object.assign({}, self.cachedTermInfo, info);
+        const cached = Object.assign({}, self.cachedTermInfo, info);
+        if (self.cachedTermInfo && !(info.rows > 0 && info.cols > 0)) {
+            cached.rows = self.cachedTermInfo.rows;
+            cached.cols = self.cachedTermInfo.cols;
+        }
+        self.cachedTermInfo = cached;
     };
 
     clientConn.once('ready', function clientReady() {
@@ -562,9 +826,10 @@ function SSHClient(clientConn, connInfo) {
     };
 
     //
-    //  Called instead of tracking the client when every node is busy. There
-    //  is no terminal yet (that comes with the shell), so the message waits
-    //  for the authentication request; see the 'authentication' handler. The
+    //  Called instead of tracking the client when every node is busy, and
+    //  for a login refused for the account's state (see refuseLogin()).
+    //  There is no terminal yet (that comes with the shell), so the message
+    //  is shown during authentication; see showRefusal(). The
     //  timer ends the connection whatever state it is in, and closes the
     //  socket outright shortly after if the caller has not closed its side,
     //  so a refused caller cannot hold a socket open.
@@ -574,8 +839,17 @@ function SSHClient(clientConn, connInfo) {
     //  when the timer fires, whichever comes first; end() does it once.
     //  Not before: ending the client is what disconnects it.
     //
+    //  A connection is refused once; a later call changes nothing.
+    //
     this.refuseConnection = function (message) {
-        self.refusalMessage = message;
+        if (self.refused) {
+            return;
+        }
+        self.refused = true;
+
+        //  only an art file (the busy message's) can leave nothing to show
+        self.refusalMessage =
+            SSHClient.toInstructionText(message) || LoginServerModule.AllNodesBusyMessage;
 
         //  the refusal has its own, shorter, timer
         self.clearLoginTimer();
@@ -600,6 +874,39 @@ SSHClient.ValidAuthMethods = ['password', 'keyboard-interactive', 'publickey'];
 //  other authentication methods it may try before keyboard-interactive
 SSHClient.RefusalTimeoutMs = 10000;
 SSHClient.RefusalSteerAttempts = 3;
+
+//
+//  |message| as the instruction text of a keyboard-interactive request, the
+//  form a refusal is shown in. That is plain text: OpenSSH shows a control
+//  character in it as an escape (ESC as "\033"), so ANSI sequences and pipe
+//  codes are removed, as is any other control character but a line feed or
+//  tab: C0, DEL and C1, and the Unicode format characters that change how
+//  text around them is ordered or shown (bidi embeddings, overrides and
+//  isolates, the Arabic letter mark, zero width and invisible characters,
+//  the deprecated format characters, tag characters, the BOM), so the text
+//  reads as written.
+//  OSC, DCS, APC, PM and SOS strings go whole, up to their terminator (BEL
+//  or ESC backslash), or to the end if there is none. A line ends with a
+//  line feed alone, and trailing blank lines go.
+//  The busy refusal's message can come from an art file (see
+//  getAllNodesBusyMessage() in core/login_server_module.js).
+//
+SSHClient.toInstructionText = function (message) {
+    const text = String(message || '').replace(
+        /\x1b[\]P^_X][\s\S]*?(?:\x07|\x1b\\|$)/g, //  eslint-disable-line no-control-regex
+        ''
+    );
+    return stripAllControlCodes(text)
+        .replace(/\r\n?/g, '\n')
+        .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '') //  eslint-disable-line no-control-regex
+        .replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, '')
+        .replace(/[\u{e0000}-\u{e007f}]/gu, '')
+        .trimEnd();
+};
+
+//  How long a bad login, or a login refused for a locked account, waits for
+//  its answer, to slow down repeated attempts
+SSHClient.SlowRefusalMs = 2000;
 
 //  How long a caller has to close its side after endAndClose() (a refusal or
 //  the login timeout) before the socket is closed outright
@@ -629,6 +936,85 @@ SSHClient.getLoginTimeoutMs = function () {
         return Math.max(1, Math.round(clamped * 1000));
     }
     return SSHClient.DefaultLoginTimeoutSeconds * 1000;
+};
+
+//
+//  Is |data| shaped as an SSH public key blob (RFC 4253 section 6.6) for
+//  |algo|: a length-prefixed string naming the key type, then the key? Only
+//  the shape is checked, so that a caller's bytes reach ssh2's binary key
+//  parser and none of its text formats (PEM, PPK, RFC 4716), and within a
+//  bound. ssh2 hands over 'ssh-rsa' as |algo| for an rsa-sha2-256/512
+//  request, as the blob says.
+//
+//  The bound leaves room for the largest keys there are (a 16384-bit RSA key
+//  is about 2 KiB).
+//
+SSHClient.MaxPubKeyBlobBytes = 16 * 1024;
+SSHClient.MaxPubKeyAlgoBytes = 64;
+
+SSHClient.isPubKeyBlobFor = function (data, algo) {
+    if (
+        !Buffer.isBuffer(data) ||
+        !_.isString(algo) ||
+        data.length > SSHClient.MaxPubKeyBlobBytes
+    ) {
+        return false;
+    }
+
+    const algoLen = Buffer.byteLength(algo);
+    if (0 === algoLen || algoLen > SSHClient.MaxPubKeyAlgoBytes) {
+        return false;
+    }
+
+    //  the length, the type, and something after it
+    if (data.length <= 4 + algoLen || data.readUInt32BE(0) !== algoLen) {
+        return false;
+    }
+
+    return data.subarray(4, 4 + algoLen).equals(Buffer.from(algo));
+};
+
+//
+//  Is the signature on a signed publickey request (ssh2's |ctx|) a good one,
+//  made over the request (|ctx.blob|: the session identifier and the request)
+//  with the private half of the key offered in it? With an RSA key, the hash
+//  is the one the client named (rsa-sha2-256, rsa-sha2-512; SHA-1 for plain
+//  ssh-rsa).
+//
+//  Whether the key is the user's own is for userLogin() to say, after this.
+//
+SSHClient.isValidPubKeySignature = function (ctx) {
+    const key = _.get(ctx, 'key');
+    if (
+        !key ||
+        !Buffer.isBuffer(key.data) ||
+        !Buffer.isBuffer(ctx.signature) ||
+        !Buffer.isBuffer(ctx.blob)
+    ) {
+        return false;
+    }
+
+    if (!SSHClient.isPubKeyBlobFor(key.data, key.algo)) {
+        return false;
+    }
+
+    try {
+        //  the caller's bytes: parsing them must not be able to throw us out
+        const pubKey = ssh2.utils.parseKey(key.data);
+        if (!pubKey || pubKey instanceof Error || Array.isArray(pubKey)) {
+            return false;
+        }
+
+        //  the key is what the request says it is
+        if (pubKey.type !== key.algo) {
+            return false;
+        }
+
+        //  verify() returns an Error, not false, for some bad signatures
+        return true === pubKey.verify(ctx.blob, ctx.signature, ctx.hashAlgo);
+    } catch (err) {
+        return false;
+    }
 };
 
 exports.SSHClient = SSHClient; //  for tests

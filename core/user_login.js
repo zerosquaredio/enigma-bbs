@@ -27,30 +27,24 @@ const assert = require('assert');
 const moment = require('moment');
 
 exports.userLogin = userLogin;
+exports.checkSSHPubKey = checkSSHPubKey;
 exports.recordLogin = recordLogin;
 exports.transformLoginError = transformLoginError;
 
+//
+//  |options|: authType and ctx (SSH), and isAbandoned(): when it returns true
+//  once the credentials have checked out, the caller has given up on this
+//  login, which is then not one (ClientEnded, as for a connection that
+//  ended). Callers that do not pass it are unaffected.
+//
 function userLogin(client, username, password, options, cb) {
     if (!cb && _.isFunction(options)) {
         cb = options;
         options = {};
     }
 
-    const config = Config();
-
-    if (config.users.badUserNames.includes(username.toLowerCase())) {
-        client.log.info(
-            { username, ip: client.remoteAddress },
-            `Attempt to login with banned username "${username}"`
-        );
-
-        //  slow down a bit to thwart brute force attacks
-        return setTimeout(() => {
-            if (client.clientEnded) {
-                return cb(abandonLogin(client, username));
-            }
-            return cb(Errors.BadLogin('Disallowed username', ErrorReasons.NotAllowed));
-        }, 2000);
+    if (isBannedUsername(client, username, cb)) {
+        return;
     }
 
     const authInfo = {
@@ -64,7 +58,10 @@ function userLogin(client, username, password, options, cb) {
     //  AT login only: link |did| to this user, proven by |password|
     authInfo.linkWithPassword = true === options.linkWithPassword;
 
-    client.user.authenticateFactor1(authInfo, err => {
+    //  the User this login is for; see the check after authentication
+    const loginUser = client.user;
+
+    loginUser.authenticateFactor1(authInfo, err => {
         //
         //  The connection can end while authentication is under way (the
         //  caller hangs up, the SSH login timeout fires). There is nobody to
@@ -78,6 +75,47 @@ function userLogin(client, username, password, options, cb) {
 
         if (err) {
             return cb(transformLoginError(err, client, username));
+        }
+
+        //
+        //  Nor is there anyone to log in if the connection was refused while
+        //  authentication was under way: the SSH server refuses a login for
+        //  the account's state and gives the client a fresh User (see
+        //  refuseLogin() in core/servers/login/ssh.js), and a request the
+        //  client abandoned can still be checking a password meanwhile. Its
+        //  success is not a login, and none of a login's side effects run.
+        //  A failure above is counted as any is.
+        //
+        if (client.user !== loginUser || client.refused) {
+            return cb(
+                abandonLogin(
+                    client,
+                    username,
+                    null,
+                    'Login abandoned: the connection was refused during login'
+                )
+            );
+        }
+
+        //
+        //  Nor if the caller gave up on this login for another (the SSH
+        //  server answers one request at a time, and a keyboard-interactive
+        //  request can be replaced while its password is checked; see
+        //  options.isAbandoned in core/servers/login/ssh.js). The User the
+        //  check filled in goes back to nobody, in place, so the client and
+        //  its ACS stay in step. A failure above is counted as any is.
+        //
+        if (_.isFunction(options.isAbandoned) && options.isAbandoned()) {
+            loginUser.reset();
+            return cb(
+                abandonLogin(
+                    client,
+                    username,
+                    null,
+                    'Login abandoned: the client sent another request during login',
+                    'warn'
+                )
+            );
         }
 
         const user = client.user;
@@ -144,14 +182,70 @@ function userLogin(client, username, password, options, cb) {
     });
 }
 
-function abandonLogin(client, username, authErr) {
+//
+//  A banned username gets a BadLogin, slowly, to slow repeated attempts.
+//  Returns true if |username| is banned; |cb| is then called later.
+//
+function isBannedUsername(client, username, cb) {
+    if (!Config().users.badUserNames.includes(username.toLowerCase())) {
+        return false;
+    }
+
     client.log.info(
+        { username, ip: client.remoteAddress },
+        `Attempt to login with banned username "${username}"`
+    );
+
+    setTimeout(() => {
+        if (client.clientEnded) {
+            return cb(abandonLogin(client, username));
+        }
+        return cb(Errors.BadLogin('Disallowed username', ErrorReasons.NotAllowed));
+    }, 2000);
+    return true;
+}
+
+//
+//  An SSH client asking whether a public key would be accepted, before it
+//  signs with it (see User.checkSSHPubKey()). Not a login: there are none of
+//  userLogin()'s side effects, and the account itself (disabled, locked, and
+//  so on) is not looked at until the client has proved it holds the key.
+//  Errors are as userLogin()'s, so its callers can handle both alike. A key
+//  that does not match counts toward users.failedLogin.disconnect, as any
+//  failed attempt on the connection does, but not toward locking the account.
+//
+function checkSSHPubKey(client, username, pubKey, cb) {
+    if (isBannedUsername(client, username, cb)) {
+        return;
+    }
+
+    client.user.checkSSHPubKey(username, _.get(pubKey, 'key'), err => {
+        if (client.clientEnded) {
+            return cb(abandonLogin(client, username, err));
+        }
+
+        if (err) {
+            return cb(transformLoginError(err, client, username));
+        }
+
+        return cb(null);
+    });
+}
+
+function abandonLogin(
+    client,
+    username,
+    authErr,
+    why = 'Login abandoned: the connection ended during login',
+    level = 'info'
+) {
+    client.log[level](
         {
             username,
             ip: client.remoteAddress,
             authResult: authErr ? authErr.message : 'authenticated',
         },
-        'Login abandoned: the connection ended during login'
+        why
     );
     return Errors.General('The connection ended during login', ErrorReasons.ClientEnded);
 }
@@ -162,23 +256,33 @@ function postLoginPrep(client, cb) {
             callback => {
                 //
                 //  User may (no longer) have read (view) rights to their current
-                //  message, conferences and/or areas. Move them out if so.
+                //  message, conferences and/or areas. Move them out if so. An
+                //  area that is not configured (removed, its conference
+                //  removed, or none at all) is no read either (#1141).
                 //
                 const confTag = client.user.getProperty(UserProps.MessageConfTag);
                 const conf = getMessageConferenceByTag(confTag) || {};
-                const area =
-                    getMessageAreaByTag(
-                        client.user.getProperty(UserProps.MessageAreaTag),
-                        confTag
-                    ) || {};
+                const area = getMessageAreaByTag(
+                    client.user.getProperty(UserProps.MessageAreaTag),
+                    confTag
+                );
 
                 if (
+                    !area ||
                     !client.acs.hasMessageConfRead(conf) ||
                     !client.acs.hasMessageAreaRead(area)
                 ) {
                     //  move them out of both area and possibly conf to something suitable, hopefully.
                     const [newConfTag, newAreaTag] =
                         getSuitableMessageConfAndAreaTags(client);
+                    //  nothing better found (no area at all, nothing readable)
+                    if (
+                        newConfTag === (confTag || '') &&
+                        newAreaTag ===
+                            (client.user.getProperty(UserProps.MessageAreaTag) || '')
+                    ) {
+                        return callback(null);
+                    }
                     client.user.persistProperties(
                         {
                             [UserProps.MessageConfTag]: newConfTag,

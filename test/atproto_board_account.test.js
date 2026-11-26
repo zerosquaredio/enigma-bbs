@@ -101,6 +101,53 @@ describe('the board account screen, once an account is connected', () => {
         );
     });
 
+    it('goes to the actions on an empty handle line once an account is connected', async () => {
+        const s = screen();
+        s.connectedAccount = () => ({ did: 'did:plc:board' });
+        let connecting = 0;
+        const Login = require('../core/atproto_login.js').getModule;
+        const realStart = Login.prototype.startLogin;
+        Login.prototype.startLogin = (formData, cb) => {
+            connecting++;
+            cb(null);
+        };
+        try {
+            const start = value =>
+                new Promise(r => Module.prototype.startLogin.call(s, { value }, r));
+            await start({ handle: '   ' });
+            assert.deepEqual(s.focused, [4], 'on to the action bar');
+            assert.equal(connecting, 0);
+            await start({ handle: 'board.example' });
+            assert.equal(connecting, 1, 'a handle connects, as before');
+            s.connectedAccount = () => null;
+            await start({ handle: '' });
+            assert.equal(
+                connecting,
+                2,
+                'with no account, the login screen says what to do'
+            );
+        } finally {
+            Login.prototype.startLogin = realStart;
+        }
+    });
+
+    it('sends ENTER in the handle line to connect, whatever the action bar shows', () => {
+        const hjson = require('hjson');
+        const fs = require('fs');
+        const template = hjson.parse(
+            fs.readFileSync(
+                require.resolve('../misc/menu_templates/main.in.hjson'),
+                'utf8'
+            )
+        );
+        const form = template.menus.boardAtProtoAccount.form[0];
+        assert.deepEqual(form.submit[1], [
+            { value: 'handle', action: '@method:startLogin' },
+        ]);
+        assert.equal(form.mci.ET1.argName, 'handle');
+        assert.equal(form.mci.HM4.items[3], 'splash');
+    });
+
     it('"splash" needs a connected account', async () => {
         Publishing.getBoardAccount = () => null;
         const s = screen();

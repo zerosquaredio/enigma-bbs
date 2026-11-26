@@ -65,6 +65,7 @@ exports.handleCallback = handleCallback;
 exports.restore = restore;
 exports.revoke = revoke;
 exports.boardRequest = boardRequest;
+exports.boardUploadBlob = boardUploadBlob;
 exports.revokeBoard = revokeBoard;
 
 //  For tests: substitute the library, and forget the clients between cases
@@ -443,6 +444,54 @@ function boardRequest(did, method, nsid, params, cb) {
                         return body;
                     })
                 )
+            ),
+        cb
+    );
+}
+
+//
+//  Upload |body| (a Buffer) as a blob of the board account, declared as
+//  |mediaType|. Calls back with the blob reference the account host gives
+//  ({ $type: 'blob', ref, mimeType, size }), which a record then names; a
+//  blob no record names is dropped by the host after a while.
+//
+function boardUploadBlob(did, body, mediaType, cb) {
+    if (!boardClient) {
+        const err = Errors.UnexpectedState(
+            'Publishing (atProto.publishing) is not enabled'
+        );
+        return setImmediate(() => cb(err));
+    }
+    return settle(
+        () =>
+            boardClient.restore(did).then(session =>
+                session
+                    .fetchHandler('/xrpc/com.atproto.repo.uploadBlob', {
+                        method: 'POST',
+                        headers: { 'Content-Type': mediaType },
+                        body,
+                    })
+                    .then(resp =>
+                        resp.text().then(text => {
+                            let parsed = {};
+                            try {
+                                parsed = text ? JSON.parse(text) : {};
+                            } catch (e) {
+                                parsed = { message: text };
+                            }
+                            if (!resp.ok || !parsed.blob) {
+                                const err = Errors.General(
+                                    `com.atproto.repo.uploadBlob failed (${resp.status}): ${
+                                        parsed.message || parsed.error || 'no blob given'
+                                    }`
+                                );
+                                err.status = resp.status;
+                                err.error = parsed.error;
+                                throw err;
+                            }
+                            return parsed.blob;
+                        })
+                    )
             ),
         cb
     );

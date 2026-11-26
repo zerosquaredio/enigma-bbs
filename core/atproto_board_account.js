@@ -46,8 +46,9 @@ const Messages = {
     notConnected: 'No board account is connected.',
     lastListing: 'Listing last published {when}.',
     instructions:
-        "To connect one, enter the board account's handle and press ENTER, then approve it in a browser. ESC goes back.",
-    actions: 'Type an announcement and choose "post"; "publish" updates the listing now.',
+        "To connect one, enter the board account's handle and press ENTER, then approve it in a browser. TAB moves between the fields; ESC goes back.",
+    actions:
+        'Type an announcement and choose "post"; "publish" updates the listing now; "splash" shows or hides the login screen on the hub.',
     splashShown: 'Splash screen: shown on the hub ({file}).',
     splashShownNone: 'Splash screen: shown on the hub, but no art was found to offer.',
     splashHidden: 'Splash screen: not shown on the hub. Choose "splash" to show it.',
@@ -150,6 +151,29 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
             lines.push(Messages.actions);
         }
         this.showStatus(lines.join('\r\n'));
+        //  nothing to connect: start where the sysop acts
+        if (account && !this.missingWords() && !this.unavailableMessage()) {
+            this.focusActions();
+        }
+    }
+
+    //  An empty handle line, with an account connected, means "on to the
+    //  actions" rather than connecting nothing
+    startLogin(formData, cb) {
+        const input = _.trim(_.get(formData, 'value.handle', ''));
+        if (!input && this.connectedAccount()) {
+            this.focusActions();
+            return cb(null);
+        }
+        return super.startLogin(formData, cb);
+    }
+
+    connectedAccount() {
+        try {
+            return AtProtoOAuth.isBoardReady() ? Publishing.getBoardAccount() : null;
+        } catch (e) {
+            return null;
+        }
     }
 
     //  What the account doesn't allow yet, in words; null when nothing

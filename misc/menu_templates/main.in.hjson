@@ -1082,6 +1082,14 @@
                         }
                     }
                     submit: {
+                        //  ENTER in the handle line connects, whatever the
+                        //  action bar shows (an empty one goes to the bar)
+                        1: [
+                            {
+                                value: handle
+                                action: @method:startLogin
+                            }
+                        ]
                         *: [
                             {
                                 value: { submission: 0 }

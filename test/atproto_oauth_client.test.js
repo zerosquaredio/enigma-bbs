@@ -579,6 +579,53 @@ describe('atproto OAuth client adapter', () => {
                     err => 400 === err.status && 'InvalidRequest' === err.error
                 );
             });
+
+            it('uploads a blob as its bytes, with the media type given, and gives its reference', async () => {
+                const blob = {
+                    $type: 'blob',
+                    ref: { $link: 'bafkreiexample' },
+                    mimeType: 'text/x-ansi',
+                    size: 3,
+                };
+                reply = { ok: true, status: 200, body: { blob } };
+                const body = Buffer.from('ANS');
+                const result = await call(
+                    OAuthClient.boardUploadBlob,
+                    'did:plc:board',
+                    body,
+                    'text/x-ansi'
+                );
+                assert.deepEqual(result, blob);
+                assert.equal(fetches[0].path, '/xrpc/com.atproto.repo.uploadBlob');
+                assert.equal(fetches[0].init.method, 'POST');
+                assert.equal(fetches[0].init.headers['Content-Type'], 'text/x-ansi');
+                assert.equal(
+                    fetches[0].init.body,
+                    body,
+                    'the bytes themselves, not JSON'
+                );
+
+                reply = { ok: false, status: 413, body: { error: 'BlobTooLarge' } };
+                await assert.rejects(
+                    call(
+                        OAuthClient.boardUploadBlob,
+                        'did:plc:board',
+                        body,
+                        'text/x-ansi'
+                    ),
+                    err => 413 === err.status && 'BlobTooLarge' === err.error
+                );
+                reply = { ok: true, status: 200, body: {} };
+                await assert.rejects(
+                    call(
+                        OAuthClient.boardUploadBlob,
+                        'did:plc:board',
+                        body,
+                        'text/x-ansi'
+                    ),
+                    /no blob given/
+                );
+            });
         });
     });
 });

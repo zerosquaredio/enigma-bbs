@@ -196,7 +196,7 @@ docker compose run --rm -v ./agent.toml:/agent.toml:ro --entrypoint ./oputil.js 
 docker compose up -d
 ```
 
-`config hub` writes the settings a hub board needs (see [oputil](../admin/oputil.md#configuration)). `BBS_IMAGE` picks the image: one built from this repository (`enigma-bbs:hub`, the default) or a published one.
+`config hub` writes the settings a hub board needs (see [oputil](../admin/oputil.md#configuration)). The image is the published one, `ghcr.io/zerosquaredio/enigma-bbs:hub` (amd64 and arm64, built when a `hub-v*` release is tagged); to run one built from this repository instead, set `BBS_IMAGE` (in `.env` beside the file) to its name.
 
 ## Building your own image
 

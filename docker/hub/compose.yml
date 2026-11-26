@@ -17,13 +17,14 @@
 #        config hub --agent /agent.toml --sysop you.bsky.social
 #    docker compose up -d
 #
-#  BBS_IMAGE picks the board's image: one you built from the fork
-#  (docker build -t enigma-bbs:hub -f docker/Dockerfile .), the default,
-#  or a published one.
+#  The board's image is the published one (built from this branch for
+#  amd64 and arm64 when a hub-v* release is tagged). To run one you built
+#  yourself (docker build -t enigma-bbs:hub -f docker/Dockerfile .), set
+#  BBS_IMAGE=enigma-bbs:hub, in a file named .env beside this one.
 
 services:
   bbs:
-    image: ${BBS_IMAGE:-enigma-bbs:hub}
+    image: ${BBS_IMAGE:-ghcr.io/zerosquaredio/enigma-bbs:hub}
     restart: unless-stopped
     volumes:
       - ./config:/enigma-bbs/config

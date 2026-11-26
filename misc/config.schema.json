@@ -1720,6 +1720,26 @@
                             "type": "boolean",
                             "default": false
                         },
+                        "splash": {
+                            "type": "object",
+                            "properties": {
+                                "art": {
+                                    "description": "The board's splash screen, offered to its hub when the sysop lets it (the board account menu's \"splash\"): ANSI art names tried in order in the pre-login theme and the general art directory, or paths to .ans files.",
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    },
+                                    "default": [
+                                        "CONNECT",
+                                        "MATRIX"
+                                    ]
+                                }
+                            },
+                            "patternProperties": {
+                                "^_": true
+                            },
+                            "additionalProperties": false
+                        },
                         "nsidPrefix": {
                             "description": "Prefix of the published record type names: nexus.cyberspace.dev while the record shapes are drafts. Published names are permanent.",
                             "type": "string",

@@ -5,10 +5,12 @@
 const AtProtoLoginModule = require('./atproto_login.js').getModule;
 const AtProtoOAuth = require('./atproto/oauth_client.js');
 const Publishing = require('./atproto/publishing.js');
+const Splash = require('./atproto/splash.js');
 const { ErrorReasons } = require('./enig_error.js');
 
 //  deps
 const _ = require('lodash');
+const paths = require('path');
 
 exports.moduleInfo = {
     name: 'AT Protocol Board Account',
@@ -26,7 +28,10 @@ exports.moduleInfo = {
 //  the template, or ID1 for root alone), and the module refuses anyone else.
 //
 //  Views as for AT login (ET1 handle, MT2 status), plus ET3, an
-//  announcement, and HM4 [connect, post, publish, disconnect, cancel].
+//  announcement, and HM4 [connect, post, publish, splash, disconnect,
+//  cancel]. "splash" turns the hub's showing of the board's splash screen
+//  on or off (core/atproto/splash.js); connecting the first time turns it
+//  on, and says so.
 //
 
 const MciViewIds = {
@@ -41,10 +46,20 @@ const Messages = {
     instructions:
         "To connect one, enter the board account's handle and press ENTER, then approve it in a browser. ESC goes back.",
     actions: 'Type an announcement and choose "post"; "publish" updates the listing now.',
+    splashShown: 'Splash screen: shown on the hub ({file}).',
+    splashShownNone: 'Splash screen: shown on the hub, but no art was found to offer.',
+    splashHidden: 'Splash screen: not shown on the hub. Choose "splash" to show it.',
+    splashOnConnect:
+        'Its login screen will be shown on the hub, credited to its artist; choose "splash" to stop that.',
+    splashOn:
+        'The hub may show the board\'s login screen ({file}), credited to its artist. Choose "splash" again to stop.',
+    splashOnNone:
+        "The hub may show the board's login screen, but no art was found to offer: see atProto.publishing.splash.art.",
+    splashOff: "The hub won't show the board's login screen any more.",
     notEnabled:
         'Publishing is off: set atProto.publishing.enabled (and restart) to use a board account.',
     nowConnected:
-        'Connected {account}, and published its listing. Choose an action below, or press ESC to go back.',
+        'Connected {account}, and published its listing.{splash} Choose an action below, or press ESC to go back.',
     connectedNotListed:
         'Connected {account}, but the listing could not be published: {error}. Choose an action below, or press ESC to go back.',
     posted: 'Posted.',
@@ -61,6 +76,7 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
         Object.assign(this.menuMethods, {
             post: (formData, extraArgs, cb) => this.postAnnouncement(formData, cb),
             publish: (formData, extraArgs, cb) => this.publishNow(cb),
+            splash: (formData, extraArgs, cb) => this.toggleSplash(cb),
             disconnect: (formData, extraArgs, cb) => this.disconnect(cb),
         });
     }
@@ -90,6 +106,14 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
     }
 
     showInitialStatus() {
+        if (undefined === this.offeredSplash) {
+            //  once, then draw again with the file's name
+            this.offeredSplash = null;
+            return Splash.find(found => {
+                this.offeredSplash = found;
+                return this.showInitialStatus();
+            });
+        }
         let account = null;
         try {
             account = AtProtoOAuth.isBoardReady() ? Publishing.getBoardAccount() : null;
@@ -110,11 +134,25 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
                 )
             );
         }
+        if (account) {
+            lines.push(this.splashLine(account));
+        }
         lines.push('', this.unavailableMessage() || Messages.instructions);
         if (account) {
             lines.push(Messages.actions);
         }
         this.showStatus(lines.join('\r\n'));
+    }
+
+    //  Whether the hub may show the splash screen, and which file it is
+    splashLine(account) {
+        if (true !== account.splashShown) {
+            return Messages.splashHidden;
+        }
+        const offered = this.offeredSplash;
+        return offered
+            ? Messages.splashShown.replace('{file}', paths.basename(offered.path))
+            : Messages.splashShownNone;
     }
 
     authorizeIdentity(did, options, cb) {
@@ -140,7 +178,11 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
                 });
                 return this.focusActions();
             }
-            this.showStatus(Messages.nowConnected, { account });
+            const shown = true === _.get(Publishing.getBoardAccount(), 'splashShown');
+            this.showStatus(Messages.nowConnected, {
+                account,
+                splash: shown ? ` ${Messages.splashOnConnect}` : '',
+            });
             return this.focusActions();
         });
     }
@@ -186,6 +228,38 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
             this.showStatus(Messages.published);
             return cb(null);
         });
+    }
+
+    toggleSplash(cb) {
+        const account = Publishing.getBoardAccount();
+        if (!account) {
+            this.showStatus(Messages.noAccount);
+            return cb(null);
+        }
+        const shown = true !== account.splashShown;
+        Publishing.setSplashShown(shown, (err, result) => {
+            if (err) {
+                this.failed(err);
+                return cb(null);
+            }
+            const splash = _.get(result, 'record.splash');
+            if (!shown) {
+                this.showStatus(Messages.splashOff);
+            } else if (splash) {
+                this.showStatus(Messages.splashOn, { file: this.splashFile(splash) });
+            } else {
+                this.showStatus(Messages.splashOnNone);
+            }
+            return cb(null);
+        });
+    }
+
+    //  The file name of the splash the listing names
+    splashFile(splash) {
+        const found = Splash.current();
+        return found && found.sha256 === splash.sha256
+            ? paths.basename(found.path)
+            : splash.sha256.slice(0, 12);
     }
 
     disconnect(cb) {

@@ -6,6 +6,7 @@ const Log = require('../../../logger').log;
 const AtProtoOAuth = require('../../../atproto/oauth_client');
 const WebSignIn = require('../../../atproto/web_sign_in');
 const BrowserHandoff = require('../../../browser_handoff');
+const Splash = require('../../../atproto/splash');
 const {
     CallbackRoutePath,
     ClientMetadataRoutePath,
@@ -68,6 +69,29 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
                     path: new RegExp(`^${_.escapeRegExp(routePath)}$`),
                     handler: (req, resp) => this._jsonHandler(resp, getDocument()),
                 });
+            });
+        }
+
+        //  the board's splash screen, for its hub (core/atproto/splash.js):
+        //  only the file the listing names, by its hash
+        if (AtProtoOAuth.isPublishingEnabled()) {
+            this.webServer.addRoute({
+                method: 'GET',
+                path: /^\/assets\/[0-9a-f]{64}$/,
+                handler: (req, resp) => {
+                    const match = Splash.AssetPathRe.exec(req.url);
+                    const body = match ? Splash.served(match[1]) : null;
+                    if (!body) {
+                        return this.webServer.fileNotFound(resp);
+                    }
+                    return this.webServer.ok(resp, body, {
+                        'Content-Type': 'text/x-ansi',
+                        'Content-Length': String(body.length),
+                        'Cache-Control': 'public, max-age=31536000, immutable',
+                        'X-Content-Type-Options': 'nosniff',
+                        'Content-Security-Policy': "default-src 'none'; sandbox",
+                    });
+                },
             });
         }
 

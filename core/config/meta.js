@@ -987,6 +987,12 @@ module.exports = {
         items: { type: 'string' },
         description: 'Languages announcements are written in, as BCP-47 tags.',
     },
+    'atProto.publishing.splash.art': {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+            "The board's splash screen, offered to its hub when the sysop lets it (the board account menu's \"splash\"): ANSI art names tried in order in the pre-login theme and the general art directory, or paths to .ans files.",
+    },
     'atProto.publishing.listing.description': { type: 'string' },
     'atProto.publishing.listing.tags': {
         type: 'array',

@@ -8,6 +8,7 @@ const { Errors, ErrorReasons } = require('../enig_error');
 const { dbs } = require('../database');
 const { getBaseUrl } = require('../web_util');
 const AtProtoOAuth = require('./oauth_client');
+const Splash = require('./splash');
 const { recordTypes, DefaultNsidPrefix, PostCollection } = require('./const');
 
 //  deps
@@ -42,6 +43,7 @@ exports.buildListing = buildListing;
 exports.publishListing = publishListing;
 exports.setStatus = setStatus;
 exports.post = post;
+exports.setSplashShown = setSplashShown;
 exports.buildPost = buildPost;
 exports.startup = startup;
 exports.StatusStates = ['up', 'maintenance', 'degraded', 'down'];
@@ -83,9 +85,12 @@ function getStore() {
     if (!store) {
         const db = dbs.atproto;
         const select = db.prepare('SELECT * FROM board_account WHERE id = 1');
+        //  reconnecting keeps the sysop's answer about the splash screen
         const upsert = db.prepare(
-            `REPLACE INTO board_account (id, did, handle, connected_timestamp)
-            VALUES (1, ?, ?, ?)`
+            `INSERT INTO board_account (id, did, handle, connected_timestamp)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET did = excluded.did, handle = excluded.handle,
+                connected_timestamp = excluded.connected_timestamp`
         );
         const del = db.prepare('DELETE FROM board_account WHERE id = 1');
         const listed = db.prepare(
@@ -94,18 +99,23 @@ function getStore() {
         const posted = db.prepare(
             'UPDATE board_account SET post_timestamp = ? WHERE id = 1'
         );
+        const splash = db.prepare(
+            'UPDATE board_account SET splash_shown = ?, splash_timestamp = ? WHERE id = 1'
+        );
         store = {
             get: () => select.get(),
             set: (did, handle, ts) => upsert.run(did, handle || null, ts),
             del: () => del.run(),
             listed: (hash, ts) => listed.run(hash, ts),
             posted: ts => posted.run(ts),
+            splash: (shown, ts) => splash.run(shown ? 1 : 0, ts),
         };
     }
     return store;
 }
 
-//  { did, handle, connectedAt, listingPublishedAt, lastPostAt }, or null
+//  { did, handle, connectedAt, listingPublishedAt, lastPostAt, splashShown,
+//  splashAt }, or null. splashShown is undefined until the sysop answers
 function getBoardAccount() {
     const row = getStore().get();
     return row
@@ -115,6 +125,11 @@ function getBoardAccount() {
               connectedAt: row.connected_timestamp,
               listingPublishedAt: row.listing_timestamp || undefined,
               lastPostAt: row.post_timestamp || undefined,
+              splashShown:
+                  null === row.splash_shown || undefined === row.splash_shown
+                      ? undefined
+                      : 1 === row.splash_shown,
+              splashAt: row.splash_timestamp || undefined,
           }
         : null;
 }
@@ -132,12 +147,18 @@ function requireAccount() {
 
 //
 //  |identity| ({ did, handle }) has just approved the board's write access
-//  (authorizeBoard()): make it the board account, and publish the listing
+//  (authorizeBoard()): make it the board account, and publish the listing.
+//  Connecting is when the sysop is told the hub will show the board's splash
+//  screen (the screen says so, and how to stop it): the first time, that
+//  is their answer, yes; later connections keep whatever they chose.
 //
 function connectBoardAccount(identity, cb) {
     try {
         const previous = getBoardAccount();
         getStore().set(identity.did, identity.handle, nowSeconds());
+        if (!previous || undefined === previous.splashShown) {
+            getStore().splash(true, nowSeconds());
+        }
         Log.info(
             { did: identity.did, previous: previous ? previous.did : undefined },
             'Board AT account connected'
@@ -146,6 +167,22 @@ function connectBoardAccount(identity, cb) {
         return setImmediate(() => cb(err));
     }
     return publishListing({ force: true }, cb);
+}
+
+//
+//  The sysop's answer: may the hub show the board's splash screen? Kept with
+//  when it was given, and the listing published again to say so. Calls back
+//  with (err, { written, record }).
+//
+function setSplashShown(shown, cb) {
+    try {
+        requireAccount();
+        getStore().splash(!!shown, nowSeconds());
+        Log.info({ shown: !!shown }, 'Board splash screen on the hub');
+    } catch (err) {
+        return setImmediate(() => cb(err));
+    }
+    return publishListing({}, cb);
 }
 
 //
@@ -294,7 +331,9 @@ function hoursFrom(hours) {
 //  The listing record as the config describes the board now. |createdAt| is
 //  when the board account was connected, so it doesn't change on every write.
 //
-function buildListing(config = Config(), account = getBoardAccount()) {
+//  |splash|: the board's splash screen (splash.js), when the sysop lets the
+//  hub show it
+function buildListing(config = Config(), account = getBoardAccount(), splash = null) {
     const listing = _.get(config, 'atProto.publishing.listing', {});
     const Admission = require('./admission');
 
@@ -345,6 +384,13 @@ function buildListing(config = Config(), account = getBoardAccount()) {
         );
     }
     record.rating = rating;
+    if (splash) {
+        record.splash = {
+            sha256: splash.sha256,
+            size: splash.size,
+            mediaType: splash.mediaType,
+        };
+    }
     const labels = exports.RatingLabels[rating];
     if (labels.length > 0) {
         record.labels = {
@@ -369,19 +415,30 @@ function publishListing(options, cb) {
     }
 
     let account;
+    try {
+        account = requireAccount();
+    } catch (err) {
+        return setImmediate(() => cb(err));
+    }
+    //  the splash, found again each time, so new art is offered by itself
+    const withSplash = next =>
+        true === account.splashShown ? Splash.find(Config(), next) : next(null);
+    withSplash(splash => writeListing(account, splash, options, cb));
+}
+
+function writeListing(account, splash, options, cb) {
     let record;
     let hash;
     try {
-        account = requireAccount();
-        record = buildListing(Config(), account);
+        record = buildListing(Config(), account, splash);
         hash = hashOf(record);
     } catch (err) {
-        return setImmediate(() => cb(err));
+        return cb(err);
     }
 
     const row = getStore().get();
     if (!options.force && row && row.listing_hash === hash) {
-        return setImmediate(() => cb(null, { written: false, record }));
+        return cb(null, { written: false, record });
     }
 
     const moved = _.get(Config(), 'atProto.publishing.triggers.moved', {});

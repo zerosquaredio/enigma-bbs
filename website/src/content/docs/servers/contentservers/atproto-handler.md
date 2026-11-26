@@ -74,6 +74,7 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `atProto.publishing.enabled` | Boolean. Let a sysop connect [the board's own account](#the-boards-own-account). | `false` |
 | `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`, `rating`. | (empty) |
 | `atProto.publishing.triggers.moved` | Object. `enabled` and `message`: post the new addresses when the listing's addresses change. | off |
+| `atProto.publishing.splash.art` | Array. The [splash screen](#its-splash-screen) offered to the board's hub: ANSI art names, tried in order in the pre-login theme and the general art directory, or paths to `.ans` files. | `[ "CONNECT", "MATRIX" ]` |
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
 | `atProto.publishing.postLangs` | Array. Languages announcements are written in. | `["en"]` |
 | `atProto.publishing.nsidPrefix` | String. Prefix of the published record names. | `nexus.cyberspace.dev` |
@@ -268,6 +269,19 @@ The menu is for sysops: its `config.acs` is `GM[sysops]` in the template. Change
 
 **A "we've moved" post.** With `triggers.moved.enabled`, when the listing's addresses change (the board has moved to another hub, or to its own address), the board posts the new ones from its account, which its followers see wherever it went. The message is `triggers.moved.message`, with `{boardName}` and `{addresses}` filled in; addresses that don't fit in a post are left off. Nothing is posted for the first listing, for other changes, or when no address is left to list. It counts as an announcement, so it waits for `minPostIntervalSeconds`; if it can't be posted, the listing is still published.
 
+### Its Splash Screen
+
+A hub can show the board's splash screen, the ANSI art callers first see, on its directory and on the board's own page there, credited to its artist. The board offers it only with the sysop's say-so:
+
+- **Connecting the board account** the first time turns it on, and the screen says so: "Its login screen will be shown on the hub, credited to its artist; choose "splash" to stop that." The answer is kept, with when it was given; connecting again later keeps it. A board account connected before this existed isn't assumed to agree: it stays off until the sysop turns it on.
+- **"splash"** on the board account menu turns it off, or on again. So does `./oputil.js atproto splash off` (or `on`).
+
+**Which art.** By default the board's `CONNECT` art, if its pre-login theme (`theme.preLogin`) or the general art directory has one, otherwise its login matrix (`MATRIX`), as a menu would find them (`NAME.ANS`, or the first random variant, `NAME1.ANS`). `atProto.publishing.splash.art` names other art, in order, or `.ans` files by path. Only ANSI art up to 64 KB is offered.
+
+**How it reaches the hub.** The listing names the file by its SHA-256 and size (`splash`); the board serves it as it is at `/assets/<sha256>`, and only that file. The hub cleans it (nothing but characters and colors survives), blanks ENiGMA½'s menu codes so none of the board's live details show, draws it, and takes the credit from its SAUCE record. When the art changes, the next listing names the new file by itself.
+
+**The art must be the sysop's to share.** Agreeing covers the board; it can't give away an artist's rights. Art made for the board, or under a licence that allows it, is fine. A hub may also refuse art it hasn't cleared, such as ENiGMA½'s stock themes.
+
 **From the command line**, using the stored session, whether or not the board is running:
 
 ```shell
@@ -275,6 +289,7 @@ The menu is for sysops: its `config.acs` is `GM[sysops]` in the template. Change
 ./oputil.js atproto publish                     # the listing, if it changed (--force: anyway)
 ./oputil.js atproto status maintenance --message "New hardware" --until 2026-12-01T20:00Z
 ./oputil.js atproto post "Door games night this Friday!"
+./oputil.js atproto splash off                  # stop the hub showing the splash screen (on: again)
 ```
 
 Posts are plain text, up to 300 characters, with web links made clickable, and at most one per `minPostIntervalSeconds`. They are public and effectively permanent: Bluesky honors deletes, but copies may persist.
@@ -364,5 +379,6 @@ With presence on the hub set up, members can open the hub's common space from in
 | `/_enig/atproto/jwks.json` | Public mode only: the public half of the signing key. |
 | `/_enig/signin` | [Web sign-in](#web-sign-in) only: the start page (`GET`) and its form (`POST`). |
 | `/_enig/signout` | Web sign-in only: signs the browser out (`POST`). |
+| `/assets/<sha256>` | With publishing on: the [splash screen](#its-splash-screen) the listing names, and nothing else. |
 
-Behind a reverse proxy, forward `/_enig/handoff/` and `/_enig/atproto/`, and for web sign-in `/_enig/signin` and `/_enig/signout`.
+Behind a reverse proxy, forward `/_enig/handoff/` and `/_enig/atproto/`, for web sign-in `/_enig/signin` and `/_enig/signout`, and for the splash screen `/assets/`.

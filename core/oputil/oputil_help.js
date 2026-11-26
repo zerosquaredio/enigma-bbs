@@ -30,7 +30,7 @@ Commands:
   atproto                   AT Protocol (Bluesky) invites, and the board account
 `,
     AtProto: `usage: oputil.js atproto <invite|invite-code> <action> [<arguments>]
-       oputil.js atproto <board|publish|status|post> [<arguments>]
+       oputil.js atproto <board|publish|status|post|splash> [<arguments>]
 
 Invites and invite codes admit new users who log in with Bluesky, when
 atProto.admission.policy includes "invite" or "invite-code". They work on a
@@ -47,6 +47,9 @@ Board account:
   status STATE                 Publish the board's status: up, maintenance,
                                degraded or down (--message TEXT, --until DATE)
   post TEXT...                 Post an announcement to Bluesky (public!)
+  splash on|off                Let the hub show the board's splash screen,
+                               credited to its artist, or stop it (the
+                               board account menu's "splash" does the same)
 
 Invites:
   invite add HANDLE|DID        Invite one Bluesky account, used once when it

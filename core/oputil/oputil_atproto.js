@@ -262,6 +262,41 @@ function boardShow() {
         );
         console.info(`Status        : ${types.status}`);
         console.info(`Last post     : ${when(account.lastPostAt)}`);
+        const Splash = require('../atproto/splash');
+        Splash.find(found => {
+            const answer =
+                undefined === account.splashShown
+                    ? 'not asked yet: not shown'
+                    : account.splashShown
+                      ? `shown (since ${when(account.splashAt)})`
+                      : `not shown (since ${when(account.splashAt)})`;
+            console.info(`Splash        : ${answer}`);
+            console.info(
+                `Splash art    : ${found ? `${found.path} (${found.sha256.slice(0, 12)})` : 'none found'}`
+            );
+        });
+    });
+}
+
+function splash(answer) {
+    if (!['on', 'off'].includes(answer)) {
+        return printUsageAndSetExitCode(getHelpFor('AtProto'), ExitCodes.ERROR);
+    }
+    withBoardAccount(Publishing => {
+        Publishing.setSplashShown('on' === answer, (err, result) => {
+            if (err) {
+                return fail(`Could not change it: ${err.reason || err.message}`);
+            }
+            const offered = _.get(result, 'record.splash');
+            if ('off' === answer) {
+                return console.info("The hub won't show the board's splash screen.");
+            }
+            console.info(
+                offered
+                    ? `The hub may show the board's splash screen (${offered.sha256.slice(0, 12)}), credited to its artist.`
+                    : 'The hub may show the splash screen, but no art was found: see atProto.publishing.splash.art.'
+            );
+        });
     });
 }
 
@@ -320,6 +355,7 @@ function handleAtProtoCommand() {
         board: boardShow,
         publish,
         status: () => (action ? status(String(action)) : usage()),
+        splash: () => splash(String(action || '')),
         //  the rest of the words, so quotes are optional
         post: () => {
             const text = argv._.slice(2).map(String).join(' ');

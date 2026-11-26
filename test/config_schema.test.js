@@ -380,6 +380,7 @@ describe('config schema against config_default.js', () => {
             'atProto.publishing.minPostIntervalSeconds',
             'atProto.publishing.nsidPrefix',
             'atProto.publishing.postLangs',
+            'atProto.publishing.splash.art',
             'atProto.publishing.triggers.moved.enabled',
             'atProto.publishing.triggers.moved.message',
             'atProto.webSignIn.allowedOrigins',

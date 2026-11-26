@@ -714,6 +714,13 @@ module.exports = () => {
             //  and posts announcements. Nothing about members is published.
             publishing: {
                 enabled: false,
+                //  the board's splash screen, offered to its hub when the
+                //  sysop lets it (the board account screen's "splash"):
+                //  ANSI art names, tried in order in the pre-login theme
+                //  and the general art directory, or paths to .ans files
+                splash: {
+                    art: ['CONNECT', 'MATRIX'],
+                },
                 //  record type names: the draft "nexus.cyberspace.dev" until
                 //  the record shapes are final; published names are permanent
                 nsidPrefix: 'nexus.cyberspace.dev',

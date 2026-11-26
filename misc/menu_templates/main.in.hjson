@@ -1073,7 +1073,7 @@
                         }
                         HM4: {
                             argName: submission
-                            items: [ "connect", "post", "publish", "disconnect", "cancel" ]
+                            items: [ "connect", "post", "publish", "splash", "disconnect", "cancel" ]
                             submit: true
                             //  The plain-text art has no colors
                             styleSGR1: "|00|08"
@@ -1097,10 +1097,14 @@
                             }
                             {
                                 value: { submission: 3 }
-                                action: @method:disconnect
+                                action: @method:splash
                             }
                             {
                                 value: { submission: 4 }
+                                action: @method:disconnect
+                            }
+                            {
+                                value: { submission: 5 }
                                 action: @systemMethod:prevMenu
                             }
                         ]

@@ -1485,11 +1485,13 @@ const DB_INIT_TABLE = {
 //    3: invites and invite codes (see core/atproto/admission/store.js)
 //    4: the board's own AT account and its write session (see
 //       core/atproto/publishing.js)
+//    5: whether the board's splash screen is shown on its hub, and since
+//       when (board_account.splash_*)
 //
 //  Created with the other databases whether or not atProto.enabled is set,
 //  as activitypub.sqlite3 is; it simply stays empty while AT login is off.
 //
-const ATPROTO_DB_VERSION_LATEST = 4;
+const ATPROTO_DB_VERSION_LATEST = 5;
 
 function initAtProtoDatabase(db) {
     db.exec(`
@@ -1569,9 +1571,25 @@ function initAtProtoDatabase(db) {
             connected_timestamp INTEGER NOT NULL,
             listing_hash        VARCHAR,            --  of the listing last written
             listing_timestamp   INTEGER,
-            post_timestamp      INTEGER             --  last announcement
+            post_timestamp      INTEGER,            --  last announcement
+            --  the sysop's answer: may the hub show the board's splash
+            --  screen (1) or not (0); and when it was given
+            splash_shown        INTEGER,
+            splash_timestamp    INTEGER
         );
     `);
+
+    //  version 5: boards connected before it gain the splash columns
+    for (const column of ['splash_shown', 'splash_timestamp']) {
+        const row = db
+            .prepare(
+                "SELECT COUNT(*) AS cnt FROM pragma_table_info('board_account') WHERE name = ?"
+            )
+            .get(column);
+        if (row && 0 === row.cnt) {
+            db.exec(`ALTER TABLE board_account ADD COLUMN ${column} INTEGER`);
+        }
+    }
 
     if (db.pragma('user_version', { simple: true }) < ATPROTO_DB_VERSION_LATEST) {
         db.pragma(`user_version = ${ATPROTO_DB_VERSION_LATEST}`);

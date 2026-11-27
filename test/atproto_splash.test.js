@@ -124,6 +124,20 @@ describe("AT publishing: the board's splash screen", () => {
             );
         });
 
+        it("is the framework's own connect screen on the stock theme, which isn't stock art", async () => {
+            //  the real art folders, as a board on ENiGMA½'s stock theme has them
+            testConfig.paths.themes = paths.join(__dirname, '..', 'art', 'themes');
+            testConfig.paths.art = paths.join(__dirname, '..', 'art', 'general');
+            testConfig.theme = {
+                default: 'luciano_blocktronics',
+                preLogin: 'luciano_blocktronics',
+            };
+            const found = await new Promise(r => Splash.find(r));
+            assert.equal(paths.basename(found.path), 'CONNECT.ANS');
+            assert.equal(paths.basename(paths.dirname(found.path)), 'general');
+            assert.equal(Publishing.isStockArt(found.sha256), false, 'ours to offer');
+        });
+
         it('is the login matrix when there is no CONNECT art, from the general art if need be', async () => {
             write(paths.join(root, 'general'), 'MATRIX1.ANS', Matrix);
             const found = await new Promise(r => Splash.find(r));

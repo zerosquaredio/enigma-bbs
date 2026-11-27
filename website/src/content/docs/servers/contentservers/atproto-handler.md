@@ -283,7 +283,7 @@ A hub can show the board's splash screen, the ANSI art callers first see, on its
 
 A board that agreed before consent was to a file keeps showing the art it offers now, unless that is ENiGMA½'s stock art, which then stops, with the same message.
 
-**Which art.** By default the board's `CONNECT` art, if its pre-login theme (`theme.preLogin`) or the general art directory has one, otherwise its login matrix (`MATRIX`), as a menu would find them (`NAME.ANS`, or the first random variant, `NAME1.ANS`). `atProto.publishing.splash.art` names other art, in order, or `.ans` files by path. Only ANSI art up to 64 KB is offered.
+**Which art.** By default the board's `CONNECT` art, if its pre-login theme (`theme.preLogin`) or the general art directory has one, otherwise its login matrix (`MATRIX`), as a menu would find them (`NAME.ANS`, or the first random variant, `NAME1.ANS`). `atProto.publishing.splash.art` names other art, in order, or `.ans` files by path. Only ANSI art up to 64 KB is offered. The fork ships a `CONNECT` screen of its own in the general art directory (`art/general/CONNECT.ANS`, a synthwave sunset, CC BY 4.0), so a board on the stock theme, which has none, offers that rather than the stock login matrix; a theme's own `CONNECT` art comes first.
 
 **How it reaches the hub.** The listing names the file by its SHA-256 and size (`splash`); the board serves it as it is at `/assets/<sha256>`, and only that file. The hub cleans it (nothing but characters and colors survives), blanks ENiGMA½'s menu codes so none of the board's live details show, draws it, and takes the credit from its SAUCE record. When the art changes, the listing names no splash until the sysop agrees to the new file (above).
 

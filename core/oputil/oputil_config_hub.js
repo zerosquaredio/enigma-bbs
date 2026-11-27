@@ -24,6 +24,7 @@ exports.parseAgentConfig = parseAgentConfig;
 exports.applyHubSettings = applyHubSettings;
 exports.enableLoginMenu = enableLoginMenu;
 exports.enableMainMenu = enableMainMenu;
+exports.useFrameworkMenuArt = useFrameworkMenuArt;
 exports.resolveSysop = resolveSysop;
 exports.TokenFile = 'security/hub_token';
 
@@ -163,6 +164,20 @@ function enableMainMenu(text) {
     return /@menu:boardAtProtoAccount/.test(stripMenuDefinitions(stripComments(text)))
         ? { text, changed: false }
         : null;
+}
+
+//
+//  The main menu's art as the framework's own (art/general/CYBMENU.ANS, CC
+//  BY), in place of the stock theme's, when the menu file still names the
+//  template's (MMENU): art a sysop named is theirs, and left as it is.
+//  null when there's nothing to change.
+//
+function useFrameworkMenuArt(text) {
+    const stock = /(\bmainMenu\s*:\s*\{[^{}]*?\bart\s*:\s*)MMENU\b/;
+    if (!stock.test(text)) {
+        return null;
+    }
+    return { text: text.replace(stock, '$1CYBMENU'), changed: true };
 }
 
 function stripComments(text) {
@@ -390,6 +405,10 @@ async function handleHubSetup() {
         notes.push(
             `The AT, BA, HP and HS commands weren't found in ${mainPath}; add them from misc/menu_templates/main.in.hjson`
         );
+    }
+    //  the framework's own main menu art, unless the sysop keeps the stock
+    if (true !== argv['stock-menu']) {
+        edit(mainPath, useFrameworkMenuArt, "the framework's main menu art (CYBMENU)");
     }
     if (
         !includes.some(path => edit(path, enableLoginMenu, 'the "bluesky login" option'))

@@ -10,6 +10,7 @@ const {
     applyHubSettings,
     enableLoginMenu,
     enableMainMenu,
+    useFrameworkMenuArt,
     resolveSysop,
 } = require('../core/oputil/oputil_config_hub.js');
 
@@ -210,6 +211,41 @@ describe('oputil config hub', () => {
                 ),
                 null
             );
+        });
+    });
+
+    describe("the framework's main menu art", () => {
+        it("replaces the template's MMENU in the main menu, and nothing else", () => {
+            const text = fs.readFileSync(paths.join(Templates, 'main.in.hjson'), 'utf8');
+            const result = useFrameworkMenuArt(text);
+            assert.equal(result.changed, true);
+            const menus = hjson.parse(result.text).menus;
+            assert.equal(menus.mainMenu.art, 'CYBMENU');
+            //  every other menu as it was
+            const before = hjson.parse(text).menus;
+            for (const name of Object.keys(before).filter(n => 'mainMenu' !== n)) {
+                assert.deepEqual(menus[name], before[name], name);
+            }
+            //  and again: nothing more to change
+            assert.equal(useFrameworkMenuArt(result.text), null);
+        });
+
+        it('leaves art the sysop named alone', () => {
+            const own = '{ menus: { mainMenu: { desc: Main, art: MYMENU, prompt: x } } }';
+            assert.equal(useFrameworkMenuArt(own), null);
+            assert.equal(useFrameworkMenuArt('{ menus: {} }'), null);
+        });
+
+        it('is art that exists, and draws as the stock menu does', () => {
+            const art = fs.readFileSync(
+                paths.join(__dirname, '../art/general/CYBMENU.ANS')
+            );
+            const body = art.subarray(0, art.indexOf(0x1a)).toString('latin1');
+            for (const code of ['%BN(l)', '%RR1', '%ND']) {
+                assert.ok(body.includes(code), code);
+            }
+            //  full-width rows wrap, as on a BBS terminal: no line breaks
+            assert.ok(!body.includes('\r\n'));
         });
     });
 

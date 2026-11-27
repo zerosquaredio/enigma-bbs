@@ -220,6 +220,8 @@ hub arguments:
   --sysop HANDLE|DID       Your own Bluesky account: the board's first user
                            and sysop (atProto.login.rootDid)
   --bluesky-only           Bluesky login only: no passwords
+  --stock-menu             keep the stock main menu art (by default the main
+                           menu gets the framework's own, art/general/CYBMENU.ANS)
   --hub URL                The hub's address, if the agent config lacks it
   --address URL            The board's address on the hub, likewise
   --yes                    Ask nothing; take the above as given

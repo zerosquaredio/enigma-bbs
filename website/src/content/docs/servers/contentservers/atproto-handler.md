@@ -74,7 +74,8 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `atProto.publishing.enabled` | Boolean. Let a sysop connect [the board's own account](#the-boards-own-account). | `false` |
 | `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`, `rating`. | (empty) |
 | `atProto.publishing.triggers.moved` | Object. `enabled` and `message`: post the new addresses when the listing's addresses change. | off |
-| `atProto.publishing.assets` | Array. The board's [art](#its-art), published for hubs to show: each an art name or path, or an object with `art`, `name`, `description`, `licence`, `rating`, `themes` and `credit`. | `[]` |
+| `atProto.publishing.assets` | Array. The board's [art](#its-art), published for hubs to show: each an art name or path, or an object with `art`, `name`, `description`, `licence`, `rating`, `themes` and `credit`. A [3D model](#3d-models) has `model` and `image` in place of `art`. | `[]` |
+| `atProto.publishing.models.maxBytes` | Number. The largest [3D model](#3d-models) file (and preview picture) published, in bytes. | `8388608` (8 MB) |
 | `atProto.publishing.emblem.art` | String. The board's [emblem](#its-emblem), a small logo for its hub's map: an ANSI art name or a path to an `.ans` file. Naming one offers it. | (none) |
 | `atProto.publishing.splash.art` | Array. The [splash screen](#its-splash-screen) offered to the board's hub: ANSI art names, tried in order in the pre-login theme and the general art directory, or paths to `.ans` files. | `[ "CONNECT", "MATRIX" ]` |
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
@@ -305,9 +306,37 @@ assets: [
 ]
 ```
 
-Each piece is uploaded to the account's host and published as an asset record (`asset.item`), keyed by its file's SHA-256, with a catalogue of them (`asset.catalogue`). Unchanged art isn't uploaded again, and pieces taken off the list are deleted. Credit comes from each file's SAUCE record, which a hub reads when it draws the art; `credit` adds to it. A piece without a `licence` says it is shown with the board's consent, and to ask before any other use. It is published at startup and when the config changes, or at once with `./oputil.js atproto assets`.
+Each piece is uploaded to the account's host and published as an asset record (`asset.item`), keyed by its file's SHA-256, with a catalogue of them (`asset.catalogue`). Unchanged art isn't uploaded again, and pieces taken off the list are deleted, down to the last: with the list emptied, everything published from it is taken down. Credit comes from each file's SAUCE record, which a hub reads when it draws the art; `credit` adds to it. A piece without a `licence` says it is shown with the board's consent, and to ask before any other use. It is published at startup and when the config changes, or at once with `./oputil.js atproto assets`.
 
 **Everything published is public, and must be the board's to share.** Art made for the board, or under a licence that allows it, is fine; give its licence. ENiGMA½'s own theme art belongs to its artists.
+
+#### 3D Models
+
+A piece can be a 3D model instead of ANSI art. Its entry names two files in place of `art`: `model`, a binary glTF file (`.glb`), and `image`, a PNG picture of it, which a hub shows wherever it can't show the model itself (in its gallery, and to visitors without scripts). Both are needed. The other fields are those art has:
+
+```hjson
+assets: [
+    "WELCOME"
+    {
+        model: "/enigma-bbs/config/models/clock.glb"
+        image: "/enigma-bbs/config/models/clock.png"
+        name: "Brass Clock"
+        description: "A brass mantel clock, its pendulum swinging"
+        licence: { id: "CC-BY-4.0", url: "https://creativecommons.org/licenses/by/4.0/" }
+        credit: { author: "Ana" }
+    }
+]
+```
+
+Both are paths to files, absolute or relative to the board's directory (where `main.js` is), as a path to an `.ans` file is; neither is looked for by name in the theme or art directories. An entry is art or a model, never both: list them as two.
+
+Both files are uploaded to the account's host, and one record is published, keyed by the model file's SHA-256, naming the model and then its picture. A model that hasn't changed isn't uploaded again; with a new picture, only the picture is. Taking the entry off the list deletes its record, as for art. A name not given is the model's file name.
+
+Before uploading, the board checks that the model is a binary glTF file, version 2, whose header gives the file's own length, that the picture is a PNG, and that neither is over `atProto.publishing.models.maxBytes` (8 MB unless set). An entry that fails, or that can't be published as written (no `image`, say), is left out, the rest is published, and the log and `./oputil.js atproto assets` say why, naming the limit when that was it; `oputil` then ends with an error status.
+
+A model already published isn't taken down because its entry stops passing or its files can't be found, as when a file is being copied over just as the board publishes. Records are kept by the file's hash, so the board can't tell which one belonged to the failing entry: while any listed model is left out, every model published earlier stays as it is, in the catalogue too, and `oputil` says how many were left. Mend the entry, or take it off the list, and the next publish deletes what is no longer listed. Art taken off the list is deleted either way.
+
+If the account's host refuses a file (it has an upload limit of its own), publishing stops there and what the host said is passed on, with the file's name. Nothing listed after that file is published, and nothing is deleted, until the file is fixed or its entry taken off the list. A hub checks a model much more closely before showing it, and has limits of its own: a model published here is one the hub may still decline.
 
 **From the command line**, using the stored session, whether or not the board is running:
 

@@ -307,20 +307,38 @@ function publishArt() {
                 `The board account doesn't allow publishing art yet (missing ${missing.join(' ')}): connect it again from the board account menu`
             );
         }
-        const Assets = require('../atproto/assets');
-        if (0 === Assets.pieces().length) {
-            return console.info('No art is listed: see atProto.publishing.assets.');
-        }
-        Assets.publishAssets((err, result) => {
+        //  also with nothing listed: what was published is then taken down
+        require('../atproto/assets').publishAssets((err, result) => {
             if (err) {
                 return fail(`Could not publish the art: ${err.reason || err.message}`);
             }
-            console.info(
-                `Art published: ${result.added.length} new, ${result.kept.length} unchanged, ${result.removed.length} removed.`
-            );
+            const held = result.held || [];
+            const listed =
+                result.added.length +
+                result.kept.length +
+                result.missing.length +
+                (result.refused || []).length;
+            if (0 === listed) {
+                console.info('No art is listed: see atProto.publishing.assets.');
+            }
+            if (listed || result.removed.length) {
+                console.info(
+                    `Art published: ${result.added.length} new, ${result.kept.length} unchanged, ${result.removed.length} removed.`
+                );
+            }
             if (result.missing.length) {
                 console.info(`Not found, so left out: ${result.missing.join(', ')}`);
             }
+            if (held.length) {
+                console.info(
+                    `Left as published: ${held.length} model${1 === held.length ? '' : 's'} no longer matching the list, since a listed model could not be read or was refused. Mend that entry, or take it off the list, and publish again.`
+                );
+            }
+            //  entries that can't be published as they are (a model that
+            //  is too large, say)
+            (result.refused || []).forEach(r =>
+                fail(`Not published: ${r.entry}: ${r.reason}`)
+            );
         });
     });
 }

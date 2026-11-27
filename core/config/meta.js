@@ -996,7 +996,13 @@ module.exports = {
     'atProto.publishing.assets': {
         type: 'array',
         description:
-            "The board's art, published from its account as asset records for hubs to show: each an ANSI art name or path, or an object with art, name, description, licence ({ id, url, text }), rating, themes and credit. Public: list only art that is the board's to share.",
+            "The board's art, published from its account as asset records for hubs to show: each an ANSI art name or path, or an object with art, name, description, licence ({ id, url, text }), rating, themes and credit. A 3D model has, in place of art, model (a path to a .glb file) and image (a path to its preview PNG). Public: list only art that is the board's to share.",
+    },
+    'atProto.publishing.models.maxBytes': {
+        type: 'number',
+        min: 1,
+        description:
+            'The largest 3D model file (and preview picture) the board publishes, in bytes; a larger one is refused, with this limit named. A hub or the account host may take less.',
     },
     'atProto.publishing.emblem.art': {
         type: 'string',

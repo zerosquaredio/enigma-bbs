@@ -11,6 +11,9 @@ const Splash = require('./splash');
 
 //  deps
 const _ = require('lodash');
+const crypto = require('crypto');
+const fs = require('graceful-fs');
+const paths = require('path');
 
 //
 //  The board's art, published from its own AT account as asset records
@@ -20,14 +23,29 @@ const _ = require('lodash');
 //  board is offline, then cleans, draws and credits each piece itself.
 //
 //  Each record is keyed by its file's SHA-256, so unchanged art is never
-//  uploaded again; pieces taken off the list are deleted. Everything here
-//  is public, and the art must be the board's to share: each piece says its
-//  licence.
+//  uploaded again; pieces taken off the list are deleted, the last of them
+//  too. Everything here is public, and the art must be the board's to
+//  share: each piece says its licence.
+//
+//  A piece may be a 3D model instead (3D slice build spec §3): a binary
+//  glTF file (.glb) and the PNG picture that stands for it where a model
+//  can't be shown. Both are uploaded, and the one record, keyed by the
+//  model's SHA-256, has two versions: the model, then its picture. Only a
+//  file's header is checked here, and its size: the hub checks the rest.
+//  A listed model that can't be read just now (its file half copied, say)
+//  doesn't take down what was published: see publishAssets().
 //
 
 exports.pieces = pieces;
 exports.buildItem = buildItem;
+exports.buildModelItem = buildModelItem;
 exports.publishAssets = publishAssets;
+exports.DefaultModelMaxBytes = 8 * 1024 * 1024;
+
+const GlbMediaType = 'model/gltf-binary';
+const PngMediaType = 'image/png';
+const PngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MB = 1024 * 1024;
 
 //  for pieces that don't give one
 const DefaultLicence = {
@@ -46,20 +64,57 @@ const text = (value, max) =>
 
 //
 //  The pieces the sysop lists, normalized: { art, name, description,
-//  licence, rating, themes, credit }, each naming its art by name or path.
-//  Entries that don't name any are left out, with a warning.
+//  licence, rating, themes, credit }, each naming its art by name or path;
+//  a model has { model, image }, both paths, in place of |art|. Entries
+//  that can't be published as written are left out, with a warning.
 //
 function pieces(config = Config()) {
-    const listed = _.castArray(_.get(config, 'atProto.publishing.assets', []));
+    return listed(config).pieces;
+}
+
+//  What an entry names, for messages about it
+const entryLabel = (piece, i) =>
+    (_.isPlainObject(piece) &&
+        (text(piece.name, 80) || text(piece.model, 1024) || text(piece.art, 1024))) ||
+    `entry ${i + 1}`;
+
+//
+//  As pieces(), with the entries that can't be published as written:
+//  { pieces, refused: [ { entry, reason } ], modelsRefused }, the last
+//  counting those of |refused| that are models, or meant as one.
+//
+function listed(config) {
+    const entries = _.castArray(_.get(config, 'atProto.publishing.assets', []));
     const out = [];
-    listed.forEach((entry, i) => {
+    const refused = [];
+    let modelsRefused = 0;
+    entries.forEach((entry, i) => {
         const piece = _.isString(entry) ? { art: entry } : entry;
-        if (!_.isPlainObject(piece) || !text(piece.art, 1024)) {
+        const isModel = _.isPlainObject(piece) && !!text(piece.model, 1024);
+        const refuse = reason => {
             Log.warn(
-                { index: i },
-                'atProto.publishing.assets: an entry names no art; left out'
+                { index: i, reason },
+                'atProto.publishing.assets: an entry cannot be published; left out'
             );
-            return;
+            refused.push({ entry: entryLabel(piece, i), reason });
+            if (_.isPlainObject(piece) && (piece.model || piece.image)) {
+                modelsRefused += 1;
+            }
+        };
+        if (!_.isPlainObject(piece) || (!isModel && !text(piece.art, 1024))) {
+            return refuse(
+                'it names no art and no model: give "art", or "model" and "image"'
+            );
+        }
+        if (isModel && text(piece.art, 1024)) {
+            return refuse(
+                'it names both art and a model: an entry is one or the other, so list them as two'
+            );
+        }
+        if (isModel && !text(piece.image, 1024)) {
+            return refuse(
+                'a model needs a preview picture: give "image", the path to a PNG'
+            );
         }
         const licence = _.isPlainObject(piece.licence)
             ? _.pickBy(
@@ -73,7 +128,9 @@ function pieces(config = Config()) {
             : null;
         const rating = Ratings.includes(piece.rating) ? piece.rating : 'general';
         out.push({
-            art: piece.art.trim(),
+            ...(isModel
+                ? { model: piece.model.trim(), image: piece.image.trim() }
+                : { art: piece.art.trim() }),
             name: text(piece.name, 80),
             description: text(piece.description, 300),
             licence: licence && licence.id ? licence : DefaultLicence,
@@ -94,33 +151,58 @@ function pieces(config = Config()) {
                 : {},
         });
     });
-    return out;
+    return { pieces: out, refused, modelsRefused };
 }
+
+const fileOf = file => ({
+    sha256: file.sha256,
+    size: file.size,
+    mediaType: file.mediaType,
+});
 
 //  The record for a piece and its uploaded file
 function buildItem(piece, file, blob, config = Config(), now = new Date()) {
-    const name =
-        piece.name ||
-        require('path')
-            .basename(file.path)
-            .replace(/\.[^.]*$/, '');
+    return itemRecord(
+        piece,
+        file,
+        'ANSI art',
+        [{ form: 'ansi', file: fileOf(file), blob, made: 'hand' }],
+        config,
+        now
+    );
+}
+
+//
+//  The record for a model, its preview picture and their uploaded files
+//  (|blobs|: { model, image }): the model first, then the picture
+//
+function buildModelItem(piece, model, image, blobs, config = Config(), now = new Date()) {
+    return itemRecord(
+        piece,
+        model,
+        'a 3D model',
+        [
+            { form: 'model', class: 'light', file: fileOf(model), blob: blobs.model },
+            { form: 'image', file: fileOf(image), blob: blobs.image },
+        ],
+        config,
+        now
+    );
+}
+
+//  A piece's record, named after |file| unless the piece gives a name
+function itemRecord(piece, file, what, versions, config, now) {
+    const name = piece.name || paths.basename(file.path).replace(/\.[^.]*$/, '');
     const boardName = _.get(config, 'general.boardName', 'ENiGMA½ BBS');
     return {
         $type: assetTypes(nsidPrefix(config)).item,
         name,
         description: {
-            short: piece.description || `${name}: ANSI art from ${boardName}`,
+            short: piece.description || `${name}: ${what} from ${boardName}`,
         },
         kind: 'art',
         themes: piece.themes,
-        versions: [
-            {
-                form: 'ansi',
-                file: { sha256: file.sha256, size: file.size, mediaType: file.mediaType },
-                blob,
-                made: 'hand',
-            },
-        ],
+        versions,
         rating: piece.rating,
         licence: piece.licence,
         //  shown by hubs; anything more needs a licence that allows it
@@ -133,6 +215,166 @@ function buildItem(piece, file, blob, config = Config(), now = new Date()) {
         credit: piece.credit,
         createdAt: now.toISOString(),
     };
+}
+
+//  The largest model published (atProto.publishing.models.maxBytes)
+function modelMaxBytes(config) {
+    const max = _.get(config, 'atProto.publishing.models.maxBytes');
+    return _.isFinite(max) && max > 0 ? max : exports.DefaultModelMaxBytes;
+}
+
+//  a size for messages: in kilobytes under a megabyte, bytes under one
+const megabytes = bytes =>
+    bytes < 1024
+        ? `${bytes} bytes`
+        : bytes < MB
+          ? `${Math.round((bytes / 1024) * 10) / 10} KB`
+          : `${Math.round((bytes / MB) * 10) / 10} MB`;
+
+//  Why |body| isn't a binary glTF file, going by its header; null when it is
+function glbProblem(body) {
+    if (body.length < 12 || 'glTF' !== body.toString('latin1', 0, 4)) {
+        return 'the model is not a binary glTF (.glb) file';
+    }
+    const version = body.readUInt32LE(4);
+    if (2 !== version) {
+        return `the model is glTF version ${version}: only version 2 is taken`;
+    }
+    const declared = body.readUInt32LE(8);
+    if (declared !== body.length) {
+        return `the model's header says it is ${declared} bytes long, but the file is ${body.length}: it is damaged or cut short`;
+    }
+    return null;
+}
+
+const isPng = body =>
+    body.length > PngSignature.length &&
+    0 === body.compare(PngSignature, 0, PngSignature.length, 0, PngSignature.length);
+
+//
+//  A model's or picture's file, |what| in messages, at most |maxBytes|: a
+//  path, absolute or relative to the board's directory, as art's is. Calls
+//  back with (problem, file): |file| as art's is ({ sha256, size,
+//  mediaType, body, path }); |problem| is { missing } when there is no such
+//  file, or { reason }.
+//
+function readFile(path, what, mediaType, maxBytes, cb) {
+    const full = paths.isAbsolute(path) ? path : paths.join(__dirname, '../../', path);
+    fs.stat(full, (err, stats) => {
+        if (err || !stats.isFile()) {
+            return cb({ missing: path });
+        }
+        const tooLarge = size => ({
+            reason: `the ${what} is ${size < 1024 ? megabytes(size) : `${megabytes(size)} (${size} bytes)`}, over the limit of ${megabytes(maxBytes)} (atProto.publishing.models.maxBytes)`,
+        });
+        if (stats.size > maxBytes) {
+            return cb(tooLarge(stats.size));
+        }
+        fs.readFile(full, (err, body) => {
+            if (err) {
+                return cb({ missing: path });
+            }
+            //  it may have grown since
+            if (body.length > maxBytes) {
+                return cb(tooLarge(body.length));
+            }
+            return cb(null, {
+                sha256: crypto.createHash('sha256').update(body).digest('hex'),
+                size: body.length,
+                mediaType,
+                body,
+                path: full,
+            });
+        });
+    });
+}
+
+//
+//  A piece's files: calls back with { piece, file }, and { image } beside
+//  them for a model, or with { missing } or { reason } when it can't be
+//  published
+//
+function findFiles(piece, config, cb) {
+    if (!piece.model) {
+        return Splash.findNamed(piece.art, config, file =>
+            cb(file ? { piece, file } : { missing: piece.art })
+        );
+    }
+    const max = modelMaxBytes(config);
+    return readFile(piece.model, 'model', GlbMediaType, max, (problem, model) => {
+        if (problem) {
+            return cb(problem);
+        }
+        const reason = glbProblem(model.body);
+        if (reason) {
+            return cb({ reason });
+        }
+        return readFile(
+            piece.image,
+            'preview picture',
+            PngMediaType,
+            max,
+            (problem, image) => {
+                if (problem) {
+                    return cb(problem);
+                }
+                if (!isPng(image.body)) {
+                    return cb({ reason: 'the preview picture is not a PNG file' });
+                }
+                return cb({ piece, file: model, image });
+            }
+        );
+    });
+}
+
+const versionOf = (record, form) =>
+    _.find(_.get(record, 'value.versions'), v => v && form === v.form);
+
+//
+//  Upload a piece's files and call back with its record. A model whose
+//  picture alone changed (|published|, its record now) keeps the model
+//  file the host already has. What the host says when it refuses a model
+//  or its picture is passed on, with the file's name.
+//
+function uploadPiece(account, f, published, config, cb) {
+    const upload = (file, next) =>
+        AtProtoOAuth.boardUploadBlob(
+            account.did,
+            file.body,
+            file.mediaType,
+            (err, blob) => {
+                if (err && f.image) {
+                    const about = Errors.General(
+                        `${paths.basename(file.path)}: ${err.reason || err.message}`,
+                        err.reasonCode
+                    );
+                    about.status = err.status;
+                    about.error = err.error;
+                    return next(about);
+                }
+                return next(err, blob);
+            }
+        );
+    if (!f.image) {
+        return upload(f.file, (err, blob) =>
+            err ? cb(err) : cb(null, buildItem(f.piece, f.file, blob, config))
+        );
+    }
+    const withModel = (err, model) => {
+        if (err) {
+            return cb(err);
+        }
+        return upload(f.image, (err, image) =>
+            err
+                ? cb(err)
+                : cb(
+                      null,
+                      buildModelItem(f.piece, f.file, f.image, { model, image }, config)
+                  )
+        );
+    };
+    const had = _.get(versionOf(published, 'model'), 'blob');
+    return had ? withModel(null, had) : upload(f.file, withModel);
 }
 
 //  Every record of |collection| in the account: [{ uri, cid, rkey, value }]
@@ -185,7 +427,21 @@ function series(list, fn, cb) {
 //
 //  Publish the pieces: upload and write what is new, delete what was taken
 //  off the list, and write the catalogue. Calls back with (err, { added,
-//  kept, removed, missing }), |missing| naming art that wasn't found.
+//  kept, removed, held, missing, refused }), |missing| naming art and files
+//  that weren't found, |refused| the entries that can't be published and
+//  why ([ { entry, reason } ]): both are left out, and the rest is
+//  published.
+//
+//  With nothing listed, what was published is deleted and the catalogue
+//  emptied; an account that never had any art is left as it is.
+//
+//  A model already published is keyed by its file's hash, so when a listed
+//  model can't be read, or fails a check, there is no telling which record
+//  was its own. While any listed model is in that state, no model's record
+//  is deleted: they are |held|, and stay in the catalogue, so a file
+//  missing or half copied when this runs doesn't withdraw a model from the
+//  hubs showing it. Taking the entry off the list, or mending it, lets
+//  the deletions through.
 //
 function publishAssets(cb) {
     const config = Config();
@@ -197,18 +453,37 @@ function publishAssets(cb) {
         );
     }
     const types = assetTypes(nsidPrefix(config));
-    const wanted = pieces(config);
-    const result = { added: [], kept: [], removed: [], missing: [] };
+    const wanted = listed(config);
+    const result = {
+        added: [],
+        kept: [],
+        removed: [],
+        held: [],
+        missing: [],
+        refused: wanted.refused,
+    };
+    //  listed models that aren't published this time
+    let modelsOut = wanted.modelsRefused;
 
-    //  each piece's file
+    //  each piece's file, or files
     series(
-        wanted,
+        wanted.pieces,
         (piece, next) =>
-            Splash.findNamed(piece.art, config, file => {
-                if (!file) {
-                    result.missing.push(piece.art);
+            findFiles(piece, config, found => {
+                if (piece.model && !found.file) {
+                    modelsOut += 1;
                 }
-                return next(null, file ? { piece, file } : null);
+                if (found.missing) {
+                    result.missing.push(found.missing);
+                } else if (found.reason) {
+                    const entry = piece.name || piece.model;
+                    Log.warn(
+                        { entry, reason: found.reason },
+                        'atProto.publishing.assets: an entry cannot be published; left out'
+                    );
+                    result.refused.push({ entry, reason: found.reason });
+                }
+                return next(null, found.file ? found : null);
             }),
         (err, found) => {
             const byHash = new Map();
@@ -223,12 +498,27 @@ function publishAssets(cb) {
                     return cb(err);
                 }
                 const have = new Map(existing.map(r => [r.rkey, r]));
-                const stale = existing.filter(
+                const unlisted = existing.filter(
                     r => !byHash.has(r.rkey) && RkeyRe.test(r.rkey)
                 );
-                const add = [...byHash.values()].filter(f => !have.has(f.file.sha256));
+                //  a model's record waits while a listed model can't be
+                //  published: it may be that one's
+                const [held, stale] = _.partition(
+                    unlisted,
+                    r => modelsOut > 0 && versionOf(r, 'model')
+                );
+                //  a model published with another picture is written again
+                const unchanged = f =>
+                    have.has(f.file.sha256) &&
+                    (!f.image ||
+                        f.image.sha256 ===
+                            _.get(
+                                versionOf(have.get(f.file.sha256), 'image'),
+                                'file.sha256'
+                            ));
+                const add = [...byHash.values()].filter(f => !unchanged(f));
                 const refs = [...byHash.keys()]
-                    .filter(hash => have.has(hash))
+                    .filter(hash => unchanged(byHash.get(hash)))
                     .map(hash => {
                         result.kept.push(hash);
                         return { uri: have.get(hash).uri, cid: have.get(hash).cid };
@@ -237,15 +527,15 @@ function publishAssets(cb) {
                 series(
                     add,
                     (f, next) =>
-                        AtProtoOAuth.boardUploadBlob(
-                            account.did,
-                            f.file.body,
-                            f.file.mediaType,
-                            (err, blob) => {
+                        uploadPiece(
+                            account,
+                            f,
+                            have.get(f.file.sha256),
+                            config,
+                            (err, record) => {
                                 if (err) {
                                     return next(err);
                                 }
-                                const record = buildItem(f.piece, f.file, blob, config);
                                 AtProtoOAuth.boardRequest(
                                     account.did,
                                     'POST',
@@ -294,21 +584,48 @@ function publishAssets(cb) {
                                 if (err) {
                                     return cb(err);
                                 }
-                                writeCatalogue(account, types, refs, config, err => {
-                                    if (err) {
-                                        return cb(err);
+                                for (const r of held) {
+                                    result.held.push(r.rkey);
+                                    refs.push({ uri: r.uri, cid: r.cid });
+                                }
+                                const write = () =>
+                                    writeCatalogue(account, types, refs, config, err => {
+                                        if (err) {
+                                            return cb(err);
+                                        }
+                                        Log.info(
+                                            {
+                                                added: result.added.length,
+                                                kept: result.kept.length,
+                                                removed: result.removed.length,
+                                                held: result.held.length,
+                                                missing: result.missing.length,
+                                                refused: result.refused.length,
+                                            },
+                                            'Board art published'
+                                        );
+                                        return cb(null, result);
+                                    });
+                                if (refs.length || result.removed.length) {
+                                    return write();
+                                }
+                                //  nothing to list and nothing deleted: only
+                                //  a catalogue still naming pieces is emptied
+                                return listAll(
+                                    account.did,
+                                    types.catalogue,
+                                    (err, catalogues) => {
+                                        if (err) {
+                                            return cb(err);
+                                        }
+                                        const self = _.find(catalogues, {
+                                            rkey: 'self',
+                                        });
+                                        return _.get(self, 'value.items', []).length
+                                            ? write()
+                                            : cb(null, result);
                                     }
-                                    Log.info(
-                                        {
-                                            added: result.added.length,
-                                            kept: result.kept.length,
-                                            removed: result.removed.length,
-                                            missing: result.missing.length,
-                                        },
-                                        'Board art published'
-                                    );
-                                    return cb(null, result);
-                                });
+                                );
                             }
                         );
                     }

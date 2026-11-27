@@ -380,6 +380,7 @@ describe('config schema against config_default.js', () => {
             'atProto.publishing.listing.sysopDid',
             'atProto.publishing.listing.tags',
             'atProto.publishing.minPostIntervalSeconds',
+            'atProto.publishing.models.maxBytes',
             'atProto.publishing.nsidPrefix',
             'atProto.publishing.postLangs',
             'atProto.publishing.splash.art',

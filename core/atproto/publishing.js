@@ -735,11 +735,10 @@ function startup(cb) {
         }
         if (account) {
             publishListing(_.noop);
-            //  the board's art, when it lists any (assets.js)
-            if (
-                require('./assets').pieces().length > 0 &&
-                !(publishMissing() || []).length
-            ) {
+            //  the board's art (assets.js): also with none listed, so the
+            //  last piece taken off the list is taken down; an account
+            //  that never had any is only read
+            if (!(publishMissing() || []).length) {
                 require('./assets').publishAssets(err => {
                     if (err) {
                         Log.warn(

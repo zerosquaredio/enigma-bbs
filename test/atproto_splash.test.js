@@ -213,13 +213,86 @@ describe("AT publishing: the board's splash screen", () => {
             assert.equal(on.record.splash.sha256, sha(Connect));
         });
 
-        it('offers new art by itself when the file changes', async () => {
+        it('stops offering it when the art changes, tells the sysop once, and offers the new art once they agree', async () => {
+            const notices = [];
+            const previous = Publishing._setNoticeWriter((subject, body, cb) => {
+                notices.push({ subject, body });
+                setImmediate(() => cb(null));
+            });
+            try {
+                await call(Publishing.connectBoardAccount, Board);
+                assert.equal(Publishing.getBoardAccount().splashSha256, sha(Connect));
+                write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', Matrix);
+                const changed = await call(Publishing.publishListing, {});
+                assert.equal(changed.written, true);
+                assert.equal(changed.record.splash, undefined, 'not offered');
+                assert.equal(
+                    Publishing.getBoardAccount().splashShown,
+                    true,
+                    'the yes stands'
+                );
+                assert.equal(
+                    Publishing.splashState(Publishing.getBoardAccount(), {
+                        sha256: sha(Matrix),
+                    }),
+                    'changed'
+                );
+                assert.equal(notices.length, 1);
+                assert.match(notices[0].subject, /stopped showing your login screen/);
+                assert.match(notices[0].body, /has changed \(it is CONNECT\.ANS now\)/);
+                assert.match(notices[0].body, /atproto splash on/);
+
+                //  told once for each new file
+                await call(Publishing.publishListing, { force: true });
+                assert.equal(notices.length, 1);
+
+                const agreed = await call(Publishing.setSplashShown, true);
+                assert.equal(agreed.record.splash.sha256, sha(Matrix));
+                assert.equal(Publishing.getBoardAccount().splashSha256, sha(Matrix));
+            } finally {
+                Publishing._setNoticeWriter(previous);
+            }
+        });
+
+        it("isn't offered by default when the art is ENiGMA½'s stock art", async () => {
+            const stock = fs.readFileSync(
+                paths.join(
+                    __dirname,
+                    '..',
+                    'art',
+                    'themes',
+                    'luciano_blocktronics',
+                    'MATRIX.ANS'
+                )
+            );
+            assert.ok(Publishing.isStockArt(sha(stock)), 'in the list of stock art');
+            assert.ok(!Publishing.isStockArt(sha(Connect)));
+            write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', stock);
             await call(Publishing.connectBoardAccount, Board);
-            write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', Matrix);
-            const again = await call(Publishing.publishListing, {});
-            assert.equal(again.written, true);
-            assert.equal(again.record.splash.sha256, sha(Matrix));
-            assert.deepEqual(Splash.served(sha(Matrix)), Matrix);
+            const account = Publishing.getBoardAccount();
+            assert.equal(account.splashShown, false);
+            assert.equal(account.splashSha256, null);
+            assert.equal(lastListing().params.record.splash, undefined);
+            //  the sysop may still say yes, as for any art
+            const yes = await call(Publishing.setSplashShown, true);
+            assert.equal(yes.record.splash.sha256, sha(stock));
+        });
+
+        it('is to no art when none was found, and asks again once some is', async () => {
+            fs.rmSync(paths.join(root, 'themes', 'mytheme', 'CONNECT.ANS'));
+            const previous = Publishing._setNoticeWriter((s, b, cb) =>
+                setImmediate(() => cb(null))
+            );
+            try {
+                await call(Publishing.connectBoardAccount, Board);
+                assert.equal(Publishing.getBoardAccount().splashShown, true);
+                assert.equal(Publishing.getBoardAccount().splashSha256, null);
+                write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', Connect);
+                const later = await call(Publishing.publishListing, {});
+                assert.equal(later.record.splash, undefined);
+            } finally {
+                Publishing._setNoticeWriter(previous);
+            }
         });
 
         it('is not assumed for a board connected before it was asked', () => {
@@ -237,7 +310,60 @@ describe("AT publishing: the board's splash screen", () => {
             dbModule.dbs.atproto = db;
             Publishing._setStore(null);
             assert.equal(Publishing.getBoardAccount().splashShown, undefined);
-            assert.equal(db.pragma('user_version', { simple: true }), 5);
+            assert.equal(db.pragma('user_version', { simple: true }), 6);
+        });
+
+        //  a version 5 table, with the sysop's yes given before it was to a file
+        const fromVersion5 = () => {
+            const db = new Database(':memory:');
+            db.exec(`CREATE TABLE board_account (
+                id INTEGER PRIMARY KEY CHECK (id = 1), did VARCHAR NOT NULL, handle VARCHAR,
+                connected_timestamp INTEGER NOT NULL, listing_hash VARCHAR,
+                listing_timestamp INTEGER, post_timestamp INTEGER,
+                splash_shown INTEGER, splash_timestamp INTEGER)`);
+            db.prepare(
+                'INSERT INTO board_account (id, did, connected_timestamp, splash_shown, splash_timestamp) VALUES (1, ?, 1, 1, 1)'
+            ).run(Board.did);
+            dbModule.initAtProtoDatabase(db);
+            dbModule.dbs.atproto.close();
+            dbModule.dbs.atproto = db;
+            Publishing._setStore(null);
+        };
+
+        it('takes a yes from before it was to a file as a yes to the art offered now', async () => {
+            fromVersion5();
+            assert.equal(Publishing.getBoardAccount().splashSha256, 'adopt');
+            const listed = await call(Publishing.publishListing, {});
+            assert.equal(listed.record.splash.sha256, sha(Connect));
+            assert.equal(Publishing.getBoardAccount().splashSha256, sha(Connect));
+        });
+
+        it('but not when that art is the stock art', async () => {
+            const stock = fs.readFileSync(
+                paths.join(
+                    __dirname,
+                    '..',
+                    'art',
+                    'themes',
+                    'luciano_blocktronics',
+                    'MATRIX.ANS'
+                )
+            );
+            write(paths.join(root, 'themes', 'mytheme'), 'CONNECT.ANS', stock);
+            fromVersion5();
+            const notices = [];
+            const previous = Publishing._setNoticeWriter((subject, body, cb) => {
+                notices.push(body);
+                setImmediate(() => cb(null));
+            });
+            try {
+                const listed = await call(Publishing.publishListing, {});
+                assert.equal(listed.record.splash, undefined);
+                assert.equal(notices.length, 1);
+                assert.match(notices[0], /stock art/);
+            } finally {
+                Publishing._setNoticeWriter(previous);
+            }
         });
     });
     describe("the account's permissions", () => {

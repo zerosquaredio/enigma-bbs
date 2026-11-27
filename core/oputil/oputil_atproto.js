@@ -274,15 +274,28 @@ function boardShow() {
         );
         const Splash = require('../atproto/splash');
         Splash.find(found => {
+            const state = Publishing.splashState(account, found);
             const answer =
                 undefined === account.splashShown
                     ? 'not asked yet: not shown'
-                    : account.splashShown
-                      ? `shown (since ${when(account.splashAt)})`
-                      : `not shown (since ${when(account.splashAt)})`;
+                    : 'changed' === state
+                      ? 'not shown: the art changed since the sysop agreed; "atproto splash on" agrees to this art'
+                      : 'stock' === state
+                        ? "not shown: it is ENiGMA½'s stock art, which belongs to its artists"
+                        : account.splashShown
+                          ? `shown (since ${when(account.splashAt)})`
+                          : `not shown (since ${when(account.splashAt)})`;
             console.info(`Splash        : ${answer}`);
             console.info(
-                `Splash art    : ${found ? `${found.path} (${found.sha256.slice(0, 12)})` : 'none found'}`
+                `Splash art    : ${
+                    found
+                        ? `${found.path} (${found.sha256.slice(0, 12)}${
+                              Publishing.isStockArt(found.sha256)
+                                  ? ", ENiGMA½'s stock art"
+                                  : ''
+                          })`
+                        : 'none found'
+                }`
             );
             Splash.findEmblem(emblem =>
                 console.info(
@@ -358,7 +371,7 @@ function splash(answer) {
             }
             console.info(
                 offered
-                    ? `The hub may show the board's splash screen (${offered.sha256.slice(0, 12)}), credited to its artist.`
+                    ? `The hub may show the board's splash screen (${offered.sha256.slice(0, 12)}), credited to its artist. If the art changes, it stops until you agree again.`
                     : 'The hub may show the splash screen, but no art was found: see atProto.publishing.splash.art.'
             );
         });

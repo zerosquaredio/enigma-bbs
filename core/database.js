@@ -1487,11 +1487,14 @@ const DB_INIT_TABLE = {
 //       core/atproto/publishing.js)
 //    5: whether the board's splash screen is shown on its hub, and since
 //       when (board_account.splash_*)
+//    6: which art the sysop agreed to show (board_account.splash_sha256),
+//       and which changed art they were last told of (splash_asked_sha256):
+//       consent is to a file, and asked again when the art changes
 //
 //  Created with the other databases whether or not atProto.enabled is set,
 //  as activitypub.sqlite3 is; it simply stays empty while AT login is off.
 //
-const ATPROTO_DB_VERSION_LATEST = 5;
+const ATPROTO_DB_VERSION_LATEST = 6;
 
 function initAtProtoDatabase(db) {
     db.exec(`
@@ -1575,20 +1578,40 @@ function initAtProtoDatabase(db) {
             --  the sysop's answer: may the hub show the board's splash
             --  screen (1) or not (0); and when it was given
             splash_shown        INTEGER,
-            splash_timestamp    INTEGER
+            splash_timestamp    INTEGER,
+            --  the art they agreed to, by its SHA-256 (null: none found
+            --  then; 'adopt': agreed before version 6, to whatever was
+            --  offered, which is taken once as agreed unless it is stock
+            --  art); and the changed art they were last told of
+            splash_sha256       VARCHAR,
+            splash_asked_sha256 VARCHAR
         );
     `);
 
-    //  version 5: boards connected before it gain the splash columns
-    for (const column of ['splash_shown', 'splash_timestamp']) {
+    //  versions 5 and 6: boards connected before them gain the splash columns
+    const hasColumn = column => {
         const row = db
             .prepare(
                 "SELECT COUNT(*) AS cnt FROM pragma_table_info('board_account') WHERE name = ?"
             )
             .get(column);
-        if (row && 0 === row.cnt) {
-            db.exec(`ALTER TABLE board_account ADD COLUMN ${column} INTEGER`);
+        return !!row && row.cnt > 0;
+    };
+    for (const [column, type] of [
+        ['splash_shown', 'INTEGER'],
+        ['splash_timestamp', 'INTEGER'],
+    ]) {
+        if (!hasColumn(column)) {
+            db.exec(`ALTER TABLE board_account ADD COLUMN ${column} ${type}`);
         }
+    }
+    if (!hasColumn('splash_sha256')) {
+        db.exec('ALTER TABLE board_account ADD COLUMN splash_sha256 VARCHAR');
+        db.exec('ALTER TABLE board_account ADD COLUMN splash_asked_sha256 VARCHAR');
+        //  a yes given before consent was to a file: to what is offered now
+        db.exec(
+            "UPDATE board_account SET splash_sha256 = 'adopt' WHERE splash_shown = 1"
+        );
     }
 
     if (db.pragma('user_version', { simple: true }) < ATPROTO_DB_VERSION_LATEST) {

@@ -35,9 +35,9 @@ describe('atproto database', () => {
         db.close();
     });
 
-    it('records schema version 5', () => {
+    it('records schema version 6', () => {
         const db = freshDb();
-        assert.equal(db.pragma('user_version', { simple: true }), 5);
+        assert.equal(db.pragma('user_version', { simple: true }), 6);
         db.close();
     });
 
@@ -46,7 +46,7 @@ describe('atproto database', () => {
         createSessionStore(db).set('did:plc:abc', { tokenSet: { sub: 'did:plc:abc' } });
         initAtProtoDatabase(db);
         assert.equal(rowCount(db, 'oauth_session'), 1);
-        assert.equal(db.pragma('user_version', { simple: true }), 5);
+        assert.equal(db.pragma('user_version', { simple: true }), 6);
         db.close();
     });
 });

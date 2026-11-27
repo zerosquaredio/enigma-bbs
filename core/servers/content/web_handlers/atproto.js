@@ -115,9 +115,12 @@ exports.getModule = class AtProtoWebHandler extends WebHandlerModule {
         if (!match || !account) {
             return this.webServer.fileNotFound(resp);
         }
+        //  the splash only as the sysop agreed to it, by its hash (an
+        //  agreement from before that, 'adopt', is settled when the listing
+        //  is next published, which names the file)
         const offered = kind =>
             'splash' === kind
-                ? true === account.splashShown
+                ? true === account.splashShown && match[1] === account.splashSha256
                 : 'emblem' === kind && Splash.emblemNamed();
         return Splash.lookup(match[1], found => {
             const body = found && offered(found.kind) ? found.body : null;

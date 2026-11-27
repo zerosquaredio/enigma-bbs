@@ -44,6 +44,8 @@ exports.publishListing = publishListing;
 exports.setStatus = setStatus;
 exports.post = post;
 exports.setSplashShown = setSplashShown;
+exports.splashState = splashState;
+exports.isStockArt = isStockArt;
 exports.missingPermissions = missingPermissions;
 exports.buildPost = buildPost;
 exports.startup = startup;
@@ -101,7 +103,13 @@ function getStore() {
             'UPDATE board_account SET post_timestamp = ? WHERE id = 1'
         );
         const splash = db.prepare(
-            'UPDATE board_account SET splash_shown = ?, splash_timestamp = ? WHERE id = 1'
+            'UPDATE board_account SET splash_shown = ?, splash_timestamp = ?, splash_sha256 = ? WHERE id = 1'
+        );
+        const agreed = db.prepare(
+            'UPDATE board_account SET splash_sha256 = ? WHERE id = 1'
+        );
+        const asked = db.prepare(
+            'UPDATE board_account SET splash_asked_sha256 = ? WHERE id = 1'
         );
         store = {
             get: () => select.get(),
@@ -109,14 +117,18 @@ function getStore() {
             del: () => del.run(),
             listed: (hash, ts) => listed.run(hash, ts),
             posted: ts => posted.run(ts),
-            splash: (shown, ts) => splash.run(shown ? 1 : 0, ts),
+            splash: (shown, ts, sha256) => splash.run(shown ? 1 : 0, ts, sha256 || null),
+            agreed: sha256 => agreed.run(sha256 || null),
+            asked: sha256 => asked.run(sha256 || null),
         };
     }
     return store;
 }
 
 //  { did, handle, connectedAt, listingPublishedAt, lastPostAt, splashShown,
-//  splashAt }, or null. splashShown is undefined until the sysop answers
+//  splashAt, splashSha256, splashAskedSha256 }, or null. splashShown is
+//  undefined until the sysop answers; splashSha256 is the art they agreed to
+//  (null: none was found then; 'adopt': see initAtProtoDatabase)
 function getBoardAccount() {
     const row = getStore().get();
     return row
@@ -131,6 +143,8 @@ function getBoardAccount() {
                       ? undefined
                       : 1 === row.splash_shown,
               splashAt: row.splash_timestamp || undefined,
+              splashSha256: row.splash_sha256 || null,
+              splashAskedSha256: row.splash_asked_sha256 || null,
           }
         : null;
 }
@@ -146,20 +160,30 @@ function requireAccount() {
     return account;
 }
 
+//  ENiGMA½'s own stock art, by its hashes (misc/stock_art_hashes.js): it
+//  belongs to its artists, so it is never offered to a hub by default
+let stockArt = null;
+function isStockArt(sha256) {
+    if (!stockArt) {
+        stockArt = new Set(require('./stock_art.json').sha256);
+    }
+    return stockArt.has(sha256);
+}
+
 //
 //  |identity| ({ did, handle }) has just approved the board's write access
 //  (authorizeBoard()): make it the board account, and publish the listing.
-//  Connecting is when the sysop is told the hub will show the board's splash
-//  screen (the screen says so, and how to stop it): the first time, that
-//  is their answer, yes; later connections keep whatever they chose.
+//  Connecting is when the sysop is told whether the hub will show the
+//  board's splash screen (the screen says so, and how to change it). The
+//  first time, the answer is yes, to the art the board would offer now,
+//  unless that is ENiGMA½'s stock art, which isn't the sysop's to give;
+//  later connections keep whatever they chose.
 //
 function connectBoardAccount(identity, cb) {
+    let previous;
     try {
-        const previous = getBoardAccount();
+        previous = getBoardAccount();
         getStore().set(identity.did, identity.handle, nowSeconds());
-        if (!previous || undefined === previous.splashShown) {
-            getStore().splash(true, nowSeconds());
-        }
         Log.info(
             { did: identity.did, previous: previous ? previous.did : undefined },
             'Board AT account connected'
@@ -167,7 +191,28 @@ function connectBoardAccount(identity, cb) {
     } catch (err) {
         return setImmediate(() => cb(err));
     }
-    return publishListing({ force: true }, cb);
+    if (previous && undefined !== previous.splashShown) {
+        return publishListing({ force: true }, cb);
+    }
+    return Splash.find(Config(), found => {
+        try {
+            const stock = !!found && isStockArt(found.sha256);
+            getStore().splash(
+                !stock,
+                nowSeconds(),
+                found && !stock ? found.sha256 : null
+            );
+            if (stock) {
+                Log.info(
+                    { path: found.path },
+                    "Board splash screen not offered: it is ENiGMA½'s stock art"
+                );
+            }
+        } catch (err) {
+            return cb(err);
+        }
+        return publishListing({ force: true }, cb);
+    });
 }
 
 //
@@ -209,19 +254,120 @@ function missingPermissions(config = Config()) {
 }
 
 //
-//  The sysop's answer: may the hub show the board's splash screen? Kept with
-//  when it was given, and the listing published again to say so. Calls back
-//  with (err, { written, record }).
+//  The sysop's answer: may the hub show the board's splash screen? Yes is to
+//  the art the board would offer now, by its hash: when that art changes,
+//  the board stops offering it until they agree again. Kept with when it was
+//  given, and the listing published again to say so. Calls back with (err,
+//  { written, record }).
 //
 function setSplashShown(shown, cb) {
     try {
         requireAccount();
-        getStore().splash(!!shown, nowSeconds());
-        Log.info({ shown: !!shown }, 'Board splash screen on the hub');
     } catch (err) {
         return setImmediate(() => cb(err));
     }
-    return publishListing({}, cb);
+    const answer = found => {
+        try {
+            getStore().splash(
+                !!shown,
+                nowSeconds(),
+                shown && found ? found.sha256 : null
+            );
+            Log.info(
+                { shown: !!shown, sha256: shown && found ? found.sha256 : undefined },
+                'Board splash screen on the hub'
+            );
+        } catch (err) {
+            return cb(err);
+        }
+        return publishListing({}, cb);
+    };
+    return shown ? Splash.find(Config(), answer) : answer(null);
+}
+
+//
+//  Where the splash stands, given the art the board would offer now
+//  (|found|, from Splash.find): 'hidden' (the sysop said no, or hasn't been
+//  asked), 'shown' (that art, agreed to), 'changed' (they agreed to other
+//  art, or to none: not offered until they agree to this), 'stock' (a yes
+//  from before consent was to a file, and the art is ENiGMA½'s stock art:
+//  not offered either), or 'none' (a yes, but no art found).
+//
+function splashState(account, found) {
+    if (!account || true !== account.splashShown) {
+        return 'hidden';
+    }
+    if (!found) {
+        return 'none';
+    }
+    if ('adopt' === account.splashSha256) {
+        return isStockArt(found.sha256) ? 'stock' : 'shown';
+    }
+    return found.sha256 === account.splashSha256 ? 'shown' : 'changed';
+}
+
+//  Default notice writer: one private message to the board's root user (the
+//  sysop), so they see it at their next login. Replaceable for tests.
+function persistNotice(subject, body, cb) {
+    const User = require('../user.js');
+    const Message = require('../message.js');
+    User.getUserName(User.RootUserID, (err, userName) => {
+        if (err) {
+            return cb(err);
+        }
+        const notice = new Message({
+            areaTag: Message.WellKnownAreaTags.Private,
+            toUserName: userName,
+            fromUserName: _.get(Config(), 'general.boardName', 'ENiGMA½ BBS'),
+            subject,
+            message: body,
+        });
+        notice.setLocalToUserId(User.RootUserID);
+        return notice.persist(cb);
+    });
+}
+
+let noticeWriter = persistNotice;
+exports._setNoticeWriter = writer => {
+    const prev = noticeWriter;
+    noticeWriter = writer || persistNotice;
+    return prev;
+};
+
+//  The splash's art isn't what the sysop agreed to: say so once for each
+//  new file, in the log and in a private message to the sysop
+function splashNotOffered(account, found, state) {
+    if (account.splashAskedSha256 === found.sha256) {
+        return;
+    }
+    try {
+        getStore().asked(found.sha256);
+    } catch (err) {
+        return Log.warn({ error: err.message }, 'Could not keep the splash notice');
+    }
+    const file = require('path').basename(found.path || '') || found.sha256.slice(0, 12);
+    const why =
+        'stock' === state
+            ? `is ENiGMA½'s stock art (${file}), which belongs to its artists`
+            : `has changed (it is ${file} now)`;
+    Log.warn(
+        { path: found.path, sha256: found.sha256, state },
+        'Board splash screen not offered to the hub: the sysop has not agreed to this art'
+    );
+    const body = [
+        `The board's login screen ${why}, so the hub has stopped showing it.`,
+        '',
+        'To show this art on the hub, credited to its artist, choose "splash" on the',
+        'board account screen (BA), or run: ./oputil.js atproto splash on',
+        '',
+        'Only agree if the art is yours to share, or its artist allows it. To show',
+        'other art, name it in atProto.publishing.splash.art.',
+    ].join('\r\n');
+    noticeWriter('The hub has stopped showing your login screen', body, err => {
+        if (err) {
+            Log.warn({ error: err.message }, 'Could not send the splash notice');
+        }
+    });
 }
 
 //
@@ -468,9 +614,31 @@ function publishListing(options, cb) {
     } catch (err) {
         return setImmediate(() => cb(err));
     }
-    //  the splash, found again each time, so new art is offered by itself
-    const withSplash = next =>
-        true === account.splashShown ? Splash.find(Config(), next) : next(null);
+    //  the splash, found again each time, and offered only when it is the
+    //  art the sysop agreed to
+    const withSplash = next => {
+        if (true !== account.splashShown) {
+            return next(null);
+        }
+        return Splash.find(Config(), found => {
+            const state = splashState(account, found);
+            if ('shown' === state && 'adopt' === account.splashSha256) {
+                //  a yes from before: now to this file
+                try {
+                    getStore().agreed(found.sha256);
+                } catch (err) {
+                    Log.warn(
+                        { error: err.message },
+                        'Could not keep the splash agreed to'
+                    );
+                }
+            }
+            if ('changed' === state || 'stock' === state) {
+                splashNotOffered(account, found, state);
+            }
+            return next('shown' === state ? found : null);
+        });
+    };
     //  naming an emblem is the sysop's consent to offering it
     const withEmblem = next =>
         Splash.emblemNamed(Config()) ? Splash.findEmblem(Config(), next) : next(null);

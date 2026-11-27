@@ -274,14 +274,18 @@ The menu is for sysops: its `config.acs` is `GM[sysops]` in the template. Change
 
 ### Its Splash Screen
 
-A hub can show the board's splash screen, the ANSI art callers first see, on its directory and on the board's own page there, credited to its artist. The board offers it only with the sysop's say-so:
+A hub can show the board's splash screen, the ANSI art callers first see, on its directory and on the board's own page there, credited to its artist. The board offers it only with the sysop's say-so, and the say-so is to one file: the art as it was when they agreed.
 
-- **Connecting the board account** the first time turns it on, and the screen says so: "Its login screen will be shown on the hub, credited to its artist; choose "splash" to stop that." The answer is kept, with when it was given; connecting again later keeps it. A board account connected before this existed isn't assumed to agree: it stays off until the sysop turns it on.
-- **"splash"** on the board account menu turns it off, or on again. So does `./oputil.js atproto splash off` (or `on`).
+- **Connecting the board account** the first time turns it on for the art the board would offer then, and the screen says so: "Its login screen will be shown on the hub, credited to its artist; choose "splash" to stop that." The answer is kept, with when it was given and which file it was; connecting again later keeps it. A board account connected before this existed isn't assumed to agree: it stays off until the sysop turns it on.
+- **Not for ENiGMA½'s stock art.** If the login screen is art that comes with ENiGMA½ (its stock theme, by the art's hash, listed in `core/atproto/stock_art.json`), connecting leaves it off and says why: that art belongs to its artists, not to the sysop. Name art of your own in `atProto.publishing.splash.art`, or turn it on only if its artists allow it.
+- **Asked again when the art changes.** If the login screen becomes another file (a new theme, an edited screen), the board stops offering it, and tells the sysop once, in the log and in a private message they see at their next login. The board account menu and `./oputil.js atproto board` say so too. Choosing "splash" (or `./oputil.js atproto splash on`) agrees to the new art.
+- **"splash"** on the board account menu turns it off, or on again for the art as it is now. So does `./oputil.js atproto splash off` (or `on`).
+
+A board that agreed before consent was to a file keeps showing the art it offers now, unless that is ENiGMA½'s stock art, which then stops, with the same message.
 
 **Which art.** By default the board's `CONNECT` art, if its pre-login theme (`theme.preLogin`) or the general art directory has one, otherwise its login matrix (`MATRIX`), as a menu would find them (`NAME.ANS`, or the first random variant, `NAME1.ANS`). `atProto.publishing.splash.art` names other art, in order, or `.ans` files by path. Only ANSI art up to 64 KB is offered.
 
-**How it reaches the hub.** The listing names the file by its SHA-256 and size (`splash`); the board serves it as it is at `/assets/<sha256>`, and only that file. The hub cleans it (nothing but characters and colors survives), blanks ENiGMA½'s menu codes so none of the board's live details show, draws it, and takes the credit from its SAUCE record. When the art changes, the next listing names the new file by itself.
+**How it reaches the hub.** The listing names the file by its SHA-256 and size (`splash`); the board serves it as it is at `/assets/<sha256>`, and only that file. The hub cleans it (nothing but characters and colors survives), blanks ENiGMA½'s menu codes so none of the board's live details show, draws it, and takes the credit from its SAUCE record. When the art changes, the listing names no splash until the sysop agrees to the new file (above).
 
 **The art must be the sysop's to share.** Agreeing covers the board; it can't give away an artist's rights. Art made for the board, or under a licence that allows it, is fine. A hub may also refuse art it hasn't cleared, such as ENiGMA½'s stock themes.
 
@@ -436,6 +440,6 @@ With presence on the hub set up, members can open the hub's common space from in
 | `/_enig/atproto/jwks.json` | Public mode only: the public half of the signing key. |
 | `/_enig/signin` | [Web sign-in](#web-sign-in) only: the start page (`GET`) and its form (`POST`). |
 | `/_enig/signout` | Web sign-in only: signs the browser out (`POST`). |
-| `/assets/<sha256>` | With publishing on: the [splash screen](#its-splash-screen) and [emblem](#its-emblem) the listing names, and nothing else. |
+| `/assets/<sha256>` | With publishing on: the [splash screen](#its-splash-screen) the sysop agreed to and the [emblem](#its-emblem) the listing names, and nothing else. |
 
 Behind a reverse proxy, forward `/_enig/handoff/` and `/_enig/atproto/`, for web sign-in `/_enig/signin` and `/_enig/signout`, and for the splash screen `/assets/`.

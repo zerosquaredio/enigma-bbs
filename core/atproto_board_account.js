@@ -52,6 +52,12 @@ const Messages = {
     splashShown: 'Splash screen: shown on the hub ({file}).',
     splashShownNone: 'Splash screen: shown on the hub, but no art was found to offer.',
     splashHidden: 'Splash screen: not shown on the hub. Choose "splash" to show it.',
+    splashChanged:
+        'Splash screen: the login screen changed ({file}), so the hub has stopped showing it. Choose "splash" to show this art, if it is yours to share.',
+    splashStock:
+        'Splash screen: the login screen is ENiGMA½\'s stock art ({file}), which belongs to its artists, so it is not shown. Choose "splash" only if they allow it, or name your own in atProto.publishing.splash.art.',
+    splashStockOnConnect:
+        "Its login screen is ENiGMA½'s stock art, which belongs to its artists, so the hub won't show it; name your own in atProto.publishing.splash.art.",
     splashOnConnect:
         'Its login screen will be shown on the hub, credited to its artist; choose "splash" to stop that.',
     splashOn:
@@ -193,13 +199,22 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
 
     //  Whether the hub may show the splash screen, and which file it is
     splashLine(account) {
-        if (true !== account.splashShown) {
-            return Messages.splashHidden;
-        }
         const offered = this.offeredSplash;
-        return offered
-            ? Messages.splashShown.replace('{file}', paths.basename(offered.path))
-            : Messages.splashShownNone;
+        const file = offered ? paths.basename(offered.path) : '';
+        switch (Publishing.splashState(account, offered)) {
+            case 'shown':
+                return Messages.splashShown.replace('{file}', file);
+            case 'none':
+                return Messages.splashShownNone;
+            case 'changed':
+                return Messages.splashChanged.replace('{file}', file);
+            case 'stock':
+                return Messages.splashStock.replace('{file}', file);
+            default:
+                return Publishing.isStockArt(offered ? offered.sha256 : '')
+                    ? Messages.splashStock.replace('{file}', file)
+                    : Messages.splashHidden;
+        }
     }
 
     authorizeIdentity(did, options, cb) {
@@ -225,12 +240,21 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
                 });
                 return this.focusActions();
             }
-            const shown = true === _.get(Publishing.getBoardAccount(), 'splashShown');
-            this.showStatus(Messages.nowConnected, {
-                account,
-                splash: shown ? ` ${Messages.splashOnConnect}` : '',
+            const board = Publishing.getBoardAccount();
+            const shown = true === _.get(board, 'splashShown');
+            Splash.find(found => {
+                this.offeredSplash = found;
+                const stock = !shown && !!found && Publishing.isStockArt(found.sha256);
+                this.showStatus(Messages.nowConnected, {
+                    account,
+                    splash: shown
+                        ? ` ${Messages.splashOnConnect}`
+                        : stock
+                          ? ` ${Messages.splashStockOnConnect}`
+                          : '',
+                });
+                return this.focusActions();
             });
-            return this.focusActions();
         });
     }
 
@@ -296,7 +320,11 @@ exports.getModule = class AtProtoBoardAccountModule extends AtProtoLoginModule {
             this.showStatus(Messages.noAccount);
             return cb(null);
         }
-        const shown = true !== account.splashShown;
+        //  art the sysop hasn't agreed to yet (changed, or stock from before):
+        //  "splash" is their yes to it; otherwise it turns the answer over
+        const state = Publishing.splashState(account, this.offeredSplash);
+        const shown =
+            'changed' === state || 'stock' === state || true !== account.splashShown;
         Publishing.setSplashShown(shown, (err, result) => {
             if (err) {
                 this.failed(err);

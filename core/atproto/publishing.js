@@ -9,7 +9,13 @@ const { dbs } = require('../database');
 const { getBaseUrl } = require('../web_util');
 const AtProtoOAuth = require('./oauth_client');
 const Splash = require('./splash');
-const { recordTypes, DefaultNsidPrefix, PostCollection, boardScope } = require('./const');
+const {
+    recordTypes,
+    objectTypes,
+    DefaultNsidPrefix,
+    PostCollection,
+    boardScope,
+} = require('./const');
 
 //  deps
 const crypto = require('crypto');
@@ -228,6 +234,15 @@ function publishMissing() {
     } catch (e) {
         return null;
     }
+}
+
+//  What the account lacks that publishing art needs: all of it but the
+//  live objects' type, which an account connected before it was asked for
+//  may well not have, and which art doesn't use
+function artMissing() {
+    const object = `repo:${objectTypes(nsidPrefix(Config())).object}`;
+    const missing = publishMissing();
+    return missing ? missing.filter(scope => scope !== object) : missing;
 }
 
 function missingPermissions(config = Config()) {
@@ -906,13 +921,26 @@ function startup(cb) {
             //  the board's art (assets.js): also with none listed, so the
             //  last piece taken off the list is taken down; an account
             //  that never had any is only read
-            if (!(publishMissing() || []).length) {
+            if (!(artMissing() || []).length) {
                 require('./assets').publishAssets(err => {
                     if (err) {
                         Log.warn(
                             { error: err.message },
                             'Could not publish the board art'
                         );
+                    }
+                    //  its live objects, after the programs they name;
+                    //  only once the account allows them
+                    const object = `repo:${objectTypes(nsidPrefix(Config())).object}`;
+                    if (!(publishMissing() || [object]).includes(object)) {
+                        require('./objects').publishObjects(err => {
+                            if (err) {
+                                Log.warn(
+                                    { error: err.message },
+                                    'Could not publish the board live objects'
+                                );
+                            }
+                        });
                     }
                 });
             }

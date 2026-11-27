@@ -33,6 +33,12 @@ exports.assetTypes = (nsidPrefix = exports.DefaultNsidPrefix) => ({
     view: `${nsidPrefix}.asset.view`,
 });
 
+//  The board's live objects (compute spec; build spec of the live object
+//  slice, §3): each a record of its own, naming a program and its input
+exports.objectTypes = (nsidPrefix = exports.DefaultNsidPrefix) => ({
+    object: `${nsidPrefix}.object`,
+});
+
 //
 //  What the board account is asked to allow. Permissions name record types
 //  exactly, so adding one, or the record names becoming final, means every
@@ -51,6 +57,7 @@ exports.boardScope = (nsidPrefix = exports.DefaultNsidPrefix) => {
         `repo:${assets.item}`,
         `repo:${assets.catalogue}`,
         `repo:${assets.view}`,
+        `repo:${exports.objectTypes(nsidPrefix).object}`,
         'blob:*/*',
     ].join(' ');
 };
@@ -66,6 +73,7 @@ exports.permissionWords = (scope, nsidPrefix = exports.DefaultNsidPrefix) => {
         [`repo:${assets.item}`]: 'its art',
         [`repo:${assets.catalogue}`]: 'its art',
         [`repo:${assets.view}`]: 'its view',
+        [`repo:${exports.objectTypes(nsidPrefix).object}`]: 'its live objects',
         'blob:*/*': 'files for its art',
     };
     return words[scope] || scope;

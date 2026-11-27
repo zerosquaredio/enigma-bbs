@@ -52,6 +52,8 @@ Board account:
                                board account menu's "splash" does the same)
   assets                       Publish the art listed in
                                atProto.publishing.assets now (public!)
+  objects                      Publish the live objects listed in
+                               atProto.publishing.objects now (public!)
 
 Invites:
   invite add HANDLE|DID        Invite one Bluesky account, used once when it

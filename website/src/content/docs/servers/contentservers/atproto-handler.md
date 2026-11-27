@@ -342,6 +342,52 @@ A model already published isn't taken down because its entry stops passing or it
 
 If the account's host refuses a file (it has an upload limit of its own), publishing stops there and what the host said is passed on, with the file's name. Nothing listed after that file is published, and nothing is deleted, until the file is fixed or its entry taken off the list. A hub checks a model much more closely before showing it, and has limits of its own: a model published here is one the hub may still decline.
 
+#### Programs and Live Objects
+
+A hub that runs live objects shows things that change: the weather in a town, as a badge on the hub's map, say. Each is a small **program** (WebAssembly) and an **object** that gives it its input. The hub runs the program, within limits its admin sets, and only if its admin has checked that program by its hash; it reaches only the sites both the program and the hub allow.
+
+A program is published as art is, as an entry in `atProto.publishing.assets` with `program` (a path to its `.wasm` module), `source` (a path to its source, shown to anyone on the hub, so people can see what it does), a `licence` (required: code needs one; under an open-source licence, anyone may copy and remix it) and a `manifest`:
+
+```hjson
+assets: [
+    {
+        program: "/enigma-bbs/config/programs/weather.wasm"
+        source: "/enigma-bbs/config/programs/weather.ts"
+        name: "Weather (Open-Meteo)"
+        description: "The current weather for a place"
+        licence: { id: "BSD-2-Clause", url: "https://opensource.org/license/bsd-2-clause" }
+        manifest: {
+            fetch: [ "api.open-meteo.com", "geocoding-api.open-meteo.com" ]
+            values: weather
+            credit: [
+                { text: "Weather data by Open-Meteo.com", url: "https://open-meteo.com/" }
+                { text: "Place names from GeoNames", url: "https://www.geonames.org/" }
+            ]
+        }
+    }
+]
+```
+
+`fetch` is the sites the program reads, by host name; `values` is the shared type of what it sets (`weather`); `credit` is what the data it shows must credit, shown by the hub wherever it is. The board checks that the module is WebAssembly and the source is text, each within its limit (1 MB and 256 KB); the hub checks the rest. The framework's own weather program is in the hub's repository, under `programs/weather`.
+
+The objects are listed in `atProto.publishing.objects`, each published as a record of its own, keyed by its `name`:
+
+```hjson
+objects: [
+    {
+        name: berlin
+        title: "Weather in Berlin"
+        program: "/enigma-bbs/config/programs/weather.wasm"
+        input: { name: "Berlin" }
+        interval: 600
+    }
+]
+```
+
+`program` is the path of the module (published above), or `{ sha256: "...", did: "did:plc:..." }` for a program another account publishes. `input` is given to the program: for the weather, a place by `name`, or by `latitude` and `longitude` with a `label`. `interval` is how often it updates, in seconds; a hub may make it longer. An object taken off the list is deleted. **Everything here is public, the input too:** a place name or coordinates can say where someone lives, so name a town rather than an address.
+
+Objects need the board account to allow them. An account connected before they were asked for doesn't: art goes on being published, and the board account menu and `./oputil.js atproto board` say what is missing; connect the account again to publish objects.
+
 **From the command line**, using the stored session, whether or not the board is running:
 
 ```shell
@@ -351,6 +397,7 @@ If the account's host refuses a file (it has an upload limit of its own), publis
 ./oputil.js atproto post "Door games night this Friday!"
 ./oputil.js atproto splash off                  # stop the hub showing the splash screen (on: again)
 ./oputil.js atproto assets                      # publish the listed art now
+./oputil.js atproto objects                     # publish the listed live objects now
 ```
 
 Posts are plain text, up to 300 characters, with web links made clickable, and at most one per `minPostIntervalSeconds`. They are public and effectively permanent: Bluesky honors deletes, but copies may persist.
@@ -424,6 +471,7 @@ The hub says this only about members the board itself reported, and only while t
 With presence on the hub set up, members can open the hub's common space from inside the board: the `hubSpace` menu in the main menu template, behind a commented out `HS` command. It needs nothing more in `config.hjson`.
 
 * **Who is around** on the hub's boards and in its chat room, one line a place, kept up to date while the member watches.
+* **Live objects** a board has on the hub, such as the weather in a town, on lines beneath it, in words, with the credit their data needs.
 * **The hub's chat room,** shared with people on other boards and on the hub's web page. Only members who confirmed this board at the hub can talk: the hub never lets a board speak as someone's Bluesky account on the board's word alone. Others can watch who is around.
 * **Who can open it:** members the board reports to the hub, so being shown has to be on (Hub Presence), and the hub has to let them into its space. A member who can't is told why.
 * **How:** the board connects to the hub for the member, with its token, and names the member as presence reports do. Names and messages from elsewhere are shown as plain text: color and control codes in them are not used.

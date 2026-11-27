@@ -996,7 +996,12 @@ module.exports = {
     'atProto.publishing.assets': {
         type: 'array',
         description:
-            "The board's art, published from its account as asset records for hubs to show: each an ANSI art name or path, or an object with art, name, description, licence ({ id, url, text }), rating, themes and credit. A 3D model has, in place of art, model (a path to a .glb file) and image (a path to its preview PNG). Public: list only art that is the board's to share.",
+            "The board's art, published from its account as asset records for hubs to show: each an ANSI art name or path, or an object with art, name, description, licence ({ id, url, text }), rating, themes and credit. A 3D model has, in place of art, model (a path to a .glb file) and image (a path to its preview PNG). A program for live objects has program (a path to its .wasm module), source (a path to its source), a licence (required) and manifest ({ fetch: [ host names ], values: a shared type such as weather, credit: [ { text, url } ] }). Public: list only art that is the board's to share.",
+    },
+    'atProto.publishing.objects': {
+        type: 'array',
+        description:
+            "The board's live objects, published from its account for hubs that run them: each { name (its key: letters, digits, '.', '_', '~', '-'), title, program (a path to its .wasm module, itself published as a program under atProto.publishing.assets, or { sha256, did } for another account's), input (an object, at most 1 KB, given to the program: { name: 'Berlin' } for the weather, say), interval (seconds between updates, 600 if not given; a hub may make it longer) }. Public, the input too. Needs the board account to allow live objects: connect it again if it was connected before they were asked for.",
     },
     'atProto.publishing.models.maxBytes': {
         type: 'number',

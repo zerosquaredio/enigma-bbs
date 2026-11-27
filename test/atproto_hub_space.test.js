@@ -204,6 +204,70 @@ describe('The hub space door', () => {
             );
         });
 
+        it("draws a board's live objects beneath it, in words, stale ones greyed", () => {
+            const weather = (id, values, more = {}) =>
+                Object.assign(
+                    {
+                        id: `object:did:plc:cool/${id}`,
+                        type: 'object',
+                        owner: 'leaf:coolbbs',
+                        title: `Weather in ${id}`,
+                        kind: 'weather',
+                        zone: null,
+                        look: {
+                            badge: true,
+                            credit: [
+                                {
+                                    text: 'Weather data by Open-Meteo.com',
+                                    url: 'https://open-meteo.com/',
+                                },
+                            ],
+                        },
+                        values,
+                        updatedAt: '2026-11-27T17:05:00Z',
+                        stale: false,
+                        page: `/objects/coolbbs/${id}`,
+                    },
+                    more
+                );
+            const model = new HubSpace.SpaceModel();
+            const base = snapshot();
+            model.apply(
+                snapshot({
+                    entities: [
+                        ...base.entities,
+                        weather('Berlin', { temperature: -0.8, code: 3, isDay: false }),
+                        weather('Rome', { temperature: 14.2, code: 61 }, { stale: true }),
+                        weather(
+                            'Nowhere',
+                            {},
+                            {
+                                look: { badge: true, credit: [] },
+                                title: 'A |12red|07 title\u001b[5m',
+                            }
+                        ),
+                    ],
+                })
+            );
+            const lines = HubSpace.renderMap(model, { width: 76, height: 20 }).split(
+                '\n'
+            );
+            const at = lines.findIndex(l => /Cool BBS/.test(l));
+            assert.deepEqual(lines.slice(at + 1, at + 5), [
+                '  |03Weather in Berlin: overcast, -0.8°C (31°F)',
+                '  |03A ||12red||07 title[5m: no reading yet',
+                '  |08Weather in Rome: rain, 14.2°C (58°F), not updated lately',
+                '  |08Weather data by Open-Meteo.com',
+            ]);
+            //  each line fits
+            for (const line of lines) {
+                assert.ok(
+                    require('../core/color_codes.js').pipeStringLength(line) <= 76,
+                    line
+                );
+            }
+        });
+
         it('draws a line a place, the viewer picked out, cut to fit', () => {
             const model = new HubSpace.SpaceModel();
             model.apply(snapshot());

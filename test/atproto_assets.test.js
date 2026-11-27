@@ -321,7 +321,7 @@ describe("AT publishing: the board's art", () => {
         );
         assert.match(result.refused[0].reason, /both art and a model/);
         assert.match(result.refused[1].reason, /preview picture.*"image"/);
-        assert.match(result.refused[2].reason, /no art and no model/);
+        assert.match(result.refused[2].reason, /no art, no model and no program/);
         assert.deepEqual(result.missing, ['models/clock.glb']);
         assert.deepEqual(uploads, []);
     });

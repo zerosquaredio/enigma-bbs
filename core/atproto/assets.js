@@ -35,15 +35,47 @@ const paths = require('path');
 //  A listed model that can't be read just now (its file half copied, say)
 //  doesn't take down what was published: see publishAssets().
 //
+//  A piece may also be a program, for live objects (build spec of the live
+//  object slice, §3): a WebAssembly module (.wasm), its source, and a
+//  manifest saying the sites it reaches, the values it sets and the credit
+//  its data needs. Its record, keyed by the module's SHA-256, has two
+//  versions, the module then its source, and the manifest beside them. A
+//  program must say its licence, and may be copied and remixed when that
+//  licence is an open one. Like a model, a listed program that can't be
+//  read just now holds back deletions.
+//
 
 exports.pieces = pieces;
 exports.buildItem = buildItem;
 exports.buildModelItem = buildModelItem;
+exports.buildProgramItem = buildProgramItem;
 exports.publishAssets = publishAssets;
+exports.listAll = listAll;
 exports.DefaultModelMaxBytes = 8 * 1024 * 1024;
+exports.ProgramMaxBytes = 1024 * 1024;
+exports.SourceMaxBytes = 256 * 1024;
 
 const GlbMediaType = 'model/gltf-binary';
 const PngMediaType = 'image/png';
+const WasmMediaType = 'application/wasm';
+const SourceMediaType = 'text/plain';
+const WasmSignature = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+//  licences under which anyone may copy and remix a program
+const OpenLicences = [
+    'MIT',
+    'BSD-2-Clause',
+    'BSD-3-Clause',
+    'Apache-2.0',
+    'ISC',
+    'MPL-2.0',
+    'GPL-3.0-only',
+    'GPL-3.0-or-later',
+    'LGPL-3.0-only',
+    'AGPL-3.0-only',
+    'CC0-1.0',
+    'Unlicense',
+];
+const HostRe = /^(?=.{1,200}$)([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]$/;
 const PngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MB = 1024 * 1024;
 
@@ -65,8 +97,9 @@ const text = (value, max) =>
 //
 //  The pieces the sysop lists, normalized: { art, name, description,
 //  licence, rating, themes, credit }, each naming its art by name or path;
-//  a model has { model, image }, both paths, in place of |art|. Entries
-//  that can't be published as written are left out, with a warning.
+//  a model has { model, image }, both paths, in place of |art|, and a
+//  program { program, source, manifest }. Entries that can't be published
+//  as written are left out, with a warning.
 //
 function pieces(config = Config()) {
     return listed(config).pieces;
@@ -75,7 +108,10 @@ function pieces(config = Config()) {
 //  What an entry names, for messages about it
 const entryLabel = (piece, i) =>
     (_.isPlainObject(piece) &&
-        (text(piece.name, 80) || text(piece.model, 1024) || text(piece.art, 1024))) ||
+        (text(piece.name, 80) ||
+            text(piece.model, 1024) ||
+            text(piece.program, 1024) ||
+            text(piece.art, 1024))) ||
     `entry ${i + 1}`;
 
 //
@@ -91,20 +127,46 @@ function listed(config) {
     entries.forEach((entry, i) => {
         const piece = _.isString(entry) ? { art: entry } : entry;
         const isModel = _.isPlainObject(piece) && !!text(piece.model, 1024);
+        const isProgram = _.isPlainObject(piece) && !!text(piece.program, 1024);
         const refuse = reason => {
             Log.warn(
                 { index: i, reason },
                 'atProto.publishing.assets: an entry cannot be published; left out'
             );
             refused.push({ entry: entryLabel(piece, i), reason });
-            if (_.isPlainObject(piece) && (piece.model || piece.image)) {
+            if (_.isPlainObject(piece) && (piece.model || piece.image || piece.program)) {
                 modelsRefused += 1;
             }
         };
-        if (!_.isPlainObject(piece) || (!isModel && !text(piece.art, 1024))) {
+        if (
+            !_.isPlainObject(piece) ||
+            (!isModel && !isProgram && !text(piece.art, 1024))
+        ) {
             return refuse(
-                'it names no art and no model: give "art", or "model" and "image"'
+                'it names no art, no model and no program: give "art", or "model" and "image", or "program" and "source"'
             );
+        }
+        if (isProgram && (isModel || text(piece.art, 1024))) {
+            return refuse(
+                'it names a program and art or a model: an entry is one of them, so list them apart'
+            );
+        }
+        let manifest = null;
+        if (isProgram) {
+            if (!text(piece.source, 1024)) {
+                return refuse(
+                    'a program is published with its source: give "source", its path'
+                );
+            }
+            if (!_.isPlainObject(piece.licence) || !text(piece.licence.id, 64)) {
+                return refuse(
+                    'a program says its licence: give "licence": { "id": "BSD-2-Clause", say }'
+                );
+            }
+            manifest = programManifest(piece.manifest);
+            if (_.isString(manifest)) {
+                return refuse(manifest);
+            }
         }
         if (isModel && text(piece.art, 1024)) {
             return refuse(
@@ -128,9 +190,11 @@ function listed(config) {
             : null;
         const rating = Ratings.includes(piece.rating) ? piece.rating : 'general';
         out.push({
-            ...(isModel
-                ? { model: piece.model.trim(), image: piece.image.trim() }
-                : { art: piece.art.trim() }),
+            ...(isProgram
+                ? { program: piece.program.trim(), source: piece.source.trim(), manifest }
+                : isModel
+                  ? { model: piece.model.trim(), image: piece.image.trim() }
+                  : { art: piece.art.trim() }),
             name: text(piece.name, 80),
             description: text(piece.description, 300),
             licence: licence && licence.id ? licence : DefaultLicence,
@@ -152,6 +216,38 @@ function listed(config) {
         });
     });
     return { pieces: out, refused, modelsRefused };
+}
+
+//  A program's manifest, checked: { fetch, values, credit }, or why not
+function programManifest(m) {
+    if (!_.isPlainObject(m)) {
+        return 'a program has a "manifest": { "fetch": [ sites ], "values": "weather" }';
+    }
+    const fetch = _.castArray(m.fetch || []);
+    if (
+        fetch.length > 8 ||
+        fetch.some(h => !_.isString(h) || !HostRe.test(h.toLowerCase()))
+    ) {
+        return 'its manifest\'s "fetch" lists at most 8 sites, by host name only: [ "api.open-meteo.com" ]';
+    }
+    const values = text(m.values, 32);
+    if (!values) {
+        return 'its manifest names the "values" it sets, a shared type: "weather", say';
+    }
+    const credit = [];
+    for (const c of _.castArray(m.credit || []).slice(0, 3)) {
+        const t = _.isPlainObject(c) && text(c.text, 80);
+        const url = _.isPlainObject(c) && text(c.url, 512);
+        if (!t || !url || !/^https:\/\/[^\s"'<>]+$/.test(url)) {
+            return 'each of its manifest\'s "credit" has a "text" and an https "url"';
+        }
+        credit.push({ text: t, url });
+    }
+    return {
+        fetch: _.uniq(fetch.map(h => h.toLowerCase())),
+        values,
+        ...(credit.length ? { credit } : {}),
+    };
 }
 
 const fileOf = file => ({
@@ -188,6 +284,44 @@ function buildModelItem(piece, model, image, blobs, config = Config(), now = new
         config,
         now
     );
+}
+
+//
+//  The record for a program, its source and their uploaded files (|blobs|:
+//  { program, source }): the module first, then its source, the manifest
+//  beside them
+//
+function buildProgramItem(
+    piece,
+    program,
+    source,
+    blobs,
+    config = Config(),
+    now = new Date()
+) {
+    const record = itemRecord(
+        piece,
+        program,
+        'a program for live objects',
+        [
+            { form: 'program', file: fileOf(program), blob: blobs.program },
+            { form: 'source', file: fileOf(source), blob: blobs.source },
+        ],
+        config,
+        now
+    );
+    const open = OpenLicences.includes(piece.licence.id);
+    return {
+        ...record,
+        kind: 'program',
+        manifest: piece.manifest,
+        permissions: {
+            use: 'anyone',
+            copy: open ? 'anyone' : 'nobody',
+            restyle: 'nobody',
+            remix: open ? 'anyone' : 'nobody',
+        },
+    };
 }
 
 //  A piece's record, named after |file| unless the piece gives a name
@@ -295,6 +429,46 @@ function readFile(path, what, mediaType, maxBytes, cb) {
 //  published
 //
 function findFiles(piece, config, cb) {
+    if (piece.program) {
+        return readFile(
+            piece.program,
+            'program',
+            WasmMediaType,
+            exports.ProgramMaxBytes,
+            (problem, program) => {
+                if (problem) {
+                    return cb(problem);
+                }
+                if (
+                    program.body.length < 8 ||
+                    0 !== program.body.compare(WasmSignature, 0, 8, 0, 8)
+                ) {
+                    return cb({
+                        reason: 'the program is not a WebAssembly module (.wasm) of version 1',
+                    });
+                }
+                return readFile(
+                    piece.source,
+                    'source',
+                    SourceMediaType,
+                    exports.SourceMaxBytes,
+                    (problem, source) => {
+                        if (problem) {
+                            return cb(problem);
+                        }
+                        try {
+                            new TextDecoder('utf-8', { fatal: true }).decode(source.body);
+                        } catch (e) {
+                            return cb({
+                                reason: "the program's source is not UTF-8 text",
+                            });
+                        }
+                        return cb({ piece, file: program, source });
+                    }
+                );
+            }
+        );
+    }
     if (!piece.model) {
         return Splash.findNamed(piece.art, config, file =>
             cb(file ? { piece, file } : { missing: piece.art })
@@ -343,7 +517,7 @@ function uploadPiece(account, f, published, config, cb) {
             file.body,
             file.mediaType,
             (err, blob) => {
-                if (err && f.image) {
+                if (err && (f.image || f.source)) {
                     const about = Errors.General(
                         `${paths.basename(file.path)}: ${err.reason || err.message}`,
                         err.reasonCode
@@ -355,6 +529,26 @@ function uploadPiece(account, f, published, config, cb) {
                 return next(err, blob);
             }
         );
+    if (f.source) {
+        return upload(f.file, (err, program) =>
+            err
+                ? cb(err)
+                : upload(f.source, (err, source) =>
+                      err
+                          ? cb(err)
+                          : cb(
+                                null,
+                                buildProgramItem(
+                                    f.piece,
+                                    f.file,
+                                    f.source,
+                                    { program, source },
+                                    config
+                                )
+                            )
+                  )
+        );
+    }
     if (!f.image) {
         return upload(f.file, (err, blob) =>
             err ? cb(err) : cb(null, buildItem(f.piece, f.file, blob, config))
@@ -470,13 +664,13 @@ function publishAssets(cb) {
         wanted.pieces,
         (piece, next) =>
             findFiles(piece, config, found => {
-                if (piece.model && !found.file) {
+                if ((piece.model || piece.program) && !found.file) {
                     modelsOut += 1;
                 }
                 if (found.missing) {
                     result.missing.push(found.missing);
                 } else if (found.reason) {
-                    const entry = piece.name || piece.model;
+                    const entry = piece.name || piece.model || piece.program;
                     Log.warn(
                         { entry, reason: found.reason },
                         'atProto.publishing.assets: an entry cannot be published; left out'
@@ -505,9 +699,12 @@ function publishAssets(cb) {
                 //  published: it may be that one's
                 const [held, stale] = _.partition(
                     unlisted,
-                    r => modelsOut > 0 && versionOf(r, 'model')
+                    r =>
+                        modelsOut > 0 &&
+                        (versionOf(r, 'model') || versionOf(r, 'program'))
                 );
                 //  a model published with another picture is written again
+                //  and a program with another source or manifest
                 const unchanged = f =>
                     have.has(f.file.sha256) &&
                     (!f.image ||
@@ -515,7 +712,17 @@ function publishAssets(cb) {
                             _.get(
                                 versionOf(have.get(f.file.sha256), 'image'),
                                 'file.sha256'
-                            ));
+                            )) &&
+                    (!f.source ||
+                        (f.source.sha256 ===
+                            _.get(
+                                versionOf(have.get(f.file.sha256), 'source'),
+                                'file.sha256'
+                            ) &&
+                            _.isEqual(
+                                f.piece.manifest,
+                                _.get(have.get(f.file.sha256), 'value.manifest')
+                            )));
                 const add = [...byHash.values()].filter(f => !unchanged(f));
                 const refs = [...byHash.keys()]
                     .filter(hash => unchanged(byHash.get(hash)))

@@ -405,6 +405,7 @@ describe("AT publishing: the board's splash screen", () => {
                 'repo:nexus.cyberspace.dev.asset.item',
                 'repo:nexus.cyberspace.dev.asset.catalogue',
                 'repo:nexus.cyberspace.dev.asset.view',
+                'repo:nexus.cyberspace.dev.object',
                 'blob:*/*',
             ]);
             const { boardScope } = require('../core/atproto/const.js');

@@ -294,6 +294,17 @@ SpaceModel.prototype.peopleAt = function (placeId) {
     );
 };
 
+//  The live objects of a place, by id (build spec of the live object slice)
+SpaceModel.prototype.objectsAt = function (placeId) {
+    const out = [];
+    for (const e of this.state.entities.values()) {
+        if ('object' === e.type && e.owner === placeId) {
+            out.push(e);
+        }
+    }
+    return out.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+};
+
 //  Everyone the model shows, but the viewer: [{ id, label }]
 SpaceModel.prototype.people = function () {
     const out = [];
@@ -315,9 +326,46 @@ SpaceModel.prototype.labelFor = function (did) {
     return null;
 };
 
+//  The weather type's WMO codes in words, by the lowest code of each kind
+const Skies = [
+    [0, 'clear'],
+    [1, 'mainly clear'],
+    [2, 'partly cloudy'],
+    [3, 'overcast'],
+    [45, 'fog'],
+    [51, 'drizzle'],
+    [61, 'rain'],
+    [71, 'snow'],
+    [80, 'showers'],
+    [85, 'snow showers'],
+    [95, 'thunderstorm'],
+];
+
+//  A live object's values in words: for the weather, the sky and the
+//  temperature in both scales, as a terminal can't offer a choice
+function describeObject(o) {
+    const v = o.values && 'object' === typeof o.values ? o.values : {};
+    const parts = [];
+    if ('weather' === o.kind) {
+        if (Number.isFinite(v.code)) {
+            const sky = Skies.filter(([from]) => v.code >= from).pop();
+            if (sky) {
+                parts.push(sky[1]);
+            }
+        }
+        if (Number.isFinite(v.temperature)) {
+            const c = Math.round(v.temperature * 10) / 10;
+            const f = Math.round(v.temperature * 1.8 + 32);
+            parts.push(`${c}°C (${f}°F)`);
+        }
+    }
+    return parts.length ? parts.join(', ') : 'no reading yet';
+}
+
 //
 //  The model as lines of pipe-coded text, one a place: its name, whether it
-//  is up, and who is there, cut to |width| columns and |height| lines
+//  is up, and who is there, then a line for each of its live objects, cut
+//  to |width| columns and |height| lines
 //
 function renderMap(model, { width = 76, height = 8 } = {}) {
     if (!model.ready) {
@@ -330,32 +378,58 @@ function renderMap(model, { width = 76, height = 8 } = {}) {
     const NameWidth = 18;
     const StateWidth = 9;
     const room = Math.max(10, width - NameWidth - StateWidth);
-    const lines = places.map(place => {
-        const name = 'room' === place.type ? place.name : place.title || place.name || '';
-        const shown = clean(name, NameWidth - 1).padEnd(NameWidth);
-        const state = (
-            'room' === place.type ? 'chat' : place.online ? 'online' : 'offline'
-        ).padEnd(StateWidth);
-        const people = model.peopleAt(place.id);
-        let used = 0;
-        const names = [];
-        for (let i = 0; i < people.length; i++) {
-            const label = clean(people[i].label, 40);
-            const more = people.length - i - 1;
-            const tail = more ? ` +${more}` : '';
-            if (used + label.length + (names.length ? 2 : 0) + tail.length > room) {
-                names.push(`|08+${people.length - i} more`);
-                break;
+    const lines = places
+        .map(place => {
+            const name =
+                'room' === place.type ? place.name : place.title || place.name || '';
+            const shown = clean(name, NameWidth - 1).padEnd(NameWidth);
+            const state = (
+                'room' === place.type ? 'chat' : place.online ? 'online' : 'offline'
+            ).padEnd(StateWidth);
+            const people = model.peopleAt(place.id);
+            let used = 0;
+            const names = [];
+            for (let i = 0; i < people.length; i++) {
+                const label = clean(people[i].label, 40);
+                const more = people.length - i - 1;
+                const tail = more ? ` +${more}` : '';
+                if (used + label.length + (names.length ? 2 : 0) + tail.length > room) {
+                    names.push(`|08+${people.length - i} more`);
+                    break;
+                }
+                used += label.length + (names.length ? 2 : 0);
+                const color = people[i].id === model.you ? '|14' : '|07';
+                names.push(`${color}${label.replace(/\|/g, '||')}`);
             }
-            used += label.length + (names.length ? 2 : 0);
-            const color = people[i].id === model.you ? '|14' : '|07';
-            names.push(`${color}${label.replace(/\|/g, '||')}`);
-        }
-        const nameColor = 'room' === place.type ? '|11' : place.online ? '|15' : '|08';
-        return `${nameColor}${shown.replace(/\|/g, '||')}|08${state}${
-            names.length ? names.join('|08, ') : '|08nobody'
-        }`;
-    });
+            const nameColor =
+                'room' === place.type ? '|11' : place.online ? '|15' : '|08';
+            const line = `${nameColor}${shown.replace(/\|/g, '||')}|08${state}${
+                names.length ? names.join('|08, ') : '|08nobody'
+            }`;
+            //  its live objects, each on a line of its own beneath it, and the
+            //  credit their data needs on one line after them, each named once
+            const shownObjects = model.objectsAt(place.id);
+            const objects = shownObjects.map(o => {
+                const said = `${clean(o.title, 40)}: ${describeObject(o)}${
+                    o.stale ? ', not updated lately' : ''
+                }`;
+                return `  ${o.stale ? '|08' : '|03'}${pipeSafe(said, width - 2)}`;
+            });
+            const credits = [
+                ...new Set(
+                    shownObjects.flatMap(o =>
+                        ((o.look && o.look.credit) || [])
+                            .map(c => c && clean(c.text, 80))
+                            .filter(Boolean)
+                    )
+                ),
+            ];
+            if (credits.length) {
+                objects.push(`  |08${pipeSafe(credits.join('; '), width - 2)}`);
+            }
+            return [line, ...objects];
+        })
+        .flat();
     if (lines.length > height) {
         const hidden = lines.length - height + 1;
         return [...lines.slice(0, height - 1), `|08...and ${hidden} more places`].join(

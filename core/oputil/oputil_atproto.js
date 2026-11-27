@@ -314,7 +314,10 @@ function boardShow() {
 
 function publishArt() {
     withBoardAccount(Publishing => {
-        const missing = Publishing.missingPermissions();
+        //  all the board asks for but live objects, which art doesn't need
+        const { objectTypes } = require('../atproto/const');
+        const object = `repo:${objectTypes(_.get(require('../config').get(), 'atProto.publishing.nsidPrefix')).object}`;
+        const missing = (Publishing.missingPermissions() || []).filter(s => s !== object);
         if (missing && missing.length) {
             return fail(
                 `The board account doesn't allow publishing art yet (missing ${missing.join(' ')}): connect it again from the board account menu`
@@ -352,6 +355,34 @@ function publishArt() {
             (result.refused || []).forEach(r =>
                 fail(`Not published: ${r.entry}: ${r.reason}`)
             );
+        });
+    });
+}
+
+function publishLiveObjects() {
+    withBoardAccount(() => {
+        require('../atproto/objects').publishObjects((err, result) => {
+            if (err) {
+                return fail(
+                    `Could not publish the live objects: ${err.reason || err.message}`
+                );
+            }
+            const listed =
+                result.added.length +
+                result.changed.length +
+                result.kept.length +
+                result.refused.length;
+            if (0 === listed) {
+                console.info(
+                    'No live objects are listed: see atProto.publishing.objects.'
+                );
+            }
+            if (listed || result.removed.length) {
+                console.info(
+                    `Live objects published: ${result.added.length} new, ${result.changed.length} changed, ${result.kept.length} unchanged, ${result.removed.length} removed.`
+                );
+            }
+            result.refused.forEach(r => fail(`Not published: ${r.entry}: ${r.reason}`));
         });
     });
 }
@@ -435,6 +466,7 @@ function handleAtProtoCommand() {
         status: () => (action ? status(String(action)) : usage()),
         splash: () => splash(String(action || '')),
         assets: publishArt,
+        objects: publishLiveObjects,
         //  the rest of the words, so quotes are optional
         post: () => {
             const text = argv._.slice(2).map(String).join(' ');

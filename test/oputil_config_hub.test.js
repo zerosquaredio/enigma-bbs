@@ -184,8 +184,22 @@ describe('oputil config hub', () => {
             const menu = hjson.parse(first.text.replace(/%INCLUDE_FILES%/g, ''));
             const commands = JSON.stringify(menu);
             const hint = menu.prompts.mainMenuCommand.mci.TL52;
-            assert.match(hint.text, /HS around/, 'and the hint naming them');
-            assert.deepEqual(hint.position, { row: 1, col: 37 });
+            //  its words, as shown (the colour codes take no room)
+            const shown = hint.text.replace(/\|[0-9]{2}/g, '');
+            assert.equal(
+                shown,
+                "HS who's on  HP show me  AT Bluesky",
+                'and the hint naming them'
+            );
+            //  each command in yellow, as the menu's keys are
+            for (const command of ['HS', 'HP', 'AT']) {
+                assert.ok(hint.text.includes(`|14${command} |03`), command);
+            }
+            assert.deepEqual(hint.position, { row: 1, col: 36 });
+            //  all of it, ending a column short of the stock prompt's clock
+            //  (%CT, column 72)
+            assert.ok(shown.length <= hint.width);
+            assert.ok(hint.position.col + hint.width <= 71);
             assert.equal(menu.menus.mainMenu.prompt, 'mainMenuCommand');
             for (const command of ['AT', 'BA', 'HP', 'HS']) {
                 assert.match(commands, new RegExp(`"command":"${command}"`));

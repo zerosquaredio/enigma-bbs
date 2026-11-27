@@ -2133,9 +2133,9 @@
                 TL52: {
                     //  the prompt's top row, between the menu's name and
                     //  the clock (at its right); a theme can move it
-                    position: { row: 1, col: 37 }
-                    width: 34
-                    text: "HS around  HP be shown  AT Bluesky"
+                    position: { row: 1, col: 36 }
+                    width: 35
+                    text: "|14HS |03who's on  |14HP |03show me  |14AT |03Bluesky"
                 }
                 */
             }

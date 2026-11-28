@@ -310,7 +310,7 @@ assets: [
 ]
 ```
 
-Each piece is uploaded to the account's host and published as an asset record (`asset.item`), keyed by its file's SHA-256, with a catalogue of them (`asset.catalogue`). Unchanged art isn't uploaded again, and pieces taken off the list are deleted, down to the last: with the list emptied, everything published from it is taken down. Credit comes from each file's SAUCE record, which a hub reads when it draws the art; `credit` adds to it. A piece without a `licence` says it is shown with the board's consent, and to ask before any other use. It is published at startup and when the config changes, or at once with `./oputil.js atproto assets`.
+Each piece is uploaded to the account's host and published as an asset record (`asset.item`), keyed by its file's SHA-256, with a catalogue of them (`asset.catalogue`). Unchanged art isn't uploaded again, and pieces taken off the list are deleted, down to the last: with the list emptied, everything published from it is taken down. Credit comes from each file's SAUCE record, which a hub reads when it draws the art; `credit` adds to it. A piece without a `licence` says it is shown with the board's consent, and to ask before any other use. It is published at startup, when the config changes, and when the board account is connected, or at once with `./oputil.js atproto assets`.
 
 **Everything published is public, and must be the board's to share.** Art made for the board, or under a licence that allows it, is fine; give its licence. ENiGMA½'s own theme art belongs to its artists.
 
@@ -386,7 +386,7 @@ objects: [
 
 `program` is the path of the module (published above), or `{ sha256: "...", did: "did:plc:..." }` for a program another account publishes. `input` is given to the program: for the weather, a place by `name`, or by `latitude` and `longitude` with a `label`. `interval` is how often it updates, in seconds; a hub may make it longer. An object taken off the list is deleted. **Everything here is public, the input too:** a place name or coordinates can say where someone lives, so name a town rather than an address.
 
-Objects need the board account to allow them. An account connected before they were asked for doesn't: art goes on being published, and the board account menu and `./oputil.js atproto board` say what is missing; connect the account again to publish objects.
+Objects need the board account to allow them. An account connected before they were asked for doesn't: art goes on being published, and the board account menu and `./oputil.js atproto board` say what is missing; connect the account again, and its objects are published once it is connected.
 
 **From the command line**, using the stored session, whether or not the board is running:
 

@@ -379,5 +379,42 @@ describe("AT publishing: the board's programs and live objects", () => {
             grant(all.join(' '));
             assert.deepEqual((await call(Objects.publishObjects)).added, ['berlin']);
         });
+
+        it('publishes the art, then the objects, once the account is connected again', async () => {
+            const { boardScope } = require('../core/atproto/const.js');
+            const all = boardScope().split(' ');
+            testConfig.atProto.publishing.assets = [program()];
+            testConfig.atProto.publishing.objects = [berlin()];
+            AtProtoOAuth.isBoardReady = () => true;
+            const publishContent = Publishing.publishContent;
+            const connected = (scope, identity) =>
+                new Promise((resolve, reject) => {
+                    grant(scope);
+                    Publishing.publishContent = cb =>
+                        publishContent(() => {
+                            cb();
+                            resolve();
+                        });
+                    Publishing.connectBoardAccount(identity, err => err && reject(err));
+                });
+            try {
+                //  without the objects' permission: the art only
+                await connected(all.filter(s => s !== `repo:${ObjectType}`).join(' '), {
+                    did: 'did:plc:board',
+                    handle: 'board.example',
+                });
+                assert.ok(repo[Item][sha(Module)]);
+                assert.equal(undefined, (repo[ObjectType] || {}).berlin);
+                //  connected again, allowing them: the object too
+                await connected(all.join(' '), {
+                    did: 'did:plc:board',
+                    handle: 'board.example',
+                });
+                assert.equal(repo[ObjectType].berlin.value.title, 'Weather in Berlin');
+            } finally {
+                Publishing.publishContent = publishContent;
+                AtProtoOAuth.isBoardReady = saved.isBoardReady;
+            }
+        });
     });
 });

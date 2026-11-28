@@ -55,6 +55,7 @@ exports.isStockArt = isStockArt;
 exports.missingPermissions = missingPermissions;
 exports.buildPost = buildPost;
 exports.startup = startup;
+exports.publishContent = publishContent;
 exports.StatusStates = ['up', 'maintenance', 'degraded', 'down'];
 //  Content ratings (hub spec §5.4), and the AT self-labels each carries, so
 //  ordinary AT apps and moderation services see it too (a first draft of
@@ -197,8 +198,18 @@ function connectBoardAccount(identity, cb) {
     } catch (err) {
         return setImmediate(() => cb(err));
     }
+    //  the listing first, then, once it's done, the board's art and live
+    //  objects in the background: an account connected again may allow
+    //  what it didn't before
+    const listing = () =>
+        publishListing({ force: true }, (err, result) => {
+            if (exports.isEnabled() && AtProtoOAuth.isBoardReady()) {
+                setImmediate(() => exports.publishContent(_.noop));
+            }
+            return cb(err, result);
+        });
     if (previous && undefined !== previous.splashShown) {
-        return publishListing({ force: true }, cb);
+        return listing();
     }
     return Splash.find(Config(), found => {
         try {
@@ -217,7 +228,7 @@ function connectBoardAccount(identity, cb) {
         } catch (err) {
             return cb(err);
         }
-        return publishListing({ force: true }, cb);
+        return listing();
     });
 }
 
@@ -900,6 +911,43 @@ function post(text, cb) {
 let started = false;
 
 //
+//  Publish the board's art (assets.js), then its live objects (objects.js),
+//  as far as the account allows: the art also with none listed, so the last
+//  piece taken off the list is taken down (an account that never had any is
+//  only read); the objects after the programs they name, and only once the
+//  account allows them. Problems are logged; cb() when both are done.
+//
+function publishContent(cb) {
+    let account = null;
+    try {
+        account = getBoardAccount();
+    } catch (e) {
+        //  no database yet
+    }
+    if (!account || (artMissing() || []).length) {
+        return setImmediate(() => cb());
+    }
+    return require('./assets').publishAssets(err => {
+        if (err) {
+            Log.warn({ error: err.message }, 'Could not publish the board art');
+        }
+        const object = `repo:${objectTypes(nsidPrefix(Config())).object}`;
+        if ((publishMissing() || [object]).includes(object)) {
+            return cb();
+        }
+        return require('./objects').publishObjects(err => {
+            if (err) {
+                Log.warn(
+                    { error: err.message },
+                    'Could not publish the board live objects'
+                );
+            }
+            return cb();
+        });
+    });
+}
+
+//
 //  Publish the listing now (if it changed), then daily, and soon after the
 //  config changes. Never stops the board starting.
 //
@@ -918,32 +966,7 @@ function startup(cb) {
         }
         if (account) {
             publishListing(_.noop);
-            //  the board's art (assets.js): also with none listed, so the
-            //  last piece taken off the list is taken down; an account
-            //  that never had any is only read
-            if (!(artMissing() || []).length) {
-                require('./assets').publishAssets(err => {
-                    if (err) {
-                        Log.warn(
-                            { error: err.message },
-                            'Could not publish the board art'
-                        );
-                    }
-                    //  its live objects, after the programs they name;
-                    //  only once the account allows them
-                    const object = `repo:${objectTypes(nsidPrefix(Config())).object}`;
-                    if (!(publishMissing() || [object]).includes(object)) {
-                        require('./objects').publishObjects(err => {
-                            if (err) {
-                                Log.warn(
-                                    { error: err.message },
-                                    'Could not publish the board live objects'
-                                );
-                            }
-                        });
-                    }
-                });
-            }
+            exports.publishContent(_.noop);
         }
     };
 

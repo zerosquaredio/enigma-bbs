@@ -369,7 +369,7 @@ assets: [
 ]
 ```
 
-`fetch` is the sites the program reads, by host name; `values` is the shared type of what it sets (`weather`); `credit` is what the data it shows must credit, shown by the hub wherever it is. The board checks that the module is WebAssembly and the source is text, each within its limit (1 MB, and 256 KB for the source's files together); the hub checks the rest. The framework's own weather program is in the hub's repository, under `programs/weather`.
+`build`, optional, says how the program is built from its source, so a hub can build it and check it gives the same module: `{ compiler: "assemblyscript@0.28.20", entry: "weather.ts", options: [ "-O3", "--runtime", "stub" ] }`, the compiler by its exact version, the source file it starts from, and its options word by word (each hub takes only the compilers and options it knows). `fetch` is the sites the program reads, by host name; `values` is the shared type of what it sets (`weather`); `credit` is what the data it shows must credit, shown by the hub wherever it is. The board checks that the module is WebAssembly and the source is text, each within its limit (1 MB, and 256 KB for the source's files together); the hub checks the rest. The framework's own weather program is in the hub's repository, under `programs/weather`.
 
 The objects are listed in `atProto.publishing.objects`, each published as a record of its own, keyed by its `name`:
 

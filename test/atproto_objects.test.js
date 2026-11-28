@@ -269,6 +269,38 @@ describe("AT publishing: the board's programs and live objects", () => {
             );
         });
 
+        it("publishes how it's built, and refuses a build that names no source file or no exact compiler", async () => {
+            const build = {
+                compiler: 'assemblyscript@0.28.20',
+                entry: 'weather.ts',
+                options: ['-O3', '--runtime', 'stub'],
+            };
+            testConfig.atProto.publishing.assets = [
+                program({ manifest: { ...Manifest, build } }),
+            ];
+            await call(Assets.publishAssets);
+            assert.deepEqual(repo[Item][sha(Module)].value.manifest.build, build);
+            const reason = async b => {
+                testConfig.atProto.publishing.assets = [
+                    program({ manifest: { ...Manifest, build: b } }),
+                ];
+                return ((await call(Assets.publishAssets)).refused[0] || {}).reason;
+            };
+            assert.match(
+                await reason({ ...build, entry: 'main.ts' }),
+                /"entry" is the name of one of its source files \(weather\.ts\)/
+            );
+            assert.match(
+                await reason({ ...build, compiler: 'assemblyscript' }),
+                /a name and an exact version/
+            );
+            assert.match(
+                await reason({ ...build, options: ['-O3\n--transform x'] }),
+                /each on one line/
+            );
+            assert.match(await reason('asc weather.ts -O3'), /"build" is \{/);
+        });
+
         it('lets nobody copy a program whose licence is not an open one', async () => {
             testConfig.atProto.publishing.assets = [
                 program({ licence: { id: 'custom', text: 'Ask first' } }),

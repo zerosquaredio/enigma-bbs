@@ -164,6 +164,7 @@ function listed(config) {
             );
         }
         let manifest = null;
+        let names = [];
         if (isProgram) {
             const sources = _.castArray(piece.source || []);
             if (!sources.length || !sources.every(path => text(path, 1024))) {
@@ -176,7 +177,7 @@ function listed(config) {
                     `its source is ${sources.length} files: at most ${exports.SourceMaxFiles} are published`
                 );
             }
-            const names = sources.map(path => paths.basename(path.trim()));
+            names = sources.map(path => paths.basename(path.trim()));
             const bad = names.find(name => !SourceNameRe.test(name));
             if (bad) {
                 return refuse(
@@ -193,7 +194,7 @@ function listed(config) {
                     'a program says its licence: give "licence": { "id": "BSD-2-Clause", say }'
                 );
             }
-            manifest = programManifest(piece.manifest);
+            manifest = programManifest(piece.manifest, names);
             if (_.isString(manifest)) {
                 return refuse(manifest);
             }
@@ -264,7 +265,8 @@ function listed(config) {
 }
 
 //  A program's manifest, checked: { fetch, values, credit }, or why not
-function programManifest(m) {
+//  |names|: its source's file names, one of which a build starts from
+function programManifest(m, names = []) {
     if (!_.isPlainObject(m)) {
         return 'a program has a "manifest": { "fetch": [ sites ], "values": "weather" }';
     }
@@ -288,11 +290,51 @@ function programManifest(m) {
         }
         credit.push({ text: t, url });
     }
+    const build = programBuild(m.build, names);
+    if (_.isString(build)) {
+        return build;
+    }
     return {
         fetch: _.uniq(fetch.map(h => h.toLowerCase())),
         values,
         ...(credit.length ? { credit } : {}),
+        ...(build ? { build } : {}),
     };
+}
+
+//
+//  How the program is built from its source, if the manifest says: {
+//  compiler: "name@version", entry: one of the source's files, options: [
+//  words ] }. Hubs check the compiler and options against their own lists
+//  when they build it; here only the shape is checked. Undefined when not
+//  given, a reason when it can't be published.
+//
+const CompilerRe = /^[a-z0-9@][a-z0-9@._/-]{0,40}@[0-9][0-9a-z.+-]{0,20}$/i;
+exports.BuildMaxOptions = 32;
+function programBuild(b, names) {
+    if (undefined === b) {
+        return undefined;
+    }
+    const how =
+        'its manifest\'s "build" is { "compiler": "assemblyscript@0.28.20", "entry": one of its source files, "options": [ "-O3", ... ] }';
+    if (!_.isPlainObject(b)) {
+        return how;
+    }
+    const compiler = text(b.compiler, 64);
+    if (!compiler || !CompilerRe.test(compiler)) {
+        return `${how}: its "compiler" is a name and an exact version`;
+    }
+    if (!names.includes(b.entry)) {
+        return `${how}: its "entry" is the name of one of its source files (${names.join(', ')})`;
+    }
+    const options = _.castArray(b.options || []);
+    if (
+        options.length > exports.BuildMaxOptions ||
+        options.some(o => !_.isString(o) || o.length > 200 || /[\u0000-\u001f]/.test(o))
+    ) {
+        return `${how}: its "options" are at most ${exports.BuildMaxOptions} words, each on one line`;
+    }
+    return { compiler, entry: b.entry, options };
 }
 
 const fileOf = file => ({

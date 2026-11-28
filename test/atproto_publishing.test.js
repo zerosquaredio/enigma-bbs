@@ -160,6 +160,62 @@ describe('AT publishing (the board account)', () => {
             );
         });
 
+        it('cuts what the sysop writes to what the listing holds', async () => {
+            await connect();
+            testConfig.general.boardName = 'B'.repeat(100);
+            testConfig.atProto.publishing.listing = {
+                description: 'd'.repeat(600),
+                tags: Array.from({ length: 12 }, (_, i) => `tag${i}`.padEnd(40, 'x')),
+                rules: 'r'.repeat(2100),
+                howToJoin: 'h'.repeat(400),
+                endpoints: [
+                    {
+                        protocol: 'telnet',
+                        uri: `telnet://${'x'.repeat(300)}.example.com:23`,
+                    },
+                    ...Array.from({ length: 20 }, (_, i) => ({
+                        protocol: 'telnet',
+                        uri: `telnet://bbs${i}.example.com:23`,
+                    })),
+                ],
+                sysopDid: 'did:not a did',
+            };
+            const listing = Publishing.buildListing();
+            assert.equal(listing.name.length, 80);
+            assert.equal(listing.description.length, 500);
+            assert.equal(listing.tags.length, 10);
+            assert.ok(listing.tags.every(t => t.length === 32));
+            assert.equal(listing.rules.length, 2000);
+            assert.equal(listing.admission.howToJoin.length, 300);
+            assert.equal(listing.endpoints.length, 16);
+            assert.ok(
+                listing.endpoints.every(e => e.uri.length <= 300),
+                'a long address is left out'
+            );
+            assert.equal(listing.sysop, undefined);
+        });
+
+        it('keeps the hours that make sense, and none when none do', async () => {
+            await connect();
+            testConfig.atProto.publishing.listing = {
+                hours: {
+                    weekly: [
+                        { days: ['fri', 'funday', 'fri'], from: '19:00', to: '23:00' },
+                        { days: ['sat'], from: '7pm', to: '23:00' },
+                        { days: [], from: '10:00', to: '11:00' },
+                        'evenings',
+                    ],
+                },
+            };
+            assert.deepEqual(Publishing.buildListing().hours, {
+                weekly: [{ days: ['fri'], from: '19:00', to: '23:00' }],
+            });
+            testConfig.atProto.publishing.listing = {
+                hours: { weekly: [{ days: ['sat'], from: '25:00', to: '26:00' }] },
+            };
+            assert.equal(Publishing.buildListing().hours, undefined);
+        });
+
         it('refuses a misspelt rating rather than listing it as all ages', () => {
             testConfig.atProto.publishing.listing.rating = 'adlt';
             assert.throws(() => Publishing.buildListing(), /rating is "adlt"/);
@@ -376,9 +432,19 @@ describe('AT publishing (the board account)', () => {
             assert.equal(requests.pop().params.rkey, 'self');
         });
 
+        it('cuts a long message to what the status holds', async () => {
+            await connect();
+            const record = await call(Publishing.setStatus, {
+                state: 'down',
+                message: 'm'.repeat(400),
+            });
+            assert.equal(record.message.length, 300);
+        });
+
         it('refuses a state or date that makes no sense', async () => {
             await connect();
             await assert.rejects(call(Publishing.setStatus, { state: 'Up Now!' }));
+            await assert.rejects(call(Publishing.setStatus, { state: 'a'.repeat(25) }));
             await assert.rejects(
                 call(Publishing.setStatus, { state: 'down', until: 'tomorrowish' }),
                 { message: /not a date/ }

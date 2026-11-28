@@ -35,6 +35,8 @@ exports.objects = objects;
 exports.buildObject = buildObject;
 exports.publishObjects = publishObjects;
 exports.MaxInputBytes = 1024;
+exports.MinInterval = 60;
+exports.MaxInterval = 24 * 60 * 60;
 
 const RkeyRe = /^[A-Za-z0-9._~-]{1,64}$/;
 const DidRe = /^did:[a-z]+:[a-zA-Z0-9._:%-]{1,200}$/;
@@ -44,8 +46,13 @@ function nsidPrefix(config) {
     return _.get(config, 'atProto.publishing.nsidPrefix', DefaultNsidPrefix);
 }
 
+//  |value| trimmed and cut to |max| characters (code points, which never
+//  outnumber what a person sees as characters, so it fits the Lexicons'
+//  grapheme limits); undefined when empty
 const text = (value, max) =>
-    _.isString(value) && value.trim() ? value.trim().slice(0, max) : undefined;
+    _.isString(value) && value.trim()
+        ? Array.from(value.trim()).slice(0, max).join('')
+        : undefined;
 
 //
 //  The objects the sysop lists, normalized: { name, title, program: { path }
@@ -105,7 +112,10 @@ function objects(config, cb) {
             );
             return next(i + 1);
         }
-        const interval = _.isInteger(e.interval) && e.interval >= 60 ? e.interval : 600;
+        //  every ten minutes unless it says; within a minute and a day
+        const interval = _.isInteger(e.interval)
+            ? Math.min(Math.max(e.interval, exports.MinInterval), exports.MaxInterval)
+            : 600;
         const keep = program => {
             seen.add(name);
             out.push({
@@ -164,7 +174,7 @@ function buildObject(o, did, config = Config(), now = new Date()) {
         },
         input: o.input,
         interval: o.interval,
-        look: 'badge',
+        look: { kind: 'badge' },
         createdAt: now.toISOString(),
     };
 }

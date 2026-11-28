@@ -72,10 +72,10 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `contentServers.web.rateLimits.handoffGet` | Requests per address to the login links. | 20 per 10 minutes |
 | `contentServers.web.rateLimits.atProtoCallback` | Requests per address to the OAuth callback. | 20 per 10 minutes |
 | `atProto.publishing.enabled` | Boolean. Let a sysop connect [the board's own account](#the-boards-own-account). | `false` |
-| `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`, `rating`. | (empty) |
+| `atProto.publishing.listing` | Object. The board's listing: `description`, `tags`, `rules`, `howToJoin`, `hours`, `deriveEndpoints`, `endpoints`, `sysopDid`, `rating`. Each is cut to what the listing holds (a description 500 characters, rules 2000, how to join 300, 10 tags of 32, 16 endpoints); hours keep the days `mon` to `sun` and 24-hour `HH:MM` times, and leave out what isn't. | (empty) |
 | `atProto.publishing.triggers.moved` | Object. `enabled` and `message`: post the new addresses when the listing's addresses change. | off |
 | `atProto.publishing.assets` | Array. The board's [art](#its-art), published for hubs to show: each an art name or path, or an object with `art`, `name`, `description`, `licence`, `rating`, `themes` and `credit`. A [3D model](#3d-models) has `model` and `image` in place of `art`. | `[]` |
-| `atProto.publishing.models.maxBytes` | Number. The largest [3D model](#3d-models) file (and preview picture) published, in bytes. | `8388608` (8 MB) |
+| `atProto.publishing.models.maxBytes` | Number. The largest [3D model](#3d-models) file published, in bytes (its preview picture: this or 2 MB, whichever is less). | `8388608` (8 MB) |
 | `atProto.publishing.emblem.art` | String. The board's [emblem](#its-emblem), a small logo for its hub's map: an ANSI art name or a path to an `.ans` file. Naming one offers it. | (none) |
 | `atProto.publishing.splash.art` | Array. The [splash screen](#its-splash-screen) offered to the board's hub: ANSI art names, tried in order in the pre-login theme and the general art directory, or paths to `.ans` files. | `[ "CONNECT", "MATRIX" ]` |
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
@@ -311,7 +311,7 @@ assets: [
 ]
 ```
 
-Each piece is uploaded to the account's host and published as an asset record (`asset.item`), keyed by its file's SHA-256, with a catalogue of them (`asset.catalogue`). Unchanged art isn't uploaded again, and pieces taken off the list are deleted, down to the last: with the list emptied, everything published from it is taken down. Credit comes from each file's SAUCE record, which a hub reads when it draws the art; `credit` adds to it. A piece without a `licence` says it is shown with the board's consent, and to ask before any other use. It is published at startup, when the config changes, and when the board account is connected, or at once with `./oputil.js atproto assets`.
+Each piece is uploaded to the account's host and published as an asset record (`asset.item`), keyed by its file's SHA-256, with a catalogue of them (`asset.catalogue`). Unchanged art isn't uploaded again, and pieces taken off the list are deleted, down to the last: with the list emptied, everything published from it is taken down. Credit comes from each file's SAUCE record, which a hub reads when it draws the art; `credit` adds to it. A piece without a `licence` says it is shown with the board's consent, and to ask before any other use. A licence's `url` must be an `https://` address. A piece's `rating` is `general` (the default), `mature` or `adult`; a piece with any other rating is left out, rather than published as all ages. Names, descriptions and the rest are cut to what the record holds (a name 80 characters, a description 300). It is published at startup, when the config changes, and when the board account is connected, or at once with `./oputil.js atproto assets`.
 
 **Everything published is public, and must be the board's to share.** Art made for the board, or under a licence that allows it, is fine; give its licence. ENiGMA½'s own theme art belongs to its artists.
 
@@ -337,7 +337,7 @@ Both are paths to files, absolute or relative to the board's directory (where `m
 
 Both files are uploaded to the account's host, and one record is published, keyed by the model file's SHA-256, naming the model and then its picture. A model that hasn't changed isn't uploaded again; with a new picture, only the picture is. Taking the entry off the list deletes its record, as for art. A name not given is the model's file name.
 
-Before uploading, the board checks that the model is a binary glTF file, version 2, whose header gives the file's own length, that the picture is a PNG, and that neither is over `atProto.publishing.models.maxBytes` (8 MB unless set). An entry that fails, or that can't be published as written (no `image`, say), is left out, the rest is published, and the log and `./oputil.js atproto assets` say why, naming the limit when that was it; `oputil` then ends with an error status.
+Before uploading, the board checks that the model is a binary glTF file, version 2, whose header gives the file's own length, that the picture is a PNG of at most 2048 pixels a side, that the model is at most `atProto.publishing.models.maxBytes` (8 MB unless set), and that the picture is at most that or 2 MB, whichever is less (what hubs take). An entry that fails, or that can't be published as written (no `image`, say), is left out, the rest is published, and the log and `./oputil.js atproto assets` say why, naming the limit when that was it; `oputil` then ends with an error status.
 
 A model already published isn't taken down because its entry stops passing or its files can't be found, as when a file is being copied over just as the board publishes. Records are kept by the file's hash, so the board can't tell which one belonged to the failing entry: while any listed model is left out, every model published earlier stays as it is, in the catalogue too, and `oputil` says how many were left. Mend the entry, or take it off the list, and the next publish deletes what is no longer listed. Art taken off the list is deleted either way.
 
@@ -385,7 +385,7 @@ objects: [
 ]
 ```
 
-`program` is the path of the module (published above), or `{ sha256: "...", did: "did:plc:..." }` for a program another account publishes. `input` is given to the program: for the weather, a place by `name`, or by `latitude` and `longitude` with a `label`. `interval` is how often it updates, in seconds; a hub may make it longer. An object taken off the list is deleted. **Everything here is public, the input too:** a place name or coordinates can say where someone lives, so name a town rather than an address.
+`program` is the path of the module (published above), or `{ sha256: "...", did: "did:plc:..." }` for a program another account publishes. `input` is given to the program: for the weather, a place by `name`, or by `latitude` and `longitude` with a `label`. `interval` is how often it updates, in seconds, from 60 to 86400 (a day; outside that, the nearer end; 600 unless given); a hub may make it longer. An object taken off the list is deleted. **Everything here is public, the input too:** a place name or coordinates can say where someone lives, so name a town rather than an address.
 
 Objects need the board account to allow them. An account connected before they were asked for doesn't: art goes on being published, and the board account menu and `./oputil.js atproto board` say what is missing; connect the account again, and its objects are published once it is connected.
 

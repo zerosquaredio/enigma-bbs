@@ -404,7 +404,6 @@ describe("AT publishing: the board's splash screen", () => {
             assert.deepEqual(Publishing.missingPermissions(), [
                 'repo:nexus.cyberspace.dev.asset.item',
                 'repo:nexus.cyberspace.dev.asset.catalogue',
-                'repo:nexus.cyberspace.dev.asset.view',
                 'repo:nexus.cyberspace.dev.object',
                 'blob:*/*',
             ]);

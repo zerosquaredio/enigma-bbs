@@ -426,7 +426,6 @@ describe('atproto OAuth client adapter', () => {
             'repo:app.bsky.feed.post',
             'repo:nexus.cyberspace.dev.asset.item',
             'repo:nexus.cyberspace.dev.asset.catalogue',
-            'repo:nexus.cyberspace.dev.asset.view',
             'repo:nexus.cyberspace.dev.object',
             'blob:*/*',
         ].join(' ');

@@ -81,7 +81,6 @@ exports.boardScope = (nsidPrefix = exports.DefaultNsidPrefix, permissionSet = nu
         `repo:${exports.PostCollection}`,
         `repo:${assets.item}`,
         `repo:${assets.catalogue}`,
-        `repo:${assets.view}`,
         `repo:${exports.objectTypes(nsidPrefix).object}`,
         'blob:*/*',
     ].join(' ');

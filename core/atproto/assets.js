@@ -46,12 +46,16 @@ const paths = require('path');
 //
 
 exports.pieces = pieces;
+exports.listed = listed;
 exports.buildItem = buildItem;
 exports.buildModelItem = buildModelItem;
 exports.buildProgramItem = buildProgramItem;
 exports.publishAssets = publishAssets;
 exports.listAll = listAll;
 exports.DefaultModelMaxBytes = 8 * 1024 * 1024;
+//  a model's preview picture: what hubs take
+exports.PreviewMaxBytes = 2 * 1024 * 1024;
+exports.PreviewMaxPixels = 2048;
 exports.ProgramMaxBytes = 1024 * 1024;
 exports.SourceMaxBytes = 256 * 1024;
 
@@ -91,8 +95,13 @@ function nsidPrefix(config) {
     return _.get(config, 'atProto.publishing.nsidPrefix', DefaultNsidPrefix);
 }
 
+//  |value| trimmed and cut to |max| characters (code points, which never
+//  outnumber what a person sees as characters, so it fits the Lexicons'
+//  grapheme limits); undefined when empty
 const text = (value, max) =>
-    _.isString(value) && value.trim() ? value.trim().slice(0, max) : undefined;
+    _.isString(value) && value.trim()
+        ? Array.from(value.trim()).slice(0, max).join('')
+        : undefined;
 
 //
 //  The pieces the sysop lists, normalized: { art, name, description,
@@ -178,6 +187,17 @@ function listed(config) {
                 'a model needs a preview picture: give "image", the path to a PNG'
             );
         }
+        if (undefined !== piece.rating && !Ratings.includes(piece.rating)) {
+            return refuse(
+                `its "rating" is "${piece.rating}"; it must be one of ${Ratings.join(', ')}`
+            );
+        }
+        const licenceUrl = _.isPlainObject(piece.licence)
+            ? text(piece.licence.url, 512)
+            : undefined;
+        if (licenceUrl && !/^https:\/\/[^\s"'<>]+$/.test(licenceUrl)) {
+            return refuse('its licence\'s "url" must be an https:// address');
+        }
         const licence = _.isPlainObject(piece.licence)
             ? _.pickBy(
                   {
@@ -188,7 +208,7 @@ function listed(config) {
                   _.identity
               )
             : null;
-        const rating = Ratings.includes(piece.rating) ? piece.rating : 'general';
+        const rating = piece.rating || 'general';
         out.push({
             ...(isProgram
                 ? { program: piece.program.trim(), source: piece.source.trim(), manifest }
@@ -273,7 +293,7 @@ function buildItem(piece, file, blob, config = Config(), now = new Date()) {
 //  (|blobs|: { model, image }): the model first, then the picture
 //
 function buildModelItem(piece, model, image, blobs, config = Config(), now = new Date()) {
-    return itemRecord(
+    const record = itemRecord(
         piece,
         model,
         'a 3D model',
@@ -284,6 +304,7 @@ function buildModelItem(piece, model, image, blobs, config = Config(), now = new
         config,
         now
     );
+    return { ...record, kind: 'object' };
 }
 
 //
@@ -326,13 +347,14 @@ function buildProgramItem(
 
 //  A piece's record, named after |file| unless the piece gives a name
 function itemRecord(piece, file, what, versions, config, now) {
-    const name = piece.name || paths.basename(file.path).replace(/\.[^.]*$/, '');
+    const name =
+        piece.name || text(paths.basename(file.path).replace(/\.[^.]*$/, ''), 80);
     const boardName = _.get(config, 'general.boardName', 'ENiGMA½ BBS');
     return {
         $type: assetTypes(nsidPrefix(config)).item,
         name,
         description: {
-            short: piece.description || `${name}: ${what} from ${boardName}`,
+            short: piece.description || text(`${name}: ${what} from ${boardName}`, 300),
         },
         kind: 'art',
         themes: piece.themes,
@@ -390,16 +412,23 @@ const isPng = body =>
 //  path, absolute or relative to the board's directory, as art's is. Calls
 //  back with (problem, file): |file| as art's is ({ sha256, size,
 //  mediaType, body, path }); |problem| is { missing } when there is no such
-//  file, or { reason }.
+//  file, or { reason }. |limit| names the limit in messages.
 //
-function readFile(path, what, mediaType, maxBytes, cb) {
+function readFile(
+    path,
+    what,
+    mediaType,
+    maxBytes,
+    cb,
+    limit = 'atProto.publishing.models.maxBytes'
+) {
     const full = paths.isAbsolute(path) ? path : paths.join(__dirname, '../../', path);
     fs.stat(full, (err, stats) => {
         if (err || !stats.isFile()) {
             return cb({ missing: path });
         }
         const tooLarge = size => ({
-            reason: `the ${what} is ${size < 1024 ? megabytes(size) : `${megabytes(size)} (${size} bytes)`}, over the limit of ${megabytes(maxBytes)} (atProto.publishing.models.maxBytes)`,
+            reason: `the ${what} is ${size < 1024 ? megabytes(size) : `${megabytes(size)} (${size} bytes)`}, over the limit of ${megabytes(maxBytes)} (${limit})`,
         });
         if (stats.size > maxBytes) {
             return cb(tooLarge(stats.size));
@@ -487,7 +516,7 @@ function findFiles(piece, config, cb) {
             piece.image,
             'preview picture',
             PngMediaType,
-            max,
+            Math.min(max, exports.PreviewMaxBytes),
             (problem, image) => {
                 if (problem) {
                     return cb(problem);
@@ -495,8 +524,18 @@ function findFiles(piece, config, cb) {
                 if (!isPng(image.body)) {
                     return cb({ reason: 'the preview picture is not a PNG file' });
                 }
+                const side = Math.max(
+                    image.body.length >= 24 ? image.body.readUInt32BE(16) : 0,
+                    image.body.length >= 24 ? image.body.readUInt32BE(20) : 0
+                );
+                if (side > exports.PreviewMaxPixels) {
+                    return cb({
+                        reason: `the preview picture is ${side} pixels on a side: at most ${exports.PreviewMaxPixels} are taken`,
+                    });
+                }
                 return cb({ piece, file: model, image });
-            }
+            },
+            max > exports.PreviewMaxBytes ? 'the most hubs take for a preview' : undefined
         );
     });
 }
@@ -855,7 +894,7 @@ function writeCatalogue(account, types, refs, config, cb) {
             rkey: 'self',
             record: {
                 $type: types.catalogue,
-                name: `${boardName}'s art`,
+                name: text(`${boardName}'s art`, 100),
                 items: refs.map(ref => ({ uri: ref.uri, cid: ref.cid })),
                 createdAt: new Date().toISOString(),
             },

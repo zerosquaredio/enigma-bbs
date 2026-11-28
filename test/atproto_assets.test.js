@@ -196,7 +196,7 @@ describe("AT publishing: the board's art", () => {
             { art: 'X', rating: 'spicy' },
         ];
         const listed = Assets.pieces();
-        assert.equal(listed.length, 3, 'one names no art');
+        assert.equal(listed.length, 2, 'one names no art, one a rating it does not know');
         assert.equal(listed[0].art, 'SKULL');
         assert.equal(
             listed[0].licence.id,
@@ -206,11 +206,32 @@ describe("AT publishing: the board's art", () => {
         assert.deepEqual(listed[1].licence, { id: 'CC-BY-4.0' });
         assert.equal(listed[1].rating, 'mature');
         assert.deepEqual(listed[1].credit, { author: 'Ana' });
-        assert.equal(
-            listed[2].rating,
-            'general',
-            'a rating it does not know is the gentlest'
+        assert.equal(listed[0].rating, 'general', 'none given: general');
+    });
+
+    it('refuses a misspelt rating or a licence link that is not https, saying why', () => {
+        testConfig.atProto.publishing.assets = [
+            { art: 'X', rating: 'spicy' },
+            { art: 'Y', licence: { id: 'CC0-1.0', url: 'http://example.com/cc0' } },
+        ];
+        const { pieces, refused } = Assets.listed(testConfig);
+        assert.deepEqual(pieces, []);
+        assert.match(
+            refused[0].reason,
+            /"rating" is "spicy"; it must be one of general, mature, adult/
         );
+        assert.match(refused[1].reason, /licence's "url" must be an https:\/\/ address/);
+    });
+
+    it('cuts names and descriptions to what the records hold, by character', () => {
+        const long = 'é'.repeat(90);
+        testConfig.atProto.publishing.assets = [
+            { art: 'X', name: long, description: '😀'.repeat(400) },
+        ];
+        const [piece] = Assets.pieces();
+        assert.equal(Array.from(piece.name).length, 80);
+        assert.equal(Array.from(piece.description).length, 300);
+        assert.equal(piece.description, '😀'.repeat(300), 'no character cut in half');
     });
 
     it('uploads each piece, publishes it keyed by its hash, and lists them in a catalogue', async () => {
@@ -358,7 +379,7 @@ describe("AT publishing: the board's art", () => {
         const clock = repo[Item][sha(Clock)].value;
         assert.equal(clock.$type, Item);
         assert.equal(clock.name, 'Brass Clock');
-        assert.equal(clock.kind, 'art');
+        assert.equal(clock.kind, 'object', 'a model is an object (assets spec), not art');
         assert.equal(clock.rating, 'general');
         assert.deepEqual(clock.licence, {
             id: 'CC-BY-4.0',
@@ -728,6 +749,28 @@ describe("AT publishing: the board's art", () => {
         assert.equal(
             (await call(Assets.publishAssets)).refused[0].reason,
             `the preview picture is ${Preview.length} bytes, over the limit of ${Preview.length - 1} bytes (atProto.publishing.models.maxBytes)`
+        );
+    });
+
+    it('refuses a preview picture over what hubs take, by size or by pixels', async () => {
+        //  a PNG header saying 4096 pixels wide
+        const wide = Buffer.from(Preview);
+        wide.writeUInt32BE(4096, 16);
+        testConfig.atProto.publishing.assets = [model(Clock, wide)];
+        let result = await call(Assets.publishAssets);
+        assert.deepEqual(uploads, []);
+        assert.match(
+            result.refused[0].reason,
+            /the preview picture is 4096 pixels on a side: at most 2048 are taken/
+        );
+        //  over 2 MB, with models allowed far more
+        const big = Buffer.concat([Preview, Buffer.alloc(Assets.PreviewMaxBytes)]);
+        testConfig.atProto.publishing.models = { maxBytes: 16 * 1024 * 1024 };
+        testConfig.atProto.publishing.assets = [model(Clock, big)];
+        result = await call(Assets.publishAssets);
+        assert.match(
+            result.refused[0].reason,
+            /over the limit of 2 MB \(the most hubs take for a preview\)/
         );
     });
 

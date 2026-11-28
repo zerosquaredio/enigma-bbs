@@ -89,6 +89,35 @@ function nsidPrefix(config = Config()) {
     return _.get(config, 'atProto.publishing.nsidPrefix') || DefaultNsidPrefix;
 }
 
+//  |value| trimmed and cut to |max| characters (code points, which never
+//  outnumber what a person sees as characters, so it fits the Lexicons'
+//  grapheme limits); undefined when empty
+const text = (value, max) =>
+    _.isString(value) && value.trim()
+        ? Array.from(value.trim()).slice(0, max).join('')
+        : undefined;
+
+//  What the listing and status hold at most (their Lexicons; the hub cuts
+//  to the same)
+const Limits = {
+    name: 80,
+    description: 500,
+    tags: 10,
+    tag: 32,
+    rules: 2000,
+    howToJoin: 300,
+    endpoints: 16,
+    uri: 300,
+    timezone: 64,
+    weekly: 14,
+    hoursNote: 200,
+    state: 24,
+    message: 300,
+};
+const Days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const TimeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
+const SysopDidRe = /^did:[a-z]+:[a-zA-Z0-9._:%-]{1,200}$/;
+
 //  ── The board account ────────────────────────────────────────────────────
 
 let store = null;
@@ -508,7 +537,7 @@ function derivedEndpoints(config) {
     const domain = _.get(config, 'contentServers.web.domain');
 
     const webHost = base ? new URL(base).hostname : null;
-    if (base && isPublicHost(webHost)) {
+    if (base && base.startsWith('https://') && isPublicHost(webHost)) {
         if (true === _.get(config, 'atProto.webSignIn.enabled')) {
             endpoints.push({ protocol: 'web', uri: `${base}/_enig/signin` });
         } else if (_.get(config, 'contentServers.web.wsTerm.root')) {
@@ -538,16 +567,25 @@ function hoursFrom(hours) {
         return undefined;
     }
     const out = {};
-    if (_.isString(hours.timezone) && hours.timezone) {
-        out.timezone = hours.timezone;
+    if (_.isString(hours.timezone) && hours.timezone.trim()) {
+        out.timezone = hours.timezone.trim().slice(0, Limits.timezone);
     }
-    if (Array.isArray(hours.weekly) && hours.weekly.length > 0) {
-        out.weekly = hours.weekly
-            .filter(_.isPlainObject)
-            .map(w => _.pick(w, ['days', 'from', 'to']));
+    //  each { days, from, to }: known days, 24-hour HH:MM times
+    const weekly = _.castArray(hours.weekly || [])
+        .filter(_.isPlainObject)
+        .map(w => ({
+            days: _.uniq(_.castArray(w.days || []).filter(d => Days.includes(d))),
+            from: w.from,
+            to: w.to,
+        }))
+        .filter(w => w.days.length && TimeRe.test(w.from) && TimeRe.test(w.to))
+        .slice(0, Limits.weekly);
+    if (weekly.length > 0) {
+        out.weekly = weekly;
     }
-    if (_.isString(hours.note) && hours.note) {
-        out.note = hours.note;
+    const note = text(hours.note, Limits.hoursNote);
+    if (note) {
+        out.note = note;
     }
     return out.weekly || out.note ? out : undefined;
 }
@@ -574,35 +612,41 @@ function buildListing(
         [
             ...(false === listing.deriveEndpoints ? [] : derivedEndpoints(config)),
             ...extra.map(e => _.pick(e, ['protocol', 'uri'])),
-        ],
+        ].filter(e => e.uri.length <= Limits.uri),
         'uri'
-    );
+    ).slice(0, Limits.endpoints);
 
     const record = {
         $type: recordTypes(nsidPrefix(config)).listing,
-        name: _.get(config, 'general.boardName', 'ENiGMA½ BBS'),
+        name: text(_.get(config, 'general.boardName'), Limits.name) || 'ENiGMA½ BBS',
         endpoints,
         admission: { policy: Admission.policy(config) },
         createdAt: iso(_.get(account, 'connectedAt', nowSeconds())),
     };
-    if (_.isString(listing.description) && listing.description) {
-        record.description = listing.description;
+    const description = text(listing.description, Limits.description);
+    if (description) {
+        record.description = description;
     }
-    const tags = _.castArray(listing.tags || []).filter(t => _.isString(t) && t);
+    const tags = _.castArray(listing.tags || [])
+        .map(t => text(t, Limits.tag))
+        .filter(Boolean)
+        .slice(0, Limits.tags);
     if (tags.length > 0) {
         record.tags = tags;
     }
-    if (_.isString(listing.rules) && listing.rules) {
-        record.rules = listing.rules;
+    const rules = text(listing.rules, Limits.rules);
+    if (rules) {
+        record.rules = rules;
     }
-    if (_.isString(listing.howToJoin) && listing.howToJoin) {
-        record.admission.howToJoin = listing.howToJoin;
+    const howToJoin = text(listing.howToJoin, Limits.howToJoin);
+    if (howToJoin) {
+        record.admission.howToJoin = howToJoin;
     }
     const hours = hoursFrom(listing.hours);
     if (hours) {
         record.hours = hours;
     }
-    if (_.isString(listing.sysopDid) && listing.sysopDid.startsWith('did:')) {
+    if (_.isString(listing.sysopDid) && SysopDidRe.test(listing.sysopDid)) {
         record.sysop = listing.sysopDid;
     }
 
@@ -800,7 +844,11 @@ function setStatus({ state, message, until } = {}, cb) {
     let record;
     try {
         account = requireAccount();
-        if (!_.isString(state) || !/^[a-z][a-z0-9-]*$/.test(state)) {
+        if (
+            !_.isString(state) ||
+            state.length > Limits.state ||
+            !/^[a-z][a-z0-9-]*$/.test(state)
+        ) {
             throw Errors.Invalid('A status needs a state such as "up" or "maintenance"');
         }
         record = {
@@ -808,8 +856,9 @@ function setStatus({ state, message, until } = {}, cb) {
             state,
             updatedAt: iso(nowSeconds()),
         };
-        if (_.isString(message) && message) {
-            record.message = message;
+        const cut = text(message, Limits.message);
+        if (cut) {
+            record.message = cut;
         }
         if (until) {
             const when = new Date(until);

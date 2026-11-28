@@ -313,6 +313,22 @@ describe("AT publishing: the board's programs and live objects", () => {
             });
             assert.deepEqual(r.input, { name: 'Berlin' });
             assert.equal(r.interval, 900);
+            assert.deepEqual(r.look, { kind: 'badge' });
+        });
+
+        it('keeps the interval within a minute and a day', async () => {
+            const intervals = async interval => {
+                testConfig.atProto.publishing.objects = [berlin({ interval })];
+                await call(Objects.publishObjects);
+                return repo[ObjectType].berlin.value.interval;
+            };
+            assert.equal(await intervals(30), 60);
+            assert.equal(await intervals(7 * 24 * 60 * 60), 24 * 60 * 60);
+            assert.equal(
+                await intervals('often'),
+                600,
+                'not a number: every ten minutes'
+            );
         });
 
         it("names another account's program by its hash and DID", async () => {

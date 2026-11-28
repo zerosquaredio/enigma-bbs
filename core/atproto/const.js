@@ -40,13 +40,38 @@ exports.objectTypes = (nsidPrefix = exports.DefaultNsidPrefix) => ({
 });
 
 //
+//  A permission set: a Lexicon (type permission-set) naming record types,
+//  asked for as one permission, include:<its name>. It can only name types
+//  under its own group (nexus.cyberspace.authBoard: nexus.cyberspace.*), and
+//  types added to it later are allowed without connecting again.
+//
+const PermissionSetRe = /^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+\.[a-zA-Z][a-zA-Z0-9]*$/;
+exports.isPermissionSet = name =>
+    'string' === typeof name && name.length <= 253 && PermissionSetRe.test(name);
+
+//  The group a permission set may name types in: its name less the last part
+exports.permissionSetGroup = name => name.split('.').slice(0, -1).join('.');
+
+//
 //  What the board account is asked to allow. Permissions name record types
 //  exactly, so adding one, or the record names becoming final, means every
 //  board connects its account again: the list is meant to change rarely.
 //  Files of any kind may be uploaded, as a file does nothing until one of
 //  these records names it (ANSI art, pictures, and later models).
 //
-exports.boardScope = (nsidPrefix = exports.DefaultNsidPrefix) => {
+//  With |permissionSet| (atProto.publishing.permissionSet), the record types
+//  are asked for as that set instead; posts and files, which a set can't
+//  carry, beside it.
+//
+exports.boardScope = (nsidPrefix = exports.DefaultNsidPrefix, permissionSet = null) => {
+    if (exports.isPermissionSet(permissionSet)) {
+        return [
+            exports.OAuthScope,
+            `include:${permissionSet}`,
+            `repo:${exports.PostCollection}`,
+            'blob:*/*',
+        ].join(' ');
+    }
     const types = exports.recordTypes(nsidPrefix);
     const assets = exports.assetTypes(nsidPrefix);
     return [
@@ -76,6 +101,9 @@ exports.permissionWords = (scope, nsidPrefix = exports.DefaultNsidPrefix) => {
         [`repo:${exports.objectTypes(nsidPrefix).object}`]: 'its live objects',
         'blob:*/*': 'files for its art',
     };
+    if (!words[scope] && scope.startsWith('include:')) {
+        return 'its listing, status, art and live objects';
+    }
     return words[scope] || scope;
 };
 

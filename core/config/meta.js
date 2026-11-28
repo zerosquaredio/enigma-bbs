@@ -977,6 +977,11 @@ module.exports = {
         description:
             'Prefix of the published record type names: nexus.cyberspace.dev while the record shapes are drafts. Published names are permanent.',
     },
+    'atProto.publishing.permissionSet': {
+        type: 'string',
+        description:
+            'A permission set to ask the board account for in place of each record type by name, such as nexus.cyberspace.dev.authBoard. Types added to the set later are allowed without connecting again. Changing it means connecting the account again.',
+    },
     'atProto.publishing.minPostIntervalSeconds': {
         type: 'number',
         min: 0,

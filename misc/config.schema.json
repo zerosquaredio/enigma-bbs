@@ -1888,6 +1888,10 @@
                         "objects": {
                             "description": "The board's live objects, published from its account for hubs that run them: each { name (its key: letters, digits, '.', '_', '~', '-'), title, program (a path to its .wasm module, itself published as a program under atProto.publishing.assets, or { sha256, did } for another account's), input (an object, at most 1 KB, given to the program: { name: 'Berlin' } for the weather, say), interval (seconds between updates, 600 if not given; a hub may make it longer) }. Public, the input too. Needs the board account to allow live objects: connect it again if it was connected before they were asked for.",
                             "type": "array"
+                        },
+                        "permissionSet": {
+                            "description": "A permission set to ask the board account for in place of each record type by name, such as nexus.cyberspace.dev.authBoard. Types added to the set later are allowed without connecting again. Changing it means connecting the account again.",
+                            "type": "string"
                         }
                     },
                     "patternProperties": {

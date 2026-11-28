@@ -15,6 +15,7 @@ const {
     DefaultNsidPrefix,
     PostCollection,
     boardScope,
+    permissionSetGroup,
 } = require('./const');
 
 //  deps
@@ -273,10 +274,23 @@ function missingPermissions(config = Config()) {
     if (!_.isString(granted)) {
         return null;
     }
-    const have = new Set(granted.split(/\s+/).filter(Boolean));
-    return boardScope(nsidPrefix(config))
+    const list = granted.split(/\s+/).filter(Boolean);
+    const have = new Set(list);
+    //  a permission set may come back as itself or as the types it names,
+    //  depending on the account host: either is taken as granted
+    const setGranted = scope => {
+        const group = `${permissionSetGroup(scope.slice('include:'.length))}.`;
+        return list.some(g => g.includes(group));
+    };
+    return boardScope(
+        nsidPrefix(config),
+        _.get(config, 'atProto.publishing.permissionSet')
+    )
         .split(' ')
-        .filter(scope => !have.has(scope));
+        .filter(
+            scope =>
+                !have.has(scope) && !(scope.startsWith('include:') && setGranted(scope))
+        );
 }
 
 //

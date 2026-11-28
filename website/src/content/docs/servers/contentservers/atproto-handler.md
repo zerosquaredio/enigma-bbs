@@ -81,6 +81,7 @@ With `atProto.enabled` off (the default), nothing AT related is loaded: the OAut
 | `atProto.publishing.minPostIntervalSeconds` | Number. At most one announcement this often. | `60` |
 | `atProto.publishing.postLangs` | Array. Languages announcements are written in. | `["en"]` |
 | `atProto.publishing.nsidPrefix` | String. Prefix of the published record names. | `nexus.cyberspace.dev` |
+| `atProto.publishing.permissionSet` | String. A permission set to ask the board account for in place of each record type by name; see *Record names* below. Changing it means connecting the account again. | (none) |
 | `atProto.hub.url`, `atProto.hub.name`, `atProto.hub.token` | Strings. The hub the board runs behind, its name there and its token, for [presence on the hub](#presence-on-the-hub). | (empty) |
 | `atProto.hub.presence.enabled` | Boolean. Tell the hub which members are on, for those who chose to be shown. | `false` |
 | `atProto.hub.presence.includeLocalUsers` | Boolean. Also report members with no linked AT account, by user name. | `false` |
@@ -403,6 +404,8 @@ Objects need the board account to allow them. An account connected before they w
 Posts are plain text, up to 300 characters, with web links made clickable, and at most one per `minPostIntervalSeconds`. They are public and effectively permanent: Bluesky honors deletes, but copies may persist.
 
 **Record names.** The listing and status are custom AT records, which the Bluesky app ignores. While their layout is a draft they are named under `nexus.cyberspace.dev` (`nexus.cyberspace.dev.leaf.listing`, `.leaf.status`); `atProto.publishing.nsidPrefix` changes the prefix once the layout is final. Published names are permanent.
+
+**Permission sets (trial).** By default the board account is asked for each record type by name, so a new type means connecting the account again. With `atProto.publishing.permissionSet` set to a permission set, such as `nexus.cyberspace.dev.authBoard`, it's asked for that set instead (with posts and files beside it, which a set can't carry), and record types added to the set later are allowed within a day, without connecting again. Whether account hosts honour sets is being tried; leave it unset unless you're part of the trial.
 
 ## Behind a Proxy, Tunnel or Hub
 A board often isn't reached at its own address: it sits behind a reverse proxy (nginx, Caddy), a tunnel (Cloudflare Tunnel, ngrok, frp), or a hub that carries boards on home connections. AT login, web sign-in and the board's listing need to know the address callers actually use, and that their connections arrived over `https`:

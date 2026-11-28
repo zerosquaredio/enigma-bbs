@@ -412,6 +412,52 @@ describe("AT publishing: the board's splash screen", () => {
             grant(boardScope().split(' ').reverse().join('  '));
             assert.deepEqual(Publishing.missingPermissions(), []);
         });
+
+        describe('asked for as a permission set', () => {
+            const Set = 'nexus.cyberspace.dev.authBoard';
+            beforeEach(() => {
+                testConfig.atProto.publishing.permissionSet = Set;
+            });
+            afterEach(() => {
+                delete testConfig.atProto.publishing.permissionSet;
+            });
+
+            it('asks for the set, with posts and files beside it', () => {
+                const {
+                    boardScope,
+                    permissionWords,
+                } = require('../core/atproto/const.js');
+                assert.equal(
+                    boardScope('nexus.cyberspace.dev', Set),
+                    `atproto include:${Set} repo:app.bsky.feed.post blob:*/*`
+                );
+                assert.equal(
+                    permissionWords(`include:${Set}`),
+                    'its listing, status, art and live objects'
+                );
+                //  a name that isn't one: each type by name, as without
+                assert.equal(
+                    boardScope('nexus.cyberspace.dev', 'not a set'),
+                    boardScope('nexus.cyberspace.dev')
+                );
+            });
+
+            it('takes the set as granted, as itself or as the types it names', async () => {
+                await call(Publishing.connectBoardAccount, Board);
+                grant('atproto repo:app.bsky.feed.post blob:*/*');
+                assert.deepEqual(Publishing.missingPermissions(), [`include:${Set}`]);
+                grant(`atproto include:${Set} repo:app.bsky.feed.post blob:*/*`);
+                assert.deepEqual(Publishing.missingPermissions(), []);
+                grant(
+                    'atproto repo:nexus.cyberspace.dev.leaf.listing repo:nexus.cyberspace.dev.leaf.status repo:app.bsky.feed.post blob:*/*'
+                );
+                assert.deepEqual(Publishing.missingPermissions(), []);
+                //  the live objects' type is then not asked about: the set
+                //  says, and publishing finds out
+                grant(`atproto include:${Set} repo:app.bsky.feed.post`);
+                assert.deepEqual(Publishing.missingPermissions(), ['blob:*/*']);
+            });
+        });
     });
 
     describe('the emblem', () => {

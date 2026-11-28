@@ -101,13 +101,20 @@ function nsidPrefix(config = Config()) {
     return _.get(config, 'atProto.publishing.nsidPrefix') || DefaultNsidPrefix;
 }
 
+//  The permission set the board account is asked for, if any
+function permissionSet(config = Config()) {
+    return _.get(config, 'atProto.publishing.permissionSet') || null;
+}
+
 //
 //  What the client may ask for: member logins only need |OAuthScope|; with
 //  publishing on, the board account's scopes too (members are still asked
 //  for |OAuthScope| alone)
 //
 function clientScope(config = Config()) {
-    return isPublishingEnabled(config) ? boardScope(nsidPrefix(config)) : OAuthScope;
+    return isPublishingEnabled(config)
+        ? boardScope(nsidPrefix(config), permissionSet(config))
+        : OAuthScope;
 }
 
 function startup(cb) {
@@ -321,7 +328,7 @@ function authorizeBoard(input, options, cb) {
         return setImmediate(() => cb(err));
     }
 
-    const authorizeOptions = { scope: boardScope(nsidPrefix()) };
+    const authorizeOptions = { scope: boardScope(nsidPrefix(), permissionSet()) };
     if (options.state) {
         authorizeOptions.state = options.state;
     }

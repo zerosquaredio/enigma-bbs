@@ -185,10 +185,10 @@ describe("AT publishing: the board's programs and live objects", () => {
             const r = repo[Item][sha(Module)].value;
             assert.equal(r.kind, 'program');
             assert.deepEqual(
-                r.versions.map(v => [v.form, v.file.sha256, v.file.mediaType]),
+                r.versions.map(v => [v.form, v.name, v.file.sha256, v.file.mediaType]),
                 [
-                    ['program', sha(Module), 'application/wasm'],
-                    ['source', sha(Source), 'text/plain'],
+                    ['program', undefined, sha(Module), 'application/wasm'],
+                    ['source', 'weather.ts', sha(Source), 'text/plain'],
                 ]
             );
             assert.deepEqual(r.manifest, {
@@ -205,6 +205,68 @@ describe("AT publishing: the board's programs and live objects", () => {
                 restyle: 'nobody',
                 remix: 'anyone',
             });
+        });
+
+        it('publishes a source of several files, each under its name, and again when one changes', async () => {
+            const Json = Buffer.from('export function parse(): void {}\n', 'utf8');
+            const files = () => [write('weather.ts', Source), write('json.ts', Json)];
+            testConfig.atProto.publishing.assets = [program({ source: files() })];
+            assert.deepEqual((await call(Assets.publishAssets)).added, [sha(Module)]);
+            const versions = () =>
+                repo[Item][sha(Module)].value.versions
+                    .filter(v => 'source' === v.form)
+                    .map(v => [v.name, v.file.sha256]);
+            assert.deepEqual(versions(), [
+                ['weather.ts', sha(Source)],
+                ['json.ts', sha(Json)],
+            ]);
+            assert.deepEqual(
+                (await call(Assets.publishAssets)).kept,
+                [sha(Module)],
+                'unchanged'
+            );
+            const newer = Buffer.from(
+                'export function parse(): i32 { return 1; }\n',
+                'utf8'
+            );
+            testConfig.atProto.publishing.assets = [
+                program({
+                    source: [write('weather.ts', Source), write('json.ts', newer)],
+                }),
+            ];
+            assert.deepEqual((await call(Assets.publishAssets)).added, [sha(Module)]);
+            assert.deepEqual(versions()[1], ['json.ts', sha(newer)]);
+        });
+
+        it('refuses a source of too many files, files of the same name or a name hubs do not take, or too much together', async () => {
+            const reason = async source => {
+                testConfig.atProto.publishing.assets = [program({ source })];
+                const result = await call(Assets.publishAssets);
+                return (result.refused[0] || {}).reason;
+            };
+            fs.mkdirSync(paths.join(root, 'a'), { recursive: true });
+            assert.match(
+                await reason(
+                    Array.from({ length: 8 }, (_, i) => write(`f${i}.ts`, Source))
+                ),
+                /8 files: at most 7/
+            );
+            assert.match(
+                await reason([
+                    write('weather.ts', Source),
+                    write('a/weather.ts', Source),
+                ]),
+                /the same name/
+            );
+            assert.match(
+                await reason([write('.hidden.ts', Source)]),
+                /a name hubs don't take/
+            );
+            const big = Buffer.alloc(200 * 1024, 'a');
+            assert.match(
+                await reason([write('one.ts', big), write('two.ts', big)]),
+                /source is [0-9.]+ KB together, over the limit of 256 KB/
+            );
         });
 
         it('lets nobody copy a program whose licence is not an open one', async () => {

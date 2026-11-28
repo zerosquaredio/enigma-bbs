@@ -347,7 +347,7 @@ If the account's host refuses a file (it has an upload limit of its own), publis
 
 A hub that runs live objects shows things that change: the weather in a town, as a badge on the hub's map, say. Each is a small **program** (WebAssembly) and an **object** that gives it its input. The hub runs the program, within limits its admin sets, and only if its admin has checked that program by its hash; it reaches only the sites both the program and the hub allow.
 
-A program is published as art is, as an entry in `atProto.publishing.assets` with `program` (a path to its `.wasm` module), `source` (a path to its source, shown to anyone on the hub, so people can see what it does), a `licence` (required: code needs one; under an open-source licence, anyone may copy and remix it) and a `manifest`:
+A program is published as art is, as an entry in `atProto.publishing.assets` with `program` (a path to its `.wasm` module), `source` (a path to its source, or a list of paths when it is several files, shown to anyone on the hub, so people can see what it does; each file is published under its own name, so the names must differ, at most 7 files), a `licence` (required: code needs one; under an open-source licence, anyone may copy and remix it) and a `manifest`:
 
 ```hjson
 assets: [
@@ -369,7 +369,7 @@ assets: [
 ]
 ```
 
-`fetch` is the sites the program reads, by host name; `values` is the shared type of what it sets (`weather`); `credit` is what the data it shows must credit, shown by the hub wherever it is. The board checks that the module is WebAssembly and the source is text, each within its limit (1 MB and 256 KB); the hub checks the rest. The framework's own weather program is in the hub's repository, under `programs/weather`.
+`fetch` is the sites the program reads, by host name; `values` is the shared type of what it sets (`weather`); `credit` is what the data it shows must credit, shown by the hub wherever it is. The board checks that the module is WebAssembly and the source is text, each within its limit (1 MB, and 256 KB for the source's files together); the hub checks the rest. The framework's own weather program is in the hub's repository, under `programs/weather`.
 
 The objects are listed in `atProto.publishing.objects`, each published as a record of its own, keyed by its `name`:
 

@@ -63,6 +63,9 @@ const GlbMediaType = 'model/gltf-binary';
 const PngMediaType = 'image/png';
 const WasmMediaType = 'application/wasm';
 const SourceMediaType = 'text/plain';
+//  a program's source: at most this many files, each a plain file name
+exports.SourceMaxFiles = 7;
+const SourceNameRe = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
 const WasmSignature = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 //  licences under which anyone may copy and remix a program
 const OpenLicences = [
@@ -162,9 +165,27 @@ function listed(config) {
         }
         let manifest = null;
         if (isProgram) {
-            if (!text(piece.source, 1024)) {
+            const sources = _.castArray(piece.source || []);
+            if (!sources.length || !sources.every(path => text(path, 1024))) {
                 return refuse(
-                    'a program is published with its source: give "source", its path'
+                    'a program is published with its source: give "source", its path, or a list of the paths of its files'
+                );
+            }
+            if (sources.length > exports.SourceMaxFiles) {
+                return refuse(
+                    `its source is ${sources.length} files: at most ${exports.SourceMaxFiles} are published`
+                );
+            }
+            const names = sources.map(path => paths.basename(path.trim()));
+            const bad = names.find(name => !SourceNameRe.test(name));
+            if (bad) {
+                return refuse(
+                    `its source file ${bad} has a name hubs don't take: letters, digits, ".", "_" and "-", not starting with a dot`
+                );
+            }
+            if (_.uniq(names).length !== names.length) {
+                return refuse(
+                    'two of its source files have the same name: each is published by its name, so give them different ones'
                 );
             }
             if (!_.isPlainObject(piece.licence) || !text(piece.licence.id, 64)) {
@@ -211,7 +232,11 @@ function listed(config) {
         const rating = piece.rating || 'general';
         out.push({
             ...(isProgram
-                ? { program: piece.program.trim(), source: piece.source.trim(), manifest }
+                ? {
+                      program: piece.program.trim(),
+                      sources: _.castArray(piece.source).map(path => path.trim()),
+                      manifest,
+                  }
                 : isModel
                   ? { model: piece.model.trim(), image: piece.image.trim() }
                   : { art: piece.art.trim() }),
@@ -308,14 +333,15 @@ function buildModelItem(piece, model, image, blobs, config = Config(), now = new
 }
 
 //
-//  The record for a program, its source and their uploaded files (|blobs|:
-//  { program, source }): the module first, then its source, the manifest
-//  beside them
+//  The record for a program, its source's files and their uploaded files
+//  (|blobs|: { program, sources }, the latter in the files' order): the
+//  module first, then each source file under its name, the manifest beside
+//  them
 //
 function buildProgramItem(
     piece,
     program,
-    source,
+    sources,
     blobs,
     config = Config(),
     now = new Date()
@@ -326,7 +352,12 @@ function buildProgramItem(
         'a program for live objects',
         [
             { form: 'program', file: fileOf(program), blob: blobs.program },
-            { form: 'source', file: fileOf(source), blob: blobs.source },
+            ...sources.map((source, i) => ({
+                form: 'source',
+                name: paths.basename(source.path),
+                file: fileOf(source),
+                blob: blobs.sources[i],
+            })),
         ],
         config,
         now
@@ -476,25 +507,44 @@ function findFiles(piece, config, cb) {
                         reason: 'the program is not a WebAssembly module (.wasm) of version 1',
                     });
                 }
-                return readFile(
-                    piece.source,
-                    'source',
-                    SourceMediaType,
-                    exports.SourceMaxBytes,
-                    (problem, source) => {
-                        if (problem) {
-                            return cb(problem);
-                        }
-                        try {
-                            new TextDecoder('utf-8', { fatal: true }).decode(source.body);
-                        } catch (e) {
+                //  each source file, then all of them together, at most
+                //  SourceMaxBytes
+                const sources = [];
+                const next = i => {
+                    if (i >= piece.sources.length) {
+                        const total = _.sumBy(sources, 'size');
+                        if (total > exports.SourceMaxBytes) {
                             return cb({
-                                reason: "the program's source is not UTF-8 text",
+                                reason: `the program's source is ${megabytes(total)} together, over the limit of ${megabytes(exports.SourceMaxBytes)}`,
                             });
                         }
-                        return cb({ piece, file: program, source });
+                        return cb({ piece, file: program, sources });
                     }
-                );
+                    return readFile(
+                        piece.sources[i],
+                        'source',
+                        SourceMediaType,
+                        exports.SourceMaxBytes,
+                        (problem, source) => {
+                            if (problem) {
+                                return cb(problem);
+                            }
+                            try {
+                                new TextDecoder('utf-8', { fatal: true }).decode(
+                                    source.body
+                                );
+                            } catch (e) {
+                                return cb({
+                                    reason: `the program's source file ${paths.basename(source.path)} is not UTF-8 text`,
+                                });
+                            }
+                            sources.push(source);
+                            return next(i + 1);
+                        },
+                        'the most a source may be'
+                    );
+                };
+                return next(0);
             }
         );
     }
@@ -556,7 +606,7 @@ function uploadPiece(account, f, published, config, cb) {
             file.body,
             file.mediaType,
             (err, blob) => {
-                if (err && (f.image || f.source)) {
+                if (err && (f.image || f.sources)) {
                     const about = Errors.General(
                         `${paths.basename(file.path)}: ${err.reason || err.message}`,
                         err.reasonCode
@@ -568,25 +618,33 @@ function uploadPiece(account, f, published, config, cb) {
                 return next(err, blob);
             }
         );
-    if (f.source) {
-        return upload(f.file, (err, program) =>
-            err
-                ? cb(err)
-                : upload(f.source, (err, source) =>
-                      err
-                          ? cb(err)
-                          : cb(
-                                null,
-                                buildProgramItem(
-                                    f.piece,
-                                    f.file,
-                                    f.source,
-                                    { program, source },
-                                    config
-                                )
-                            )
-                  )
-        );
+    if (f.sources) {
+        return upload(f.file, (err, program) => {
+            if (err) {
+                return cb(err);
+            }
+            const blobs = [];
+            const next = i =>
+                i >= f.sources.length
+                    ? cb(
+                          null,
+                          buildProgramItem(
+                              f.piece,
+                              f.file,
+                              f.sources,
+                              { program, sources: blobs },
+                              config
+                          )
+                      )
+                    : upload(f.sources[i], (err, blob) => {
+                          if (err) {
+                              return cb(err);
+                          }
+                          blobs.push(blob);
+                          return next(i + 1);
+                      });
+            return next(0);
+        });
     }
     if (!f.image) {
         return upload(f.file, (err, blob) =>
@@ -752,12 +810,16 @@ function publishAssets(cb) {
                                 versionOf(have.get(f.file.sha256), 'image'),
                                 'file.sha256'
                             )) &&
-                    (!f.source ||
-                        (f.source.sha256 ===
-                            _.get(
-                                versionOf(have.get(f.file.sha256), 'source'),
-                                'file.sha256'
-                            ) &&
+                    (!f.sources ||
+                        (_.isEqual(
+                            f.sources.map(source => [
+                                paths.basename(source.path),
+                                source.sha256,
+                            ]),
+                            _.get(have.get(f.file.sha256), 'value.versions', [])
+                                .filter(v => v && 'source' === v.form)
+                                .map(v => [v.name, _.get(v, 'file.sha256')])
+                        ) &&
                             _.isEqual(
                                 f.piece.manifest,
                                 _.get(have.get(f.file.sha256), 'value.manifest')
